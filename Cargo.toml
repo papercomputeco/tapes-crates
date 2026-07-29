@@ -1,35 +1,65 @@
+# Dual-licensed under MIT OR Apache-2.0 — see LICENSE-MIT and LICENSE-APACHE.
+#
+# `publish` stays false until the first deliberate crates.io release; flip it
+# together with that release PR. The crate name `tapes-harnesses` is confirmed
+# available on crates.io (checked 2026-07-29), and `tapes-harness` should be
+# claimed as a stub redirect at the same time.
+
 [package]
-name = "tapes-harness"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-publish.workspace = true
-authors.workspace = true
-repository.workspace = true
-description = "Shared, open-source client-side harness knowledge for Tapes capture."
+name = "tapes-harnesses"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+publish = false
+authors = ["Paper Compute"]
+repository = "https://github.com/papercomputeco/tapes-harnesses"
+description = "Shared, open-source client-side harness knowledge for Tapes capture: launch recipes, session attribution, transcript discovery, and the X-Tapes-* envelope."
 
 [lib]
-name = "tapes_harness"
+name = "tapes_harnesses"
 path = "src/lib.rs"
 
+# Dependency versions match `platform/paper`, which the attribution and
+# envelope modules were extracted from, so paperd's lockfile does not fork
+# when it consumes this crate.
 [dependencies]
-arc-swap = { workspace = true }
-base64 = { workspace = true }
-dirs = { workspace = true }
-http = { workspace = true }
-libc = { workspace = true }
-netsock = { workspace = true }
-percent-encoding = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-snafu = { workspace = true }
-time = { workspace = true }
-tokio = { workspace = true, features = ["rt", "sync", "time"] }
-tracing = { workspace = true }
+arc-swap = "1"
+base64 = "0.22"
+dirs = "5"
+http = "1"
+libc = "0.2"
+netsock = "0.7"
+percent-encoding = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+snafu = "0.8"
+time = { version = "0.3", features = ["formatting", "parsing", "serde", "macros"] }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+tracing = "0.1"
 
 [dev-dependencies]
-tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 
-[lints]
-workspace = true
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+# libproc 0.14.11 gates binding generation on `#[cfg(target_os = "macos")]` in
+# its build script. Build-script cfg reflects the HOST, not the target, so
+# cross-compiling Linux -> *-apple-darwin runs the empty branch and never writes
+# `osx_libproc_bindings.rs` — yet lib.rs, compiled *for* macOS, still
+# `include!`s it. Native macOS builds work, which is why this only breaks
+# cross-compiling CI.
+#
+# This rev gates on `CARGO_CFG_TARGET_OS` (the target) and falls back to the
+# bindings libproc already ships for docs.rs — no libclang, no SDK headers.
+# `platform/paper` and `tapesctl` pin the identical rev for the identical
+# reason. Drop all three when a release carries the fix; 0.14.11 is still the
+# newest as of this pin. Upstream: andrewdavidmackenzie/libproc-rs#168.
+#
+# Reached via `netsock -> libproc`.
+[patch.crates-io]
+libproc = { git = "https://github.com/andrewdavidmackenzie/libproc-rs.git", rev = "9e079f3308182bb3a47fe509571d38fb4fd380f3" }

@@ -1,0 +1,11 @@
+/.direnv/
+/target/
+/build/
+/tmp/
+.DS_Store
+
+# JetBrains IDEs
+.idea/
+
+# Claude Code
+.claude/

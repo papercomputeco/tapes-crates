@@ -38,13 +38,13 @@ in total and **all must be refreshed from the same upstream SHA**:
 
 | Repo | Path |
 | --- | --- |
-| `tapesctl` (here) | `crates/tapes-harness/vendor/tapes-envelope-fixtures/` |
+| `tapes-harnesses` (here) | `vendor/tapes-envelope-fixtures/`| `crates/tapes-harness/vendor/tapes-envelope-fixtures/` |
 | `platform/paper` | `crates/paper-daemon/vendor/tapes-envelope-fixtures/` |
 | `tapes-extproc` | `internal/headers/testdata/envelope/` |
 
 ## What consumes it here
 
-`crates/tapes-harness/src/envelope_fixtures.rs` — the producer-side oracle. For
+`src/envelope_fixtures.rs` — the producer-side oracle. For
 each case whose `direction` is `roundtrip` or `encode` it builds the logical
 envelope (`encode_from` when the case is lossy, else `envelope`), emits the
 headers, and asserts they match the case byte for byte.
@@ -63,5 +63,5 @@ covered by the parser-side oracles.
 ./scripts/sync-envelope-fixtures.sh --check /path/to/tapes
 ```
 
-Then update the snapshot SHA above, run `cargo test -p tapes-harness`, and
+Then update the snapshot SHA above, run `cargo test`, and
 commit the fixture change with any producer change it forced.

@@ -1,4 +1,4 @@
-//! `tapes-harness` — shared, open-source client-side harness knowledge for
+//! `tapes-harnesses` — shared, open-source client-side harness knowledge for
 //! Tapes capture.
 //!
 //! This crate is the single home for everything a capture client needs to know
