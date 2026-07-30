@@ -157,7 +157,14 @@ pub fn sweep(projects_root: &Path, options: &SweepOptions) -> Vec<SweptSession> 
             });
         }
     }
-    out.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+    // projects_dir breaks ties so equal session ids (the same session seen
+    // under two roots) sweep in one reproducible order rather than
+    // filesystem-enumeration order.
+    out.sort_by(|a, b| {
+        a.session_id
+            .cmp(&b.session_id)
+            .then_with(|| a.projects_dir.cmp(&b.projects_dir))
+    });
     out
 }
 
