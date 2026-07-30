@@ -34,8 +34,12 @@
 //! plan argv, environment, and config documents, and the consumer owns process
 //! spawning and cleanup.
 //!
-//! [`transcript`] is still a documented seed; it arrives later in Track 1 from
-//! the transcript uploader's discovery/packaging half.
+//! [`transcript`] is extracted from paperd's transcript uploader — its
+//! discovery/packaging half, the push trigger, and the ingest payload shape —
+//! and adds a startup sweep of the transcript tree, which closes paperd's own
+//! gap: a session that began and ended while the daemon was down is never
+//! re-registered by live traffic, so its fork skeleton was previously lost.
+//! Delivery, auth, and retry stay in each client.
 
 pub mod attribution;
 pub mod envelope;

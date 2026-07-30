@@ -9,7 +9,7 @@
 name = "tapes-harnesses"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 publish = false
 authors = ["Paper Compute"]
@@ -32,7 +32,11 @@ libc = "0.2"
 netsock = "0.7"
 percent-encoding = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `raw_value` lets the transcript payload embed JSONL records verbatim. The
+# ingest server's dedup key is a content hash of the records array, so
+# re-serializing through `serde_json::Value` (which reorders map keys) would
+# register identical content as a new version on every push.
+serde_json = { version = "1", features = ["raw_value"] }
 snafu = "0.8"
 time = { version = "0.3", features = ["formatting", "parsing", "serde", "macros"] }
 tokio = { version = "1", features = ["rt", "sync", "time"] }
