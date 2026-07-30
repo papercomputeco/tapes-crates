@@ -12,7 +12,9 @@ knowledge; this crate is one of them (the tapes deriver and the envelope
 spec/fixtures are the other two). It owns four responsibilities:
 
 - **`launch`** — per-harness env/config injection to run a harness under a
-  capture proxy.
+  capture proxy. Recipes are pure: they plan the argv prefix, the environment
+  overlay, and any config documents a harness reads from disk, and the consumer
+  owns process spawning, materialisation, and cleanup.
 - **`attribution`** — session-file reads, fork-parent recovery, peer-PID
   lookup, and the Codex session watcher.
 - **`transcript`** — discovering and packaging harness transcripts for the

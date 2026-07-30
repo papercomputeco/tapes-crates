@@ -28,9 +28,14 @@
 //! `vendor/tapes-envelope-fixtures/`, which the Go parsers table-test against
 //! too, so producer and parser cannot drift silently.
 //!
-//! [`launch`] and [`transcript`] are still documented seeds; they arrive later
-//! in Track 1 from `start.rs` and the transcript uploader's
-//! discovery/packaging half.
+//! [`launch`] is extracted from paper's `cli/start.rs` per-agent env/config
+//! injection, with the Go `tapes start` opencode/codex knowledge folded in —
+//! including opencode, which paper never supported. Its recipes are pure: they
+//! plan argv, environment, and config documents, and the consumer owns process
+//! spawning and cleanup.
+//!
+//! [`transcript`] is still a documented seed; it arrives later in Track 1 from
+//! the transcript uploader's discovery/packaging half.
 
 pub mod attribution;
 pub mod envelope;
