@@ -65,6 +65,8 @@ const CONFIG_RELATIVE_PATH: [&str; 2] = ["opencode", "opencode.json"];
 
 /// JSON object key holding opencode's provider table.
 const PROVIDER_KEY: &str = "provider";
+/// Top-level key holding opencode's persisted `provider/model` selection.
+const MODEL_SELECTION_KEY: &str = "model";
 
 /// The npm adapter package and display name opencode needs in order to recognise
 /// a provider entry.
@@ -203,6 +205,18 @@ impl LaunchRecipe for OpenCodeRecipe {
             // so base-config providers we did not rewrite are dropped, not
             // carried over.
             providers.retain(|name, _| self.providers.iter().any(|p| p.name == *name));
+        }
+        // The persisted model selection ("provider/model") must not outlive
+        // its provider: opencode fails provider resolution at startup when
+        // the selection names a provider the prune removed. Dropping it
+        // falls back to opencode's own default-model behavior over the
+        // routed providers (and `--model` still wins when the recipe sets
+        // one).
+        if let Some(selected) = document.get(MODEL_SELECTION_KEY).and_then(Value::as_str)
+            && let Some((provider_name, _)) = selected.split_once('/')
+            && !self.providers.iter().any(|p| p.name == provider_name)
+        {
+            document.remove(MODEL_SELECTION_KEY);
         }
 
         let contents = serde_json::to_string_pretty(&Value::Object(document))
@@ -354,6 +368,31 @@ mod tests {
             "unrouted provider retained: {providers:?}"
         );
         assert_eq!(document["theme"], "dark");
+    }
+
+    #[test]
+    fn model_selection_does_not_outlive_its_pruned_provider() {
+        // A selection naming a pruned provider would make opencode fail
+        // provider resolution at startup; it must fall with the provider.
+        let base = serde_json::json!({
+            "model": "mystery/secret-model",
+            "provider": {
+                "mystery": { "options": { "baseURL": "https://direct.example.com/v1" } }
+            }
+        });
+        let plan = recipe().with_base_config(base).plan().unwrap();
+        let document = parse(&plan.config_files[0].contents);
+        assert!(
+            document.get("model").is_none(),
+            "stale selection retained: {:?}",
+            document.get("model")
+        );
+
+        // A selection over a ROUTED provider survives.
+        let base = serde_json::json!({ "model": "anthropic/claude-sonnet-4-6" });
+        let plan = recipe().with_base_config(base).plan().unwrap();
+        let document = parse(&plan.config_files[0].contents);
+        assert_eq!(document["model"], "anthropic/claude-sonnet-4-6");
     }
 
     fn parse(contents: &str) -> Value {
