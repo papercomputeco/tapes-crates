@@ -31,13 +31,12 @@ pub struct CodexSessionFile {
 }
 
 impl CodexSessionFile {
-    #[must_use]
-    pub fn is_paper_provider(&self) -> bool {
-        self.model_provider.as_deref().is_some_and(|provider| {
-            provider == "paper-openai" || provider.starts_with("paper-openai-")
-        })
-    }
-
+    /// Does this session name exactly `provider` as its model provider?
+    ///
+    /// Whether a given provider id is *ours* is a per-consumer question — see
+    /// [`crate::attribution::CodexProviderFilter`], which the attribution
+    /// pipeline uses for that decision. This method only answers the literal
+    /// equality the marker-matching path needs.
     #[must_use]
     pub fn has_model_provider(&self, provider: &str) -> bool {
         self.model_provider.as_deref() == Some(provider)
@@ -162,7 +161,7 @@ mod tests {
         assert_eq!(got.session_id, "019ecd8e-4281-7353-8a00-09df678443b1");
         assert_eq!(got.cwd.as_deref(), Some("/tmp/work"));
         assert_eq!(got.cli_version.as_deref(), Some("0.139.0"));
-        assert!(got.is_paper_provider());
+        assert!(got.has_model_provider("paper-openai"));
     }
 
     #[test]

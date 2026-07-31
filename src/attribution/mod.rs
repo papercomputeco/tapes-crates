@@ -10,6 +10,12 @@
 //!
 //! Responsibilities:
 //!
+//! * [`pipeline`] — the composition: [`attribute`] takes one request's facts
+//!   and returns one [`Attributed`] outcome, driving the primitives below in
+//!   the order that was validated against real traffic. Capture clients call
+//!   this; the primitives are exposed for tests and for clients with unusual
+//!   needs. A third re-implementation of this sequence is the design smell
+//!   this module exists to prevent.
 //! * [`watcher`] — polls `~/.claude/sessions/` every 1 s and maintains the
 //!   candidate-PID set and parsed metadata snapshots a request handler reads
 //!   wait-free.
@@ -35,6 +41,7 @@ pub mod codex_session;
 pub mod codex_watcher;
 pub mod fork_parent;
 pub mod peer_pid;
+pub mod pipeline;
 pub mod watcher;
 
 pub use claude_session::{ClaudeSessionFile, default_sessions_dir};
@@ -44,6 +51,10 @@ pub use codex_watcher::{
     CodexWatcherSnapshot, Snapshot as CodexWatcherSnapshotHandle, spawn as spawn_codex_watcher,
 };
 pub use peer_pid::{PeerPidLookup, lookup as peer_pid_lookup};
+pub use pipeline::{
+    Attributed, AttributionConfig, AttributionState, CodexProviderFilter, ForkParentCache,
+    RequestFacts, attribute, ua_matches_claude,
+};
 pub use watcher::{Snapshot as WatcherSnapshotHandle, WatcherSnapshot, spawn as spawn_watcher};
 
 /// Attribution facts discovered for a captured harness session.
