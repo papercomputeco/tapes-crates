@@ -5,6 +5,15 @@
 # available on crates.io (checked 2026-07-29), and `tapes-harness` should be
 # claimed as a stub redirect at the same time.
 
+# This crate is its own workspace root. The empty table is load-bearing: it
+# stops Cargo from walking up and adopting whatever workspace happens to own
+# the directory this repo was checked out into — a real case, since the crate
+# is vendored as a member of the Paper forest, whose root manifest is an
+# unrelated workspace. Being adopted would also silently disable the
+# `[patch.crates-io]` block below, because Cargo only honours `patch` at a
+# workspace root, and the libproc pin there is required to cross-compile.
+[workspace]
+
 [package]
 name = "tapes-harnesses"
 version = "0.1.0"
@@ -44,7 +53,19 @@ tracing = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+# `test-util` powers `#[tokio::test(start_paused = true)]`, which the
+# attribution pipeline's tests rely on: its lanes wait up to 2 s for a
+# session file to appear, and a paused clock proves both that a gated caller
+# returns immediately and that a timeout path is reached — without any test
+# actually sleeping.
+tokio = { version = "1", features = [
+    "macros",
+    "rt",
+    "rt-multi-thread",
+    "sync",
+    "test-util",
+    "time",
+] }
 
 [lints.clippy]
 unwrap_used = "deny"

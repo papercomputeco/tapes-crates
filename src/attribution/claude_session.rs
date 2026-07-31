@@ -19,7 +19,10 @@ use tracing::warn;
 /// camelCase; `rename_all` handles the conversion so the Rust field
 /// names stay snake_case and a future shape change can be diffed
 /// against this struct without per-field annotation churn.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// `PartialEq`/`Eq` mirror `CodexSessionFile` and let callers compare
+// attribution outcomes structurally; every field is a string, an integer, or
+// a `serde_json` value, all of which are `Eq`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeSessionFile {
     /// OS pid of the `claude` process that owns this session file.

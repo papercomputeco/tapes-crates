@@ -142,6 +142,39 @@ pub const X_TAPES_SESSION_NAME_CAP: usize = 256;
 /// parsers.
 const UTF8_VALUE_ESCAPE: &AsciiSet = &CONTROLS.add(b' ').add(b'%').add(b'"').add(b'\\').add(0x7f);
 
+/// Harness-native sub-thread headers, in priority order — first present wins.
+///
+/// A harness that runs subagents fires their API calls with a per-thread
+/// identifier. Claude Code stamps `x-claude-code-agent-id` on every call made
+/// from a subagent context (including its security-monitor checks) and omits it
+/// on the main thread. Capturing it makes thread attribution **deterministic at
+/// capture time** rather than something downstream has to recover by joining on
+/// content.
+///
+/// This is harness knowledge, so it lives here rather than in each capture
+/// client; the rest of a client's pipeline is harness-neutral and only ever
+/// sees the resolved thread id. The list mirrors tapes-extproc's
+/// `harnessThreadIDHeaders` — the two must agree, since extproc reads these off
+/// the wire for exactly the same purpose. Add other harnesses' equivalents to
+/// both as they are identified.
+pub const HARNESS_THREAD_ID_HEADERS: &[&str] = &["x-claude-code-agent-id"];
+
+/// Resolve the harness-native sub-thread id for a request.
+///
+/// Returns `None` for a main-thread call, or for a harness with no known
+/// mapping. The value is destined for the ingest turn's `meta.thread_id`; it is
+/// **not** an `X-Tapes-*` envelope header and is not stripped from the outbound
+/// request — the harness set it, and upstream may legitimately see it.
+#[must_use]
+pub fn thread_id(headers: &HeaderMap) -> Option<&str> {
+    HARNESS_THREAD_ID_HEADERS.iter().find_map(|name| {
+        headers
+            .get(*name)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.is_empty())
+    })
+}
+
 /// Returns true if `name` is in [`HOP_BY_HOP_HEADERS`] (case-insensitive).
 #[must_use]
 pub fn is_hop_by_hop(name: &str) -> bool {
@@ -1127,5 +1160,30 @@ mod tests {
             headers.contains_key("authorization"),
             "non-tapes headers are preserved"
         );
+    }
+
+    #[test]
+    fn thread_id_reads_the_claude_subagent_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-claude-code-agent-id",
+            HeaderValue::from_static("agent-7"),
+        );
+        assert_eq!(thread_id(&headers), Some("agent-7"));
+    }
+
+    #[test]
+    fn thread_id_is_absent_on_a_main_thread_call() {
+        // Claude Code omits the header entirely on the main thread, which is
+        // what makes its presence a reliable subagent signal.
+        let headers = HeaderMap::new();
+        assert_eq!(thread_id(&headers), None);
+    }
+
+    #[test]
+    fn a_blank_thread_id_counts_as_absent() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-claude-code-agent-id", HeaderValue::from_static(""));
+        assert_eq!(thread_id(&headers), None);
     }
 }
