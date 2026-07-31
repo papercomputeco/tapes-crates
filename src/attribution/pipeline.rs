@@ -602,7 +602,7 @@ async fn attribute_codex(
             return facts
                 .codex_marker
                 .is_none()
-                .then(|| attribute_recent_codex(state, config))
+                .then(|| attribute_recent_codex(state, config, facts.codex_rollout_id))
                 .flatten();
         }
         tokio::time::sleep(config.codex_poll.min(remaining)).await;
@@ -648,32 +648,32 @@ fn attribute_codex_once(
 
 /// Last resort: exactly one recent session of ours, or nothing.
 ///
-/// Strictly single-candidate — with two concurrent Codex sessions there is no
-/// evidence to choose between them, and attaching traffic to the wrong session
-/// is worse than leaving it unattributed.
+/// The request's named rollout binds here exactly as it does in the marker
+/// and peer lanes — this path fires after a discovery timeout, when the
+/// named rollout is often precisely the file the watcher has not surfaced
+/// yet, and handing such a turn to the one session that IS visible would be
+/// a permanent cross-thread attribution. With no rollout evidence the old
+/// policy stands: several distinct live sessions are refused, and rotation
+/// of a single session collapses to its newest file.
 fn attribute_recent_codex(
     state: &AttributionState,
     config: &AttributionConfig,
+    rollout_id: Option<&str>,
 ) -> Option<CodexSessionFile> {
     let cutoff = time::OffsetDateTime::now_utc() - config.codex_recent_window;
     let snapshot = state.codex_watcher.load_full();
-    let candidates: Vec<&CodexSessionFile> = snapshot
+    let candidates: Vec<CodexSessionFile> = snapshot
         .sessions
         .iter()
         .filter(|session| is_live_candidate(session, config, cutoff))
+        .cloned()
         .collect();
-    match candidates.as_slice() {
-        [] => None,
-        [session] => Some((*session).clone()),
-        _ => {
-            warn!(
-                count = candidates.len(),
-                sample = ?sample_of(&candidates),
-                "codex-session: multiple recent sessions; omitting session id",
-            );
-            None
-        }
-    }
+    let candidates = narrow_by_rollout_id(rollout_id, candidates)?;
+    one_live_session_or_refuse(
+        "recent-session",
+        "multiple recent sessions and the request named no rollout",
+        candidates,
+    )
 }
 
 fn is_live_candidate(
@@ -1155,6 +1155,56 @@ mod tests {
         assert_eq!(
             attribute(&state, &config(), facts).await,
             Attributed::Undecided,
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_fallback_refuses_a_lone_session_that_is_not_the_named_rollout() {
+        // The discovery-timeout shape: the child rollout the request names is
+        // not on disk yet, and the only visible session is the parent. Handing
+        // the child's turn to the parent would be permanent cross-thread
+        // attribution — the exact hole the lanes already close.
+        let mut snapshot = CodexWatcherSnapshot::default();
+        snapshot.sessions.push(codex_file(
+            "parent",
+            "paper-openai",
+            time::Duration::seconds(30),
+        ));
+        let state = state_with(WatcherSnapshot::default(), snapshot);
+
+        let facts = RequestFacts {
+            codex_route: true,
+            codex_rollout_id: Some("child-not-yet-on-disk"),
+            ..RequestFacts::default()
+        };
+        assert_eq!(
+            attribute(&state, &config(), facts).await,
+            Attributed::Undecided,
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_fallback_selects_the_named_rollout_among_several() {
+        // With rollout evidence the fallback no longer needs to refuse a
+        // family: the named session is a decision, not a guess.
+        let mut snapshot = CodexWatcherSnapshot::default();
+        snapshot
+            .sessions
+            .push(codex_file("a", "paper-openai", time::Duration::seconds(30)));
+        snapshot
+            .sessions
+            .push(codex_file("b", "paper-openai", time::Duration::seconds(10)));
+        let state = state_with(WatcherSnapshot::default(), snapshot);
+
+        let facts = RequestFacts {
+            codex_route: true,
+            codex_rollout_id: Some("a"),
+            ..RequestFacts::default()
+        };
+        let got = attribute(&state, &config(), facts).await;
+        assert_eq!(
+            got.codex_session().map(|s| s.session_id.as_str()),
+            Some("a"),
         );
     }
 
