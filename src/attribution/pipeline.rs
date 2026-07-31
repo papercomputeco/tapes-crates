@@ -219,7 +219,7 @@ impl ForkParentCache {
         // panicked. The cache is best-effort and memory-only, so the worst
         // case from a poisoned read is one redundant discovery — much cheaper
         // than failing the request.
-        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        let entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         match entries.get(sid) {
             None => None,
             Some(ForkParentEntry::Parent(parent)) => Some(Some(parent.clone())),
