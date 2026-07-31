@@ -67,11 +67,31 @@ is, which credential to supply, and where to materialise a config file are the
 consumer's. A recipe never constructs a route: it receives a fully qualified
 endpoint and appends nothing to it.
 
-If the only way to launch the agent is through a vendor-specific asset — a
-bundled extension, product-branded environment variables — declare
-`LaunchSupport::ConsumerOwned` and leave the asset in the consumer's
-repository. `PI` is that case. Do not vendor branded assets or environment
-variable names into this crate.
+If the agent exposes no base-URL knob at all, there is nothing for a recipe to
+set and capture needs code running *inside* the agent instead. Declare
+`LaunchSupport::ConsumerOwned` and see the next step. `PI` is that case.
+
+## Step 2b — a plugin artifact, if capture needs code inside the agent
+
+An agent with no base-URL knob needs a file installed into it — an extension
+that registers the agent's providers against the proxy from the inside. Those
+files live in `assets/<harness>/` and are declared in `src/plugin.rs` as
+`PluginArtifact`s, which the registry hands out through
+`PluginDelivery::BundledExtension`. A consumer's `plugin install` is then a file
+copy: it resolves the name, takes `harness.plugin_artifacts()`, and writes each
+one beneath the user's home.
+
+The bar for putting an asset here is that it names **no vendor**. It reads its
+endpoint from `plugin::GATEWAY_URL_ENV` and nothing else — no product-branded
+variable, no default endpoint, no "run `<product> ...`" hint in its copy. An
+asset that cannot meet that bar stays in the consumer's repository and gets no
+variant here; `src/plugin.rs`'s tests enforce the bar for the ones that do.
+
+Two properties an artifact must have, both tested: it is **inert** until
+`TAPES_GATEWAY_URL` is set, because it installs globally and would otherwise
+change sessions nobody is capturing; and if it stamps an envelope itself, the
+header names must match `src/envelope.rs`, since a rename there would otherwise
+silently re-file the agent's sessions as `unknown`.
 
 ## Step 3 — an attribution strategy
 

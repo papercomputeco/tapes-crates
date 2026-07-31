@@ -109,7 +109,9 @@ pub const X_TAPES_HARNESS_METADATA: &str = "x-tapes-harness-metadata";
 /// No `X-Tapes-Harness-Session-Id` is attached in this case.
 pub const HARNESS_ID_UNKNOWN: &str = "unknown";
 
-/// Harness-id attached by the Paper-managed pi extension.
+/// Harness-id attached by pi's capture extension — the one harness that stamps
+/// its own envelope from inside itself. The extension is
+/// [`crate::plugin::PI_GATEWAY_EXTENSION`].
 pub const HARNESS_ID_PI: &str = "pi";
 
 /// Harness-id attached for Claude traffic (User-Agent `claude*`).

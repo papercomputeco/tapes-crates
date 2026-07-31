@@ -27,11 +27,12 @@
 //! recipe, and the consumer constructs it with the arguments only the consumer
 //! has.
 //!
-//! The same restraint applies to plugin assets. `pi` is captured by an
-//! in-harness extension, but that extension's asset and the environment
-//! variables pointing it at a gateway are vendor-branded and live in the
-//! consumer's repository — so [`PluginDelivery::ConsumerExtension`] names the
-//! shape without naming anyone's product.
+//! Plugin assets are the one thing the registry does hand out whole. `pi` is
+//! captured by an in-harness extension, and unlike a recipe an extension takes
+//! no per-consumer inputs — it is a fixed file that reads its endpoint from the
+//! environment at runtime. So [`PluginDelivery::BundledExtension`] carries the
+//! [`crate::plugin::PluginArtifact`]s themselves, and an installer needs
+//! nothing from the registry but the harness name the user typed.
 //!
 //! # Adding a harness
 //!
@@ -76,9 +77,11 @@ pub enum LaunchSupport {
     /// The crate ships a [`crate::launch::LaunchRecipe`] whose `harness()`
     /// equals this harness's id. The consumer constructs it.
     Recipe,
-    /// Launchable, but only through assets the consumer owns — a bundled
-    /// extension and the vendor-specific environment that points it somewhere.
-    /// Nothing endpoint-parameterized exists to share yet.
+    /// Launchable, but the consumer plans the launch itself: the harness has no
+    /// base-URL knob for a recipe to set, so it is captured by an installed
+    /// [`PluginDelivery::BundledExtension`] plus whatever argv the consumer uses
+    /// to load it. The asset and its environment contract are shared; the argv
+    /// is not, yet.
     ConsumerOwned,
     /// This crate cannot plan a launch for the harness.
     Unsupported,
@@ -159,11 +162,16 @@ pub enum PluginDelivery {
     /// Capture works by redirecting the harness's traffic; nothing is
     /// installed into the harness itself.
     None,
-    /// Capture requires an in-harness extension that the *consumer* ships and
-    /// installs. The asset and the environment variables that point it at a
-    /// gateway are vendor-specific, so neither lives in this crate — see the
-    /// module docs.
-    ConsumerExtension,
+    /// Capture requires an in-harness extension, which this crate ships: the
+    /// variant carries the [`crate::plugin::PluginArtifact`]s a consumer writes
+    /// to disk, so `plugin install` is a file copy over crate-owned bytes and
+    /// no consumer carries its own drifting fork of the asset.
+    ///
+    /// This is only available to an asset that names no vendor — see
+    /// [`crate::plugin`] for what "vendor-neutral" costs and rules out. A
+    /// plugin that genuinely cannot shed its branding stays in the consumer's
+    /// repository and gets no variant here.
+    BundledExtension(&'static [crate::plugin::PluginArtifact]),
 }
 
 /// Everything this crate knows about one coding-agent harness.
@@ -256,6 +264,21 @@ impl Harness {
     pub const fn plugin(&self) -> PluginDelivery {
         self.plugin
     }
+
+    /// The files a consumer must install into this harness before its traffic
+    /// can be captured, empty when it needs none.
+    ///
+    /// This is the whole input to a `plugin install`: resolve a user-typed name
+    /// through [`find`], take this slice, write each artifact beneath the
+    /// user's home. An empty slice is the ordinary case and not an error — it
+    /// says capture needs no cooperation from inside the harness.
+    #[must_use]
+    pub const fn plugin_artifacts(&self) -> &'static [crate::plugin::PluginArtifact] {
+        match self.plugin {
+            PluginDelivery::None => &[],
+            PluginDelivery::BundledExtension(artifacts) => artifacts,
+        }
+    }
 }
 
 /// Claude Code — the reference harness, and the only one that publishes a
@@ -300,9 +323,13 @@ pub const OPENCODE: Harness = Harness {
 ///
 /// pi carries a capture extension that stamps a complete `X-Tapes-*` envelope
 /// from inside the harness, so there is no attribution lane and no session
-/// file to read: the client's job is to *preserve* what arrives. Its launch
-/// path needs that extension plus vendor-specific environment, which is why it
-/// is [`LaunchSupport::ConsumerOwned`] rather than a recipe here.
+/// file to read: the client's job is to *preserve* what arrives. That extension
+/// is [`crate::plugin::PI_GATEWAY_EXTENSION`], which this crate now ships.
+///
+/// It stays [`LaunchSupport::ConsumerOwned`] even so. Installing the extension
+/// and *launching* pi under capture are separate steps, and only the first one
+/// has moved: a recipe would still have to plan the argv that points pi at an
+/// installed extension, which nothing here does yet.
 pub const PI: Harness = Harness {
     id: HARNESS_ID_PI,
     aliases: &[],
@@ -310,7 +337,7 @@ pub const PI: Harness = Harness {
     launch: LaunchSupport::ConsumerOwned,
     attribution: AttributionStrategy::SelfAttributing,
     transcripts: TranscriptSource::None,
-    plugin: PluginDelivery::ConsumerExtension,
+    plugin: PluginDelivery::BundledExtension(crate::plugin::PI_ARTIFACTS),
 };
 
 /// Every harness this crate knows about.
@@ -483,7 +510,7 @@ mod tests {
     #[test]
     fn pi_is_the_self_attributing_variant() {
         assert_eq!(PI.attribution(), AttributionStrategy::SelfAttributing);
-        assert_eq!(PI.plugin(), PluginDelivery::ConsumerExtension);
+        assert!(matches!(PI.plugin(), PluginDelivery::BundledExtension(_)));
         assert_eq!(PI.transcripts(), TranscriptSource::None);
         // Exactly one self-attributing harness today; if a second appears, the
         // preserve-the-inbound-envelope branch needs revisiting rather than
@@ -494,6 +521,27 @@ mod tests {
             .map(Harness::id)
             .collect();
         assert_eq!(self_attributing, vec!["pi"]);
+    }
+
+    /// The path a `plugin install` walks, end to end: a user types a name, the
+    /// registry resolves it, and the artifacts to write come straight off the
+    /// resolved harness. Nothing else connects the two, so if this hop breaks
+    /// an installer silently has nothing to install.
+    #[test]
+    fn a_resolved_name_reaches_the_artifacts_an_installer_writes() {
+        let harness = find("pi").expect("pi is registered");
+        let artifacts = harness.plugin_artifacts();
+        assert_eq!(artifacts.len(), 1, "pi ships exactly one artifact");
+        assert_eq!(artifacts[0].file_name(), "tapes-gateway.ts");
+
+        // And a harness captured by redirection alone reaches none — an
+        // installer must be able to tell "nothing to do" from "not found".
+        assert!(
+            find("claude")
+                .expect("registered")
+                .plugin_artifacts()
+                .is_empty()
+        );
     }
 
     /// A harness declaring a transcript tree must be able to name it, or the
