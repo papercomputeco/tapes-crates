@@ -365,6 +365,31 @@ pub fn supported_agents() -> Vec<&'static str> {
 mod tests {
     use super::*;
 
+    /// Two harnesses whose User-Agent rules can both match one request would
+    /// make [`for_user_agent`] order-dependent — today only Claude declares a
+    /// prefix, and this pins that any future prefix stays disjoint: for two
+    /// prefixes, "disjoint" means neither may be a prefix of the other, since
+    /// any UA matching the longer necessarily matches the shorter.
+    #[test]
+    fn user_agent_rules_are_pairwise_disjoint() {
+        let prefixes: Vec<&str> = REGISTRY
+            .iter()
+            .filter_map(|harness| match harness.user_agent() {
+                UserAgentMatch::Prefix(prefix) => Some(prefix),
+                UserAgentMatch::None => None,
+            })
+            .collect();
+        for (i, a) in prefixes.iter().enumerate() {
+            for b in prefixes.iter().skip(i + 1) {
+                assert!(
+                    !a.starts_with(b) && !b.starts_with(a),
+                    "User-Agent prefixes {a:?} and {b:?} overlap; \
+                     for_user_agent would resolve by registry order"
+                );
+            }
+        }
+    }
+
     /// Two harnesses answering to one name would make [`find`] order-dependent
     /// — the failure mode a registry exists to prevent.
     #[test]
