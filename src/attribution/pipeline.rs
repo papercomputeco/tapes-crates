@@ -224,14 +224,16 @@ impl ForkParentCache {
             None => None,
             Some(ForkParentEntry::Parent(parent)) => Some(Some(parent.clone())),
             Some(ForkParentEntry::PermanentlyNone) => Some(None),
-            Some(ForkParentEntry::Negative { first, last_probe }) => {
-                if first.elapsed() >= NEGATIVE_GIVE_UP {
-                    entries.insert(sid.to_owned(), ForkParentEntry::PermanentlyNone);
-                    Some(None)
-                } else if last_probe.elapsed() < NEGATIVE_RETRY_INTERVAL {
+            Some(ForkParentEntry::Negative { last_probe, .. }) => {
+                // Hardening happens in `insert`, AFTER a probe — never here.
+                // If it happened on expiry alone, a window that lapses
+                // between probes would go permanent without one final look,
+                // and a transcript appearing in that last interval would
+                // stay undiscovered forever.
+                if last_probe.elapsed() < NEGATIVE_RETRY_INTERVAL {
                     Some(None)
                 } else {
-                    None // interval elapsed: let the caller re-probe
+                    None // interval elapsed: let the caller (re-)probe
                 }
             }
         }
@@ -251,6 +253,12 @@ impl ForkParentCache {
                     Some(ForkParentEntry::Negative { first, .. }) => *first,
                     _ => Instant::now(),
                 };
+                if first.elapsed() >= NEGATIVE_GIVE_UP {
+                    // This probe ran past the give-up window and still
+                    // missed — the guaranteed final look. Harden.
+                    entries.insert(sid, ForkParentEntry::PermanentlyNone);
+                    return;
+                }
                 entries.insert(
                     sid,
                     ForkParentEntry::Negative {
@@ -1150,14 +1158,31 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn negative_fork_parent_cache_gives_up_eventually() {
+    async fn negative_fork_parent_cache_gives_up_only_after_a_final_probe() {
         let cache = ForkParentCache::new();
         cache.insert("sid".into(), None);
         tokio::time::advance(NEGATIVE_GIVE_UP + Duration::from_secs(1)).await;
-        // Past the give-up window the negative hardens: answered, no re-probe.
-        assert_eq!(cache.get("sid"), Some(None));
+        // The window lapsed between probes: the cache must grant ONE final
+        // probe rather than hardening on expiry alone — a transcript that
+        // appeared during the last interval is still discoverable here.
+        assert_eq!(cache.get("sid"), None);
+        // The final probe found it late: lineage recovered, permanent.
+        cache.insert("sid".into(), Some("parent".into()));
+        assert_eq!(cache.get("sid"), Some(Some("parent".into())));
+
+        // And when the final probe also misses, THEN it hardens.
+        let done = ForkParentCache::new();
+        done.insert("done".into(), None);
+        tokio::time::advance(NEGATIVE_GIVE_UP + Duration::from_secs(1)).await;
+        assert_eq!(done.get("done"), None);
+        done.insert("done".into(), None);
+        assert_eq!(done.get("done"), Some(None));
         tokio::time::advance(NEGATIVE_RETRY_INTERVAL * 5).await;
-        assert_eq!(cache.get("sid"), Some(None));
+        assert_eq!(
+            done.get("done"),
+            Some(None),
+            "hardened after the final probe missed"
+        );
     }
 
     // --- envelopes -------------------------------------------------------
