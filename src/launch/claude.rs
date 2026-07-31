@@ -16,8 +16,9 @@ use super::{LaunchError, LaunchPlan, LaunchRecipe, ProxyEndpoint};
 /// value, which is why [`ProxyEndpoint`] trims trailing slashes.
 pub const ANTHROPIC_BASE_URL_ENV: &str = "ANTHROPIC_BASE_URL";
 
-/// The `X-Tapes-Harness-Id` value for Claude Code traffic.
-const HARNESS_ID: &str = crate::envelope::HARNESS_ID_CLAUDE;
+/// The `X-Tapes-Harness-Id` value for Claude Code traffic, taken from the
+/// registry so the recipe and the declaration cannot disagree.
+const HARNESS_ID: &str = crate::harness::CLAUDE.id();
 
 /// Launch Claude Code against a capture proxy.
 ///

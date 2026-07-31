@@ -483,12 +483,13 @@ impl Attributed {
 /// casing all qualify; non-Claude callers (curl health probes, OpenAI SDKs) do
 /// not. It is a **prefix** test, not a substring test — `some-claude-like` must
 /// not match.
+///
+/// The rule itself is declared once in [`crate::harness::CLAUDE`]; this stays
+/// as the named entry point the lane and its tests read, and so that a
+/// consumer already calling it keeps working.
 #[must_use]
 pub fn ua_matches_claude(ua: &str) -> bool {
-    // `eq_ignore_ascii_case` only matches whole strings, so compare a
-    // lower-case copy. A UA is ~200 bytes in practice; the allocation is
-    // negligible against the per-request work that follows.
-    ua.to_ascii_lowercase().starts_with("claude")
+    crate::harness::CLAUDE.matches_user_agent(ua)
 }
 
 /// Attribute one request.

@@ -46,12 +46,9 @@ use snafu::ResultExt;
 
 use super::{ConfigFile, LaunchError, LaunchPlan, LaunchRecipe, ProxyEndpoint, launch_error};
 
-/// The `X-Tapes-Harness-Id` value for opencode traffic.
-///
-/// Not yet a named constant in [`crate::envelope`] — opencode capture arrives
-/// with the standalone client — so it is spelled here and will move once the
-/// envelope gains the constant.
-const HARNESS_ID: &str = "opencode";
+/// The `X-Tapes-Harness-Id` value for opencode traffic, taken from the
+/// registry so the recipe and the declaration cannot disagree.
+const HARNESS_ID: &str = crate::harness::OPENCODE.id();
 
 /// The environment variable whose relocation redirects opencode's config lookup.
 ///
