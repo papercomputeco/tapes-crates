@@ -245,12 +245,18 @@ impl ForkParentCache {
             }
             None => {
                 let first = match entries.get(&sid) {
+                    // A found parent is immutable lineage: a slower
+                    // concurrent probe that missed must never erase it.
+                    Some(ForkParentEntry::Parent(_)) => return,
                     Some(ForkParentEntry::Negative { first, .. }) => *first,
                     _ => Instant::now(),
                 };
                 entries.insert(
                     sid,
-                    ForkParentEntry::Negative { first, last_probe: Instant::now() },
+                    ForkParentEntry::Negative {
+                        first,
+                        last_probe: Instant::now(),
+                    },
                 );
             }
         }
@@ -1129,6 +1135,17 @@ mod tests {
         assert_eq!(cache.get("sid"), None);
         // The re-probe finds the parent late: permanent from here.
         cache.insert("sid".into(), Some("parent".into()));
+        assert_eq!(cache.get("sid"), Some(Some("parent".into())));
+    }
+
+    // Two concurrent probes race: the winner finds the parent, the loser
+    // misses. The miss must never erase the found parent — lineage is
+    // immutable once discovered.
+    #[tokio::test(start_paused = true)]
+    async fn negative_insert_never_erases_a_found_parent() {
+        let cache = ForkParentCache::new();
+        cache.insert("sid".into(), Some("parent".into()));
+        cache.insert("sid".into(), None);
         assert_eq!(cache.get("sid"), Some(Some("parent".into())));
     }
 
