@@ -12,9 +12,46 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use http::HeaderMap;
 use serde::Deserialize;
 use time::OffsetDateTime;
 use tracing::warn;
+
+/// Request headers naming the rollout a Codex request belongs to, in priority
+/// order — first present wins.
+///
+/// Codex stamps both on every inference request. On a main-thread turn they
+/// are equal. On a turn made by a spawned subagent they are **not**:
+/// `thread-id` is the child thread's own rollout id, while `session-id` stays
+/// pinned to the root session (the child additionally carries
+/// `x-codex-parent-thread-id` equal to that root). The order therefore matters
+/// — reading `session-id` first would attribute every subagent turn to the
+/// parent, which is precisely the misattribution this list exists to prevent.
+///
+/// This is harness knowledge, so it lives here rather than in each capture
+/// client, mirroring [`crate::envelope::HARNESS_THREAD_ID_HEADERS`]. Both
+/// names are unprefixed and so are in principle claimable by another harness;
+/// that is harmless here because the value is only ever used as an *exact*
+/// match against a live rollout's own session id, and a non-match refuses
+/// rather than guesses.
+pub const CODEX_ROLLOUT_ID_HEADERS: &[&str] = &["thread-id", "session-id"];
+
+/// Resolve the id of the rollout a Codex request belongs to.
+///
+/// Returns `None` for a request carrying neither header — an older Codex, or a
+/// different client speaking the same protocol. Callers must treat that as
+/// "no evidence", not as "no match": see
+/// [`crate::attribution::RequestFacts::codex_rollout_id`].
+#[must_use]
+pub fn rollout_id(headers: &HeaderMap) -> Option<&str> {
+    CODEX_ROLLOUT_ID_HEADERS.iter().find_map(|name| {
+        headers
+            .get(*name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexSessionFile {

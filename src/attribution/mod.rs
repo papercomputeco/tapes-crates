@@ -29,6 +29,9 @@
 //! * [`codex_session`] / [`codex_process`] / [`codex_watcher`] — the Codex
 //!   equivalents, which recover identity from the rollout file a live `codex`
 //!   process holds open rather than from a sessions directory.
+//!   [`codex_session::rollout_id`] additionally reads, off the request, which
+//!   of those rollouts the request belongs to — the only thing that separates
+//!   a subagent's thread from its parent's inside a single `codex` process.
 //!
 //! Every lookup here is best-effort and time-budgeted: an absent field means
 //! "unknown", never a sentinel. A capture client that cannot attribute a
@@ -46,7 +49,9 @@ pub mod watcher;
 
 pub use claude_session::{ClaudeSessionFile, default_sessions_dir};
 pub use codex_process::open_jsonl_sessions_by_pid;
-pub use codex_session::CodexSessionFile;
+pub use codex_session::{
+    CODEX_ROLLOUT_ID_HEADERS, CodexSessionFile, rollout_id as codex_rollout_id,
+};
 pub use codex_watcher::{
     CodexWatcherSnapshot, Snapshot as CodexWatcherSnapshotHandle, spawn as spawn_codex_watcher,
 };

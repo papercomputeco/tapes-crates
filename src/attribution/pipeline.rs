@@ -24,6 +24,24 @@
 //!   no marker was supplied — fall back to a single recent session. A miss
 //!   yields [`Attributed::Undecided`].
 //!
+//! ## Threads inside one Codex process
+//!
+//! Neither the marker nor the PID identifies a *thread*. A `codex` running
+//! subagents is one process, launched once, holding the parent rollout and
+//! every child rollout open simultaneously — so both lanes can legitimately
+//! see several live sessions at once, and any tie-break among them attaches a
+//! turn to whichever thread flushed last. The request itself is the only thing
+//! that knows: Codex stamps the id of the rollout it belongs to on every
+//! inference call ([`codex_session::rollout_id`]), which the consumer passes as
+//! [`RequestFacts::codex_rollout_id`]. Both lanes narrow by it first and treat
+//! "the request named a rollout that is not among these" as a refusal.
+//!
+//! Where that evidence is absent and several live sessions remain, both lanes
+//! now refuse rather than guess, matching the recent-session fallback. The
+//! asymmetry is deliberate and is the same one the whole Codex lane is built
+//! on: a missed attribution heals when the transcript is reconciled, while a
+//! wrong one is permanent and silently corrupts a subagent family's shape.
+//!
 //! ## Why the two misses differ
 //!
 //! [`Attributed::UnknownHarness`] emits an envelope that says "harness
@@ -316,6 +334,19 @@ pub struct RequestFacts<'a> {
     /// Value of the consumer's Codex attribution marker header, if present and
     /// non-blank. The *name* of that header is the consumer's business.
     pub codex_marker: Option<&'a str>,
+    /// The id of the rollout this Codex request says it belongs to, as
+    /// resolved by [`codex_session::rollout_id`].
+    ///
+    /// Unlike [`Self::codex_marker`], the header names here are *harness*
+    /// knowledge and so are the crate's — a consumer should pass
+    /// `codex_session::rollout_id(request.headers())` rather than pick its
+    /// own. This is the only per-request evidence that distinguishes threads
+    /// within one Codex process, and without it a subagent family is
+    /// indistinguishable by PID alone.
+    ///
+    /// `None` means *no evidence*, which leaves the pre-existing conservative
+    /// policy in force. It never means "matches nothing".
+    pub codex_rollout_id: Option<&'a str>,
     /// Whether the consumer's routing says this request is Codex traffic.
     pub codex_route: bool,
 }
@@ -597,7 +628,10 @@ fn attribute_codex_once(
             .copied()
             .filter(|session| session.has_model_provider(marker))
             .collect();
-        if let Some(session) = marker_match(matches.into_iter().cloned().collect()) {
+        if let Some(session) = marker_match(
+            facts.codex_rollout_id,
+            matches.into_iter().cloned().collect(),
+        ) {
             return Some(session);
         }
     }
@@ -609,7 +643,7 @@ fn attribute_codex_once(
         .filter_map(|path| codex_session::read(&path))
         .filter(|session| is_live_candidate(session, config, cutoff))
         .collect();
-    unique_or_newest("peer-open-file", matches)
+    peer_match(facts.codex_rollout_id, matches)
 }
 
 /// Last resort: exactly one recent session of ours, or nothing.
@@ -651,20 +685,63 @@ fn is_live_candidate(
         && session.modified_at.is_some_and(|ts| ts >= cutoff)
 }
 
-/// Resolve a candidate set that matched on positive evidence.
+/// Narrow a candidate set to the rollout the request itself names.
 ///
-/// Unlike [`attribute_recent_codex`], ties here are broken rather than
-/// refused: every candidate matched the marker or was held open by the calling
-/// PID, so the most recently modified one is the live session and the others
-/// are stale files that happen to share the evidence.
-/// Resolve marker matches. The marker is fresh per launch BY CONTRACT, so
-/// several live files may only legitimately share one when they belong to the
-/// same session (rollout rotation) — newest wins there. Two DISTINCT live
-/// sessions sharing a marker means a consumer reused a provider id across
-/// concurrent processes; picking the newest would silently attach one
-/// process's traffic to the other's session, so the marker lane refuses and
-/// attribution falls through to peer-PID evidence (or stays undecided).
-fn marker_match(candidates: Vec<CodexSessionFile>) -> Option<CodexSessionFile> {
+/// This is the only evidence that separates *threads* inside one Codex
+/// process. A `codex` running subagents holds the parent rollout and every
+/// child rollout open at once and stamps each request with the id of the
+/// rollout it belongs to, so an exact match against each candidate's own
+/// session id is a decision rather than a guess.
+///
+/// Returns `None` — refuse — when the request named a rollout and none of the
+/// candidates are it. The request is authoritative about its own identity, so
+/// "not one of these" is information, not a reason to fall back to a tie-break
+/// over the others. Returns the set untouched when there is no evidence to
+/// apply, leaving each lane's own policy in force.
+fn narrow_by_rollout_id(
+    rollout_id: Option<&str>,
+    candidates: Vec<CodexSessionFile>,
+) -> Option<Vec<CodexSessionFile>> {
+    let Some(rollout_id) = rollout_id else {
+        return Some(candidates);
+    };
+    if candidates.is_empty() {
+        // Nothing to disagree with yet — the rollout may still be appearing on
+        // disk, and the caller's bounded poll is what waits for it.
+        return Some(candidates);
+    }
+    let selected: Vec<CodexSessionFile> = candidates
+        .iter()
+        .filter(|session| session.session_id == rollout_id)
+        .cloned()
+        .collect();
+    if selected.is_empty() {
+        let refs: Vec<&CodexSessionFile> = candidates.iter().collect();
+        warn!(
+            rollout_id,
+            count = candidates.len(),
+            sample = ?sample_of(&refs),
+            "codex-session: the request names a rollout none of the live candidates \
+             are; refusing to guess",
+        );
+        return None;
+    }
+    Some(selected)
+}
+
+/// Resolve a candidate set down to one session, refusing on ambiguity.
+///
+/// Several files sharing ONE session id are rollout rotation — newest wins,
+/// since they are the same session either way. Several DISTINCT live sessions
+/// mean the evidence that produced this set does not actually identify a
+/// single session, and picking the newest would attach this request to
+/// whichever thread happened to flush last. A missed attribution heals through
+/// transcript reconciliation; a wrong one is permanent, so refuse.
+fn one_live_session_or_refuse(
+    reason: &str,
+    detail: &str,
+    candidates: Vec<CodexSessionFile>,
+) -> Option<CodexSessionFile> {
     let mut ids: Vec<&str> = candidates
         .iter()
         .map(|session| session.session_id.as_str())
@@ -674,16 +751,66 @@ fn marker_match(candidates: Vec<CodexSessionFile>) -> Option<CodexSessionFile> {
     if ids.len() > 1 {
         let refs: Vec<&CodexSessionFile> = candidates.iter().collect();
         warn!(
+            reason,
             count = candidates.len(),
             sample = ?sample_of(&refs),
-            "codex-session: marker shared by multiple LIVE sessions — a consumer \
-             reused a provider id across concurrent processes; refusing to guess",
+            "codex-session: {detail}; refusing to guess",
         );
         return None;
     }
-    unique_or_newest("marker", candidates)
+    unique_or_newest(reason, candidates)
 }
 
+/// Resolve marker matches. The marker is fresh per launch BY CONTRACT, so
+/// several live files may only legitimately share one when they belong to the
+/// same session (rollout rotation) — newest wins there. Two DISTINCT live
+/// sessions sharing a marker means either a consumer reused a provider id
+/// across concurrent processes or one process is running subagents; picking
+/// the newest would silently attach one thread's traffic to the other's
+/// session. The request's own rollout id settles it when present; otherwise
+/// the marker lane refuses and attribution falls through to peer-PID evidence
+/// (or stays undecided).
+fn marker_match(
+    rollout_id: Option<&str>,
+    candidates: Vec<CodexSessionFile>,
+) -> Option<CodexSessionFile> {
+    let candidates = narrow_by_rollout_id(rollout_id, candidates)?;
+    one_live_session_or_refuse(
+        "marker",
+        "marker shared by multiple LIVE sessions and the request named no rollout",
+        candidates,
+    )
+}
+
+/// Resolve the rollouts one PID holds open.
+///
+/// The lane's original premise was that a `codex` process holds exactly one
+/// live rollout and any others are stale files, which made newest-wins safe.
+/// Subagents break that premise: the parent rollout and every child rollout
+/// are open at once and ALL are live, so newest-wins attaches a turn to
+/// whichever thread wrote last. The request's own rollout id distinguishes
+/// them; without it, several live sessions under one PID are simply ambiguous.
+fn peer_match(
+    rollout_id: Option<&str>,
+    candidates: Vec<CodexSessionFile>,
+) -> Option<CodexSessionFile> {
+    let candidates = narrow_by_rollout_id(rollout_id, candidates)?;
+    one_live_session_or_refuse(
+        "peer-open-file",
+        "one process holds multiple LIVE rollouts open (a subagent family) and the \
+         request named no rollout",
+        candidates,
+    )
+}
+
+/// Collapse candidates that are already known to be ONE session.
+///
+/// Every caller reaches this through [`one_live_session_or_refuse`], which has
+/// already established that the set holds at most one distinct session id, so
+/// a tie here is rollout rotation and newest-wins is a choice between files
+/// rather than between sessions. Do not call this directly on a set whose
+/// session ids have not been checked — that is the newest-wins guess this lane
+/// used to make.
 fn unique_or_newest(reason: &str, candidates: Vec<CodexSessionFile>) -> Option<CodexSessionFile> {
     match candidates.as_slice() {
         [] => None,
@@ -694,7 +821,8 @@ fn unique_or_newest(reason: &str, candidates: Vec<CodexSessionFile>) -> Option<C
                 reason,
                 count = candidates.len(),
                 sample = ?sample_of(&refs),
-                "codex-session: multiple exact matches; using most recently modified session",
+                "codex-session: one session across multiple rollout files; \
+                 using most recently modified",
             );
             candidates
                 .into_iter()
@@ -1099,24 +1227,24 @@ mod tests {
     }
 
     #[test]
-    fn marker_ties_break_to_the_most_recently_modified() {
-        // Positive evidence on both, unlike the recent-session fallback: the
-        // stale duplicate is a leftover file with the same provider.
-        let older = codex_file("older", "paper-openai", time::Duration::minutes(5));
-        let newer = codex_file("newer", "paper-openai", time::Duration::seconds(5));
+    fn rotation_ties_break_to_the_most_recently_modified() {
+        // One session, two rollout files: a choice between FILES, which is the
+        // only tie `unique_or_newest` is still allowed to see.
+        let older = codex_file("sid-a", "paper-openai", time::Duration::minutes(5));
+        let newer = codex_file("sid-a", "paper-openai", time::Duration::seconds(5));
         let got = unique_or_newest("marker", vec![older, newer]);
-        assert_eq!(got.map(|s| s.session_id), Some("newer".to_owned()));
+        assert_eq!(got.map(|s| s.session_id), Some("sid-a".to_owned()));
     }
 
     // A marker is fresh per launch by contract; two DISTINCT live sessions
     // sharing one means a consumer reused a provider id across concurrent
-    // processes. Guessing (newest) would attach one process's traffic to the
-    // other's session — the marker lane must refuse instead.
+    // processes, or one process is running subagents. Guessing (newest) would
+    // attach one thread's traffic to the other's session — refuse instead.
     #[test]
     fn marker_shared_by_distinct_live_sessions_refuses() {
         let a = codex_file("sid-a", "tapesctl-openai-x", time::Duration::minutes(1));
         let b = codex_file("sid-b", "tapesctl-openai-x", time::Duration::minutes(2));
-        assert!(marker_match(vec![a, b]).is_none());
+        assert!(marker_match(None, vec![a, b]).is_none());
     }
 
     // Same session, several rollout files (rotation): newest wins as before.
@@ -1124,8 +1252,130 @@ mod tests {
     fn marker_same_session_rotation_picks_newest() {
         let older = codex_file("sid-a", "tapesctl-openai-x", time::Duration::minutes(9));
         let newer = codex_file("sid-a", "tapesctl-openai-x", time::Duration::minutes(1));
-        let got = marker_match(vec![older, newer]).expect("same-session rotation resolves");
+        let got = marker_match(None, vec![older, newer]).expect("same-session rotation resolves");
         assert_eq!(got.session_id, "sid-a");
+    }
+
+    // --- PCC-1059: thread-aware peer-lane disambiguation -----------------
+
+    /// The reported scenario: ONE `codex` process running subagents holds the
+    /// parent rollout and each child rollout open at once, so the peer-PID lane
+    /// legitimately sees several LIVE sessions. Newest-wins here attached a
+    /// turn to whichever thread flushed last.
+    fn subagent_family() -> Vec<CodexSessionFile> {
+        vec![
+            // The parent, quiet while the children work.
+            codex_file("sid-parent", "paper-openai", time::Duration::seconds(30)),
+            codex_file("sid-child-a", "paper-openai", time::Duration::seconds(20)),
+            // Whichever child wrote last is what newest-wins would return.
+            codex_file("sid-child-b", "paper-openai", time::Duration::seconds(1)),
+        ]
+    }
+
+    #[test]
+    fn peer_lane_selects_the_thread_the_request_names_not_the_newest() {
+        // The parent's own turn, arriving while a child is mid-write. The
+        // request names `sid-parent`; newest-wins would have said `sid-child-b`.
+        let got = peer_match(Some("sid-parent"), subagent_family())
+            .expect("the named rollout is right there among the candidates");
+        assert_eq!(got.session_id, "sid-parent");
+    }
+
+    #[test]
+    fn peer_lane_selects_a_child_thread_over_a_newer_sibling() {
+        let got = peer_match(Some("sid-child-a"), subagent_family())
+            .expect("a child thread is selectable by its own rollout id");
+        assert_eq!(got.session_id, "sid-child-a");
+    }
+
+    #[test]
+    fn peer_lane_refuses_a_live_subagent_family_with_no_thread_evidence() {
+        // No rollout id on the request (an older Codex, or a consumer that has
+        // not wired it up). Several LIVE sessions under one PID is exactly the
+        // ambiguity the marker lane already refuses; the peer lane kept
+        // newest-wins only because its stale-duplicate premise predates
+        // subagents.
+        assert!(peer_match(None, subagent_family()).is_none());
+    }
+
+    #[test]
+    fn peer_lane_refuses_when_the_named_rollout_is_not_among_the_candidates() {
+        // The request is authoritative about its own identity: "none of these"
+        // is information, not a licence to tie-break over the rest.
+        assert!(peer_match(Some("sid-elsewhere"), subagent_family()).is_none());
+    }
+
+    #[test]
+    fn a_lone_rollout_still_attributes_without_thread_evidence() {
+        // The overwhelmingly common single-threaded case must not regress into
+        // a refusal just because evidence is absent.
+        let sole = vec![codex_file(
+            "sid-sole",
+            "paper-openai",
+            time::Duration::seconds(5),
+        )];
+        let got = peer_match(None, sole).expect("one live rollout is unambiguous");
+        assert_eq!(got.session_id, "sid-sole");
+    }
+
+    #[test]
+    fn thread_evidence_still_collapses_rotation_of_the_named_session() {
+        // Two files, one named session: a choice between files, not sessions.
+        let older = codex_file("sid-child-a", "paper-openai", time::Duration::minutes(4));
+        let newer = codex_file("sid-child-a", "paper-openai", time::Duration::seconds(2));
+        let noise = codex_file("sid-parent", "paper-openai", time::Duration::seconds(1));
+        let got = peer_match(Some("sid-child-a"), vec![older, newer, noise])
+            .expect("rotation of the named session resolves");
+        assert_eq!(got.session_id, "sid-child-a");
+    }
+
+    #[test]
+    fn an_empty_candidate_set_is_a_miss_not_a_refusal() {
+        // The rollout may still be appearing on disk; the caller's bounded poll
+        // is what waits for it, so this must stay a plain miss.
+        assert!(peer_match(Some("sid-parent"), Vec::new()).is_none());
+        assert!(narrow_by_rollout_id(Some("sid-parent"), Vec::new()).is_some());
+    }
+
+    #[test]
+    fn the_marker_lane_is_thread_aware_too() {
+        // A marked launch running subagents: every rollout in the family shares
+        // the launch's provider id, so the marker alone cannot separate them
+        // and would refuse. The request's rollout id settles it.
+        let got = marker_match(Some("sid-child-b"), subagent_family())
+            .expect("thread evidence resolves what the marker cannot");
+        assert_eq!(got.session_id, "sid-child-b");
+    }
+
+    #[test]
+    fn rollout_id_prefers_the_thread_over_the_root_session() {
+        // On a subagent turn Codex sends BOTH: `session-id` stays pinned to the
+        // root while `thread-id` is the child's own rollout. Reading
+        // `session-id` first would attribute every subagent turn to the parent.
+        let mut headers = http::HeaderMap::new();
+        headers.insert("session-id", http::HeaderValue::from_static("sid-parent"));
+        headers.insert("thread-id", http::HeaderValue::from_static("sid-child-a"));
+        assert_eq!(codex_session::rollout_id(&headers), Some("sid-child-a"));
+    }
+
+    #[test]
+    fn rollout_id_falls_back_to_the_session_when_no_thread_is_named() {
+        // A main-thread turn on a Codex build that omits `thread-id`.
+        let mut headers = http::HeaderMap::new();
+        headers.insert("session-id", http::HeaderValue::from_static("sid-parent"));
+        assert_eq!(codex_session::rollout_id(&headers), Some("sid-parent"));
+    }
+
+    #[test]
+    fn rollout_id_treats_a_blank_header_as_absent() {
+        // Absent must mean "no evidence", never "matches nothing" — a blank
+        // value that reached the matcher would refuse every candidate.
+        let mut headers = http::HeaderMap::new();
+        headers.insert("thread-id", http::HeaderValue::from_static("  "));
+        headers.insert("session-id", http::HeaderValue::from_static("sid-parent"));
+        assert_eq!(codex_session::rollout_id(&headers), Some("sid-parent"));
+
+        assert_eq!(codex_session::rollout_id(&http::HeaderMap::new()), None);
     }
 
     // A transient miss must not become permanent: the first requests of a
