@@ -118,6 +118,13 @@ pub const HARNESS_ID_CLAUDE: &str = "claude";
 /// Harness-id attached for Codex traffic.
 pub const HARNESS_ID_CODEX: &str = "codex";
 
+/// Harness-id attached for opencode traffic.
+///
+/// opencode capture arrives with the standalone client; the constant lives
+/// here with the others so [`crate::harness`] has one place to take every id
+/// from, rather than the launch recipe spelling its own.
+pub const HARNESS_ID_OPENCODE: &str = "opencode";
+
 /// Maximum total budget across all `X-Tapes-*` headers.
 /// Metadata is dropped first when the budget is exceeded; the other
 /// headers are small (UUIDs and paths) and stay.

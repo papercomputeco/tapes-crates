@@ -48,8 +48,9 @@ use std::path::PathBuf;
 
 use super::{LaunchError, LaunchPlan, LaunchRecipe, ProxyEndpoint, launch_error};
 
-/// The `X-Tapes-Harness-Id` value for Codex traffic.
-const HARNESS_ID: &str = crate::envelope::HARNESS_ID_CODEX;
+/// The `X-Tapes-Harness-Id` value for Codex traffic, taken from the registry
+/// so the recipe and the declaration cannot disagree.
+const HARNESS_ID: &str = crate::harness::CODEX.id();
 
 /// The environment variable Codex reads its provider API key from, and the value
 /// a custom provider's `env_key` should name.
