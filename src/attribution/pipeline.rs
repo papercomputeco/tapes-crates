@@ -181,8 +181,27 @@ impl AttributionConfig {
 /// session would re-scan.
 #[derive(Debug, Default)]
 pub struct ForkParentCache {
-    entries: Mutex<HashMap<String, Option<String>>>,
+    entries: Mutex<HashMap<String, ForkParentEntry>>,
 }
+
+/// A cached discovery outcome. A found parent is permanent (transcripts are
+/// append-only; lineage does not change). A miss is NOT: the first requests
+/// of a session race the transcript's appearance on disk, so a negative is
+/// retried on a short interval until a give-up window closes, and only then
+/// becomes permanent.
+#[derive(Debug, Clone)]
+enum ForkParentEntry {
+    Parent(String),
+    Negative { first: Instant, last_probe: Instant },
+    PermanentlyNone,
+}
+
+/// How often a cached negative is re-probed while the give-up window is open.
+const NEGATIVE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+/// How long a session's parent may keep being re-probed after the first miss.
+/// Covers the transcript-appearance race at session start without scanning
+/// forever for the (majority) sessions that genuinely have no parent.
+const NEGATIVE_GIVE_UP: Duration = Duration::from_secs(30);
 
 impl ForkParentCache {
     /// An empty cache.
@@ -191,23 +210,50 @@ impl ForkParentCache {
         Self::default()
     }
 
+    /// Returns `Some(outcome)` when the cache answers, `None` when the
+    /// caller should (re-)discover. A cached negative answers only while its
+    /// retry interval has not elapsed; past the give-up window it hardens
+    /// into a permanent negative.
     fn get(&self, sid: &str) -> Option<Option<String>> {
         // `PoisonError::into_inner` recovers the guard even if a prior holder
         // panicked. The cache is best-effort and memory-only, so the worst
         // case from a poisoned read is one redundant discovery — much cheaper
         // than failing the request.
-        self.entries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(sid)
-            .cloned()
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        match entries.get(sid) {
+            None => None,
+            Some(ForkParentEntry::Parent(parent)) => Some(Some(parent.clone())),
+            Some(ForkParentEntry::PermanentlyNone) => Some(None),
+            Some(ForkParentEntry::Negative { first, last_probe }) => {
+                if first.elapsed() >= NEGATIVE_GIVE_UP {
+                    entries.insert(sid.to_owned(), ForkParentEntry::PermanentlyNone);
+                    Some(None)
+                } else if last_probe.elapsed() < NEGATIVE_RETRY_INTERVAL {
+                    Some(None)
+                } else {
+                    None // interval elapsed: let the caller re-probe
+                }
+            }
+        }
     }
 
     fn insert(&self, sid: String, parent: Option<String>) {
-        self.entries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(sid, parent);
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        match parent {
+            Some(parent) => {
+                entries.insert(sid, ForkParentEntry::Parent(parent));
+            }
+            None => {
+                let first = match entries.get(&sid) {
+                    Some(ForkParentEntry::Negative { first, .. }) => *first,
+                    _ => Instant::now(),
+                };
+                entries.insert(
+                    sid,
+                    ForkParentEntry::Negative { first, last_probe: Instant::now() },
+                );
+            }
+        }
     }
 }
 
@@ -537,7 +583,7 @@ fn attribute_codex_once(
             .copied()
             .filter(|session| session.has_model_provider(marker))
             .collect();
-        if let Some(session) = unique_or_newest("marker", matches.into_iter().cloned().collect()) {
+        if let Some(session) = marker_match(matches.into_iter().cloned().collect()) {
             return Some(session);
         }
     }
@@ -597,6 +643,33 @@ fn is_live_candidate(
 /// refused: every candidate matched the marker or was held open by the calling
 /// PID, so the most recently modified one is the live session and the others
 /// are stale files that happen to share the evidence.
+/// Resolve marker matches. The marker is fresh per launch BY CONTRACT, so
+/// several live files may only legitimately share one when they belong to the
+/// same session (rollout rotation) — newest wins there. Two DISTINCT live
+/// sessions sharing a marker means a consumer reused a provider id across
+/// concurrent processes; picking the newest would silently attach one
+/// process's traffic to the other's session, so the marker lane refuses and
+/// attribution falls through to peer-PID evidence (or stays undecided).
+fn marker_match(candidates: Vec<CodexSessionFile>) -> Option<CodexSessionFile> {
+    let mut ids: Vec<&str> = candidates
+        .iter()
+        .map(|session| session.session_id.as_str())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.len() > 1 {
+        let refs: Vec<&CodexSessionFile> = candidates.iter().collect();
+        warn!(
+            count = candidates.len(),
+            sample = ?sample_of(&refs),
+            "codex-session: marker shared by multiple LIVE sessions — a consumer \
+             reused a provider id across concurrent processes; refusing to guess",
+        );
+        return None;
+    }
+    unique_or_newest("marker", candidates)
+}
+
 fn unique_or_newest(reason: &str, candidates: Vec<CodexSessionFile>) -> Option<CodexSessionFile> {
     match candidates.as_slice() {
         [] => None,
@@ -1019,6 +1092,55 @@ mod tests {
         let newer = codex_file("newer", "paper-openai", time::Duration::seconds(5));
         let got = unique_or_newest("marker", vec![older, newer]);
         assert_eq!(got.map(|s| s.session_id), Some("newer".to_owned()));
+    }
+
+    // A marker is fresh per launch by contract; two DISTINCT live sessions
+    // sharing one means a consumer reused a provider id across concurrent
+    // processes. Guessing (newest) would attach one process's traffic to the
+    // other's session — the marker lane must refuse instead.
+    #[test]
+    fn marker_shared_by_distinct_live_sessions_refuses() {
+        let a = codex_file("sid-a", "tapesctl-openai-x", time::Duration::minutes(1));
+        let b = codex_file("sid-b", "tapesctl-openai-x", time::Duration::minutes(2));
+        assert!(marker_match(vec![a, b]).is_none());
+    }
+
+    // Same session, several rollout files (rotation): newest wins as before.
+    #[test]
+    fn marker_same_session_rotation_picks_newest() {
+        let older = codex_file("sid-a", "tapesctl-openai-x", time::Duration::minutes(9));
+        let newer = codex_file("sid-a", "tapesctl-openai-x", time::Duration::minutes(1));
+        let got = marker_match(vec![older, newer]).expect("same-session rotation resolves");
+        assert_eq!(got.session_id, "sid-a");
+    }
+
+    // A transient miss must not become permanent: the first requests of a
+    // session race the transcript's appearance on disk. Within the give-up
+    // window an elapsed retry interval re-opens discovery; once a parent is
+    // found it sticks.
+    #[tokio::test(start_paused = true)]
+    async fn negative_fork_parent_cache_retries_then_hardens() {
+        let cache = ForkParentCache::new();
+        cache.insert("sid".into(), None);
+        // Immediately after the miss: answered negative, no re-probe storm.
+        assert_eq!(cache.get("sid"), Some(None));
+        // Retry interval elapsed: the cache steps aside for a re-probe.
+        tokio::time::advance(NEGATIVE_RETRY_INTERVAL + Duration::from_millis(10)).await;
+        assert_eq!(cache.get("sid"), None);
+        // The re-probe finds the parent late: permanent from here.
+        cache.insert("sid".into(), Some("parent".into()));
+        assert_eq!(cache.get("sid"), Some(Some("parent".into())));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn negative_fork_parent_cache_gives_up_eventually() {
+        let cache = ForkParentCache::new();
+        cache.insert("sid".into(), None);
+        tokio::time::advance(NEGATIVE_GIVE_UP + Duration::from_secs(1)).await;
+        // Past the give-up window the negative hardens: answered, no re-probe.
+        assert_eq!(cache.get("sid"), Some(None));
+        tokio::time::advance(NEGATIVE_RETRY_INTERVAL * 5).await;
+        assert_eq!(cache.get("sid"), Some(None));
     }
 
     // --- envelopes -------------------------------------------------------
