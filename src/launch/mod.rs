@@ -43,13 +43,14 @@
 //!
 //! # What is deliberately *not* here
 //!
-//! * **pi.** paper's `start pi` arm injects a bundled JavaScript extension via
-//!   `--extension` and points it at the gateway with `PAPER_PI_GATEWAY_URL` /
-//!   `PAPER_GATEWAY_URL` / `PAPER_PI_ACTIVE_SCHEMA`. Both halves of that
-//!   contract are Paper-branded — the extension asset lives in paper's repo and
-//!   the env names carry the product's name — so there is no
-//!   endpoint-parameterized recipe to extract yet. Generalising it means first
-//!   defining a vendor-neutral pi extension contract; that is not this move.
+//! * **A pi recipe.** pi has no base-URL environment knob, so there is nothing
+//!   for a recipe to set: capture needs a JavaScript extension running inside
+//!   the harness. That extension and the environment contract it reads are now
+//!   [`crate::plugin`], vendor-neutral — but installing it and launching pi
+//!   against it are different jobs. A recipe here would additionally have to
+//!   plan the argv that loads an installed extension, and decide whether it
+//!   loads the globally installed copy or a per-launch one. Until it does,
+//!   pi is [`crate::harness::LaunchSupport::ConsumerOwned`].
 //! * **Credential loading.** Which API key to hand a harness, and where it is
 //!   stored, is a consumer concern: paperd passes the user's own credential
 //!   through untouched, while the Go CLI read its own credential store. Recipes

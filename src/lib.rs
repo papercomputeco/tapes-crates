@@ -18,6 +18,10 @@
 //!   harness starts in exactly one place. See `docs/adding-a-harness.md`.
 //! - [`launch`] — per-harness env/config injection to run a harness under a
 //!   capture proxy.
+//! - [`plugin`] — the artifacts a harness with no base-URL knob needs installed
+//!   *into* it before capture is possible at all, and the environment contract
+//!   those artifacts read. Consumers are installers; the bytes live here so
+//!   every client installs the same ones.
 //! - [`attribution`] — session-file reads, fork-parent recovery, peer-PID
 //!   lookup, and the codex session watcher, grouped per harness.
 //! - [`transcript`] — discovering and packaging harness transcripts for the
@@ -50,4 +54,5 @@ pub mod attribution;
 pub mod envelope;
 pub mod harness;
 pub mod launch;
+pub mod plugin;
 pub mod transcript;
