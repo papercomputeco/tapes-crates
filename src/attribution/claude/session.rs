@@ -2,7 +2,7 @@
 //!
 //! The Claude harness writes one of these files per active `claude`
 //! process. paperd reads them to map a peer PID (from
-//! [`super::peer_pid::lookup`]) into the session-identifying metadata
+//! [`crate::attribution::peer_pid::lookup`]) into the session-identifying metadata
 //! that goes onto the outbound `X-Tapes-*` envelope.
 //!
 //! Schema captured 2026-05-20 from a live `claude` install. Fields

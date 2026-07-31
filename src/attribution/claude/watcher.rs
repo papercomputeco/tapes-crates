@@ -5,7 +5,7 @@
 //! path reads it wait-free:
 //!
 //! * `candidate_pids` — the set of PIDs the peer-PID lookup
-//!   ([`super::peer_pid::lookup`]) is restricted to. Restricting keeps
+//!   ([`crate::attribution::peer_pid::lookup`]) is restricted to. Restricting keeps
 //!   the lookup bounded regardless of how busy the system is
 //!   (measured macOS p99 78 µs over a 3-candidate set).
 //! * `pid_metadata` — parsed `~/.claude/sessions/<pid>.json` for each
@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 
-use super::claude_session::{ClaudeSessionFile, read};
+use super::session::{ClaudeSessionFile, read};
 
 /// Combined wait-free snapshot of the candidate-PID set and the
 /// parsed metadata for each candidate. Bundling them under a single
@@ -69,7 +69,7 @@ pub type Snapshot = Arc<ArcSwap<WatcherSnapshot>>;
 /// `ProxyServer::run` so the only caller (`ProxyServer::new`) is fine.
 ///
 /// `sessions_dir` is typically `~/.claude/sessions/` per
-/// [`super::claude_session::default_sessions_dir`]; tests pass a
+/// [`super::session::default_sessions_dir`]; tests pass a
 /// tempdir.
 ///
 /// The initial scan is deliberately inline: `spawn` is called during
@@ -128,7 +128,7 @@ pub fn spawn(sessions_dir: PathBuf) -> Snapshot {
 /// the snapshot until the next poll succeeds.
 ///
 /// Parsing failures for an individual `<pid>.json` (warned by
-/// [`super::claude_session::read`]) drop that PID from the metadata
+/// [`super::session::read`]) drop that PID from the metadata
 /// map but keep it in the candidate set so peer-PID lookup can still
 /// match the socket. The handler treats "PID in candidates, no
 /// metadata" as the cold-race / unknown-harness fallback.

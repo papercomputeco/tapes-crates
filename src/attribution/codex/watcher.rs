@@ -11,7 +11,7 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 use time::OffsetDateTime;
 
-use super::codex_session::{CodexSessionFile, read};
+use super::session::{CodexSessionFile, read};
 
 const RETENTION: time::Duration = time::Duration::hours(24);
 

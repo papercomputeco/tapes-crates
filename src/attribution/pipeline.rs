@@ -83,10 +83,12 @@ use std::sync::{Mutex, PoisonError};
 use tokio::time::{Duration, Instant};
 use tracing::warn;
 
-use super::{
-    Attribution, ClaudeSessionFile, CodexSessionFile, CodexWatcherSnapshotHandle,
-    WatcherSnapshotHandle, codex_session, fork_parent, open_jsonl_sessions_by_pid, peer_pid,
+use super::claude::{ClaudeSessionFile, WatcherSnapshotHandle, fork_parent};
+use super::codex::{
+    CodexSessionFile, CodexWatcherSnapshotHandle, open_jsonl_sessions_by_pid,
+    session as codex_session,
 };
+use super::{Attribution, peer_pid};
 use crate::envelope::TapesAttribution;
 
 /// Default bound on the Claude-lane wait for a freshly-created session file.
