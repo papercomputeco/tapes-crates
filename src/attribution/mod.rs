@@ -8,52 +8,66 @@
 //! `tapesctl start` and `paper start`, so the two capture paths attribute
 //! identically by construction rather than by review.
 //!
-//! Responsibilities:
+//! # Layout
 //!
+//! Harness-specific knowledge lives in a submodule named after its harness;
+//! everything else is shared:
+//!
+//! * [`claude`] — the sessions-directory lane: session file, watcher, and
+//!   fork-parent recovery.
+//! * [`codex`] — the open-rollout lane: `session_meta` reader, per-PID open
+//!   files, and the rollout watcher.
+//! * [`peer_pid`] — harness-agnostic. Maps an accepted loopback connection to
+//!   one of a candidate PID set via per-OS kernel APIs; both lanes use it.
 //! * [`pipeline`] — the composition: [`attribute`] takes one request's facts
-//!   and returns one [`Attributed`] outcome, driving the primitives below in
-//!   the order that was validated against real traffic. Capture clients call
-//!   this; the primitives are exposed for tests and for clients with unusual
-//!   needs. A third re-implementation of this sequence is the design smell
-//!   this module exists to prevent.
-//! * [`watcher`] — polls `~/.claude/sessions/` every 1 s and maintains the
-//!   candidate-PID set and parsed metadata snapshots a request handler reads
-//!   wait-free.
-//! * [`peer_pid`] — maps an accepted loopback connection to one of the
-//!   candidate PIDs via per-OS kernel APIs.
-//! * [`claude_session`] — verbatim shape of `~/.claude/sessions/<pid>.json`
-//!   and its read helper.
-//! * [`fork_parent`] — bounded scan of `~/.claude/projects/<cwd>/*.jsonl` to
-//!   recover fork-parent lineage. Callers are expected to cache the result
-//!   per-sid; discovery is deliberately time-budgeted, not free.
-//! * [`codex_session`] / [`codex_process`] / [`codex_watcher`] — the Codex
-//!   equivalents, which recover identity from the rollout file a live `codex`
-//!   process holds open rather than from a sessions directory.
-//!   [`codex_session::rollout_id`] additionally reads, off the request, which
-//!   of those rollouts the request belongs to — the only thing that separates
-//!   a subagent's thread from its parent's inside a single `codex` process.
+//!   and returns one [`Attributed`] outcome, driving the primitives in the
+//!   order that was validated against real traffic. Capture clients call this;
+//!   the primitives are exposed for tests and for clients with unusual needs.
+//!   A third re-implementation of this sequence is the design smell this
+//!   module exists to prevent.
+//!
+//! The split is not cosmetic: the two harnesses answer "who sent this?" in
+//! fundamentally different ways — Claude publishes a PID-indexed file, Codex
+//! must be inferred from a file a live process holds open — and a flat module
+//! list hid which of the generically-named pieces belonged to which. Which
+//! shape a harness has is declared once in [`crate::harness`]; a harness that
+//! needs neither lane (it attributes itself, like `pi`) contributes no module
+//! here at all.
 //!
 //! Every lookup here is best-effort and time-budgeted: an absent field means
 //! "unknown", never a sentinel. A capture client that cannot attribute a
 //! request still emits a well-formed envelope (see [`crate::envelope`]) — it
 //! just marks the harness `unknown`.
 
-pub mod claude_session;
-pub mod codex_process;
-pub mod codex_session;
-pub mod codex_watcher;
-pub mod fork_parent;
+pub mod claude;
+pub mod codex;
 pub mod peer_pid;
 pub mod pipeline;
-pub mod watcher;
 
-pub use claude_session::{ClaudeSessionFile, default_sessions_dir};
-pub use codex_process::open_jsonl_sessions_by_pid;
-pub use codex_session::{
-    CODEX_ROLLOUT_ID_HEADERS, CodexSessionFile, rollout_id as codex_rollout_id,
-};
-pub use codex_watcher::{
-    CodexWatcherSnapshot, Snapshot as CodexWatcherSnapshotHandle, spawn as spawn_codex_watcher,
+// --- compatibility aliases ---------------------------------------------
+//
+// The pre-reorg flat paths, kept working so a consumer pinning this crate by
+// git rev is not forced to move in lockstep with it. `attribution::watcher`
+// really was the *Claude* watcher despite its generic name — that ambiguity is
+// what the reorg removes, so prefer the canonical spelling on the right in new
+// code.
+
+pub use claude::fork_parent;
+pub use claude::session as claude_session;
+pub use claude::watcher;
+pub use codex::process as codex_process;
+pub use codex::session as codex_session;
+pub use codex::watcher as codex_watcher;
+
+// --- flattened re-exports ----------------------------------------------
+//
+// Unchanged from before the reorg: the names a capture client reaches for
+// most, hoisted so the common case is one `use`.
+
+pub use claude::{ClaudeSessionFile, default_sessions_dir};
+pub use codex::{
+    CODEX_ROLLOUT_ID_HEADERS, CodexSessionFile, CodexWatcherSnapshot, CodexWatcherSnapshotHandle,
+    open_jsonl_sessions_by_pid, rollout_id as codex_rollout_id, spawn_codex_watcher,
 };
 pub use peer_pid::{PeerPidLookup, lookup as peer_pid_lookup};
 pub use pipeline::{

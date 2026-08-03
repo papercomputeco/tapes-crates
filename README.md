@@ -9,18 +9,31 @@ same code runs in both.
 
 Per the "Tapes and Cassettes" design, exactly three places hold harness
 knowledge; this crate is one of them (the tapes deriver and the envelope
-spec/fixtures are the other two). It owns four responsibilities:
+spec/fixtures are the other two). It owns five responsibilities:
 
+- **`harness`** — the registry. One declaration per harness bundles its id,
+  User-Agent rule, launch support, attribution strategy, transcript location,
+  and plugin needs; the other modules take their harness ids from it and
+  consumers derive their supported-agent lists from it.
 - **`launch`** — per-harness env/config injection to run a harness under a
   capture proxy. Recipes are pure: they plan the argv prefix, the environment
   overlay, and any config documents a harness reads from disk, and the consumer
   owns process spawning, materialisation, and cleanup.
 - **`attribution`** — session-file reads, fork-parent recovery, peer-PID
-  lookup, and the Codex session watcher.
+  lookup, and the Codex session watcher, grouped per harness
+  (`attribution/claude/`, `attribution/codex/`) with the harness-agnostic
+  pieces shared.
 - **`transcript`** — discovering and packaging harness transcripts for the
   `POST /v1/ingest/transcript` lane.
 - **`envelope`** — the `X-Tapes-*` header contract that carries attribution
   from any capture transport into ingest.
+
+## Adding a harness
+
+Teaching this crate about a new coding agent starts with one `const` in
+`src/harness.rs`. [`docs/adding-a-harness.md`](docs/adding-a-harness.md) walks
+the whole path: the registry declaration, when a launch recipe is needed, which
+attribution strategy applies, and what the tapes deriver needs on its side.
 
 ## The envelope contract
 
