@@ -190,7 +190,7 @@ impl Deadline {
 }
 
 /// Compute the Claude projects subdirectory for a given cwd. The
-/// harness encodes the cwd by replacing `/` with `-` (e.g. cwd
+/// harness encodes the cwd by replacing `/` and `.` with `-` (e.g. cwd
 /// `/Users/matt` → directory `-Users-matt`). Returns the absolute
 /// path under `~/.claude/projects/`.
 fn projects_dir_for(cwd: &str) -> Option<PathBuf> {
@@ -199,20 +199,24 @@ fn projects_dir_for(cwd: &str) -> Option<PathBuf> {
     Some(home.join(".claude").join("projects").join(encoded))
 }
 
-/// `/foo/bar` → `-foo-bar`. The harness uses this as the project's
-/// directory name.
+/// `/foo/bar.baz` → `-foo-bar-baz`. The harness uses this as the project's
+/// directory name, mapping both `/` AND `.` to `-` — observed directly from
+/// real directories: cwd `/Users/x/.claude/jobs/…` lands at
+/// `-Users-x--claude-jobs-…` (note the double dash where `/.` was). Mapping
+/// only the slash resolves a nonexistent directory for any cwd containing a
+/// dot, which silently costs the session its transcripts AND its fork-parent
+/// evidence.
 ///
 /// Public because locating a session's transcript is harness knowledge a
 /// capture client needs outside fork-parent discovery — the transcript lane
 /// resolves `~/.claude/projects/<encode_cwd(cwd)>/` to find the files it
 /// uploads.
 ///
-/// This is the *producer* spelling and is deliberately left as-is: the two
-/// envelope parsers disagree about how `cwd` is encoded, and reconciling them
-/// is a contract decision tracked separately — not something to settle by
-/// quietly changing this function.
+/// This function must track what the HARNESS writes on disk, nothing else —
+/// it is unrelated to how `cwd` is percent-encoded on the wire, which the
+/// envelope contract settles separately.
 pub fn encode_cwd(cwd: &str) -> String {
-    cwd.replace('/', "-")
+    cwd.replace(['/', '.'], "-")
 }
 
 /// Read up to `cap` bytes from the head of `path`. Used to bound the
@@ -346,9 +350,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encode_cwd_replaces_slashes_with_dashes() {
-        // paperd targets the directory Claude already uses: replace
-        // `/` with `-`. Pinned byte-for-byte against a known cwd so a
+    fn encode_cwd_replaces_slashes_and_dots_with_dashes() {
+        // The target is the directory Claude already uses: `/` AND `.`
+        // both become `-`. Pinned byte-for-byte against known cwds —
+        // the dotted case against a directory observed on disk — so a
         // future encoding change is an obvious diff.
         assert_eq!(
             encode_cwd("/Users/matt/git/paper-forest/groves/sessions"),
@@ -356,6 +361,12 @@ mod tests {
         );
         assert_eq!(encode_cwd("/"), "-");
         assert_eq!(encode_cwd("/Users/matt"), "-Users-matt");
+        // A dot directory produces the double dash Claude really writes.
+        assert_eq!(
+            encode_cwd("/Users/x/.claude/jobs/4f2d5d07/tmp/smoke-cwd"),
+            "-Users-x--claude-jobs-4f2d5d07-tmp-smoke-cwd",
+        );
+        assert_eq!(encode_cwd("/w/my.project"), "-w-my-project");
     }
 
     #[test]
