@@ -23,7 +23,8 @@
 //!   those artifacts read. Consumers are installers; the bytes live here so
 //!   every client installs the same ones.
 //! - [`attribution`] — session-file reads, fork-parent recovery, peer-PID
-//!   lookup, and the codex session watcher, grouped per harness.
+//!   lookup, the peer-trust ancestry walk, and the codex session watcher,
+//!   grouped per harness.
 //! - [`transcript`] — discovering and packaging harness transcripts for the
 //!   `POST /v1/ingest/transcript` lane.
 //! - [`envelope`] — the `X-Tapes-*` header contract that carries attribution

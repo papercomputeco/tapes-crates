@@ -60,6 +60,58 @@ pub const GATEWAY_URL_ENV: &str = "TAPES_GATEWAY_URL";
 /// deployment shape, not a requirement of the contract.
 pub const GATEWAY_SCHEMA_ENV: &str = "TAPES_GATEWAY_SCHEMA";
 
+/// Environment variable carrying the per-launch capture nonce.
+///
+/// A self-attributing harness's `X-Tapes-*` envelope is a claim, and the
+/// ancestry check ([`crate::attribution::peer_trust`]) cannot tell the harness
+/// apart from the harness's *own subprocesses* — a command run by a shell tool
+/// is a descendant of the launched PID too, and could otherwise stamp another
+/// session's envelope. The launching consumer (tapesctl, paperd) generates a
+/// fresh secret per capture, sets it in this variable for the harness process,
+/// and requires it echoed back before believing any envelope. Only the
+/// extension host process sees this environment by construction of the launch;
+/// the value must never be logged, forwarded upstream, or included in captured
+/// output.
+///
+/// Unset means the launching client predates the nonce contract; an installed
+/// plugin must then simply not send the header rather than fail.
+pub const GATEWAY_NONCE_ENV: &str = "TAPES_GATEWAY_NONCE";
+
+/// Request header in which an installed plugin echoes the capture nonce back
+/// to the proxy that launched it.
+///
+/// Lower-case for the same reason the [`crate::envelope`] names are: HTTP/2
+/// lowercases header names on the wire, so the canonical spelling is the wire
+/// spelling. The header is a private channel between the extension and its own
+/// capture proxy — the proxy validates it against the value it generated and
+/// **strips it before forwarding**, so the nonce never reaches an upstream and
+/// never appears in a captured turn.
+pub const GATEWAY_NONCE_HEADER: &str = "x-tapes-gateway-nonce";
+
+/// Does a presented nonce match the one this capture generated?
+///
+/// Shared so both consumers enforce the same rule. Two properties matter:
+///
+/// * **An empty expectation never matches.** A consumer that failed to
+///   generate a nonce must fail closed, not accept an empty echo.
+/// * **The comparison is constant-time in the matching prefix.** The caller is
+///   a loopback listener reachable by every local process; a byte-at-a-time
+///   `==` would let one probe the secret through response timing. Length still
+///   leaks, and may: nonce lengths are not secret.
+#[must_use]
+pub fn nonce_matches(expected: &str, presented: &str) -> bool {
+    let expected = expected.as_bytes();
+    let presented = presented.as_bytes();
+    if expected.is_empty() || expected.len() != presented.len() {
+        return false;
+    }
+    expected
+        .iter()
+        .zip(presented)
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
+}
+
 /// One file a consumer installs into a harness.
 ///
 /// The destination is expressed as components relative to the user's home
@@ -254,6 +306,49 @@ mod tests {
             contents.contains(GATEWAY_SCHEMA_ENV),
             "the asset does not read {GATEWAY_SCHEMA_ENV}"
         );
+    }
+
+    /// The nonce contract is asset-side too: the extension reads the secret
+    /// from the environment and echoes it in the header, and both names are
+    /// TypeScript literals that must be the same spellings as the Rust
+    /// constants a consumer generates and validates against. A drift in either
+    /// direction is a silent hole — the extension echoing a header nobody
+    /// checks, or the proxy demanding an echo nobody sends.
+    #[test]
+    fn the_pi_extension_echoes_the_capture_nonce_contract() {
+        let contents = PI_GATEWAY_EXTENSION.contents();
+        assert!(
+            contents.contains(GATEWAY_NONCE_ENV),
+            "the asset does not read {GATEWAY_NONCE_ENV}"
+        );
+        assert!(
+            contents.contains(GATEWAY_NONCE_HEADER),
+            "the asset does not echo the nonce in {GATEWAY_NONCE_HEADER}"
+        );
+        // And the echo is a real read-then-send, not just the names appearing:
+        // the asset must read the env by the constant's name and place the
+        // value under the header's name.
+        assert!(
+            contents.contains("process.env[GATEWAY_NONCE_ENV]"),
+            "the asset does not read the nonce from the environment"
+        );
+        assert!(
+            contents.contains("[GATEWAY_NONCE_HEADER]: nonce"),
+            "the asset does not place the nonce value under the header name"
+        );
+    }
+
+    /// Fail closed on an unset expectation, and match only the exact echo.
+    #[test]
+    fn nonce_matching_is_exact_and_never_matches_an_empty_expectation() {
+        assert!(nonce_matches("abc123", "abc123"));
+        assert!(!nonce_matches("abc123", "abc124"));
+        assert!(!nonce_matches("abc123", "abc12"));
+        assert!(!nonce_matches("abc123", ""));
+        // A consumer that never generated a nonce must not accept an empty
+        // echo as a match — that would turn a misconfiguration into a bypass.
+        assert!(!nonce_matches("", ""));
+        assert!(!nonce_matches("", "abc123"));
     }
 
     /// pi stamps its own envelope, so the header names in the asset are the
