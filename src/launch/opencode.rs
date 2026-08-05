@@ -29,6 +29,51 @@
 //! silently changed; a narrower mechanism would be a behaviour change, not a
 //! move.
 //!
+//! # Why the plan also carries the capture plugin
+//!
+//! Relocating the config root moves opencode's *plugin* directory too, and that
+//! turned the two capture roads into a trap. A consumer that ran
+//! `plugin install opencode` — writing
+//! [`crate::plugin::OPENCODE_GATEWAY_EXTENSION`] to
+//! `~/.config/opencode/plugins/` — and then launched through this recipe got a
+//! session where the plugin was simply not on any path opencode scans. The
+//! traffic was still redirected, so everything looked fine; the turns just
+//! carried no `X-Tapes-*` envelope and filed as `harness_id: unknown`. Silent
+//! unattribution is the worst available outcome, and combining the two obvious
+//! steps produced it.
+//!
+//! So a plan writes the plugin into its own config root alongside the config
+//! document. That is the only one of the three available fixes where the user
+//! gets what they asked for:
+//!
+//! * The registry could have declared the two deliveries mutually exclusive,
+//!   but a harness that can be captured both ways is a fact about opencode, and
+//!   removing a capability to dodge an interaction is a poor trade.
+//! * This recipe could have refused when the artifact was installed — except a
+//!   recipe is pure and may not read the user's home, so it cannot see an
+//!   install. Only the consumer could implement that check, which means every
+//!   consumer would have to, and one that forgot would be back to the silent
+//!   case.
+//! * Writing the plugin needs neither: the artifact lives in this same crate,
+//!   so its bytes and its directory are already known here, and a plan already
+//!   carries files for the consumer to materialise and remove.
+//!
+//! An installed copy is not required and is not consulted — a plan is
+//! self-contained, so `plugin install` is not a precondition for this road.
+//! Nothing is imposed on a consumer that does not want capture from inside,
+//! either, because the plugin is inert unless the launched environment sets
+//! [`crate::plugin::GATEWAY_URL_ENV`]: written but dormant costs a file in a
+//! directory the consumer is deleting anyway.
+//!
+//! When that variable *is* set, the plugin's `config` hook runs after opencode
+//! loads this document and overwrites the captured providers' `baseURL` with
+//! the gateway the environment names. That is the intended precedence — the
+//! plugin is the only half that can attribute the session — but it does mean a
+//! consumer pointing the two halves at different addresses gets the plugin's.
+//! Setting both is a deliberate act; the failure it produces is a request to a
+//! route that answers or does not, which is loud, and not a session that
+//! captures perfectly and belongs to nobody.
+//!
 //! # Provider endpoints and `/v1`
 //!
 //! opencode's provider adapters are AI SDK adapters, and they append only the
@@ -59,6 +104,17 @@ pub const OPENCODE_CONFIG_HOME_ENV: &str = "XDG_CONFIG_HOME";
 
 /// Path of opencode's config file relative to the config root.
 const CONFIG_RELATIVE_PATH: [&str; 2] = ["opencode", "opencode.json"];
+
+/// Directory, relative to the config root, that opencode auto-discovers plugins
+/// from.
+///
+/// This is [`crate::plugin::OPENCODE_GATEWAY_EXTENSION`]'s own install directory
+/// with its leading `.config` component removed — that component is exactly what
+/// [`OPENCODE_CONFIG_HOME_ENV`] replaces. The two are asserted equal in this
+/// module's tests, so relocating one without the other fails the build rather
+/// than producing a plan that installs the plugin somewhere opencode will not
+/// look.
+const PLUGIN_RELATIVE_DIR: [&str; 2] = ["opencode", "plugins"];
 
 /// JSON object key holding opencode's provider table.
 const PROVIDER_KEY: &str = "provider";
@@ -177,6 +233,16 @@ impl OpenCodeRecipe {
             .iter()
             .fold(self.config_root.clone(), |path, segment| path.join(segment))
     }
+
+    /// Absolute path the plan writes the capture plugin to.
+    ///
+    /// See the module docs on why a plan carries the plugin at all.
+    pub fn plugin_path(&self) -> PathBuf {
+        PLUGIN_RELATIVE_DIR
+            .iter()
+            .fold(self.config_root.clone(), |path, segment| path.join(segment))
+            .join(crate::plugin::OPENCODE_GATEWAY_EXTENSION.file_name())
+    }
 }
 
 impl LaunchRecipe for OpenCodeRecipe {
@@ -230,10 +296,21 @@ impl LaunchRecipe for OpenCodeRecipe {
                 OPENCODE_CONFIG_HOME_ENV.to_string(),
                 self.config_root.display().to_string(),
             )],
-            config_files: vec![ConfigFile {
-                path: self.config_path(),
-                contents,
-            }],
+            config_files: vec![
+                ConfigFile {
+                    path: self.config_path(),
+                    contents,
+                },
+                // The capture plugin travels with the relocated config root.
+                // See the module docs: without this, an installed plugin is
+                // invisible to a recipe-launched session.
+                ConfigFile {
+                    path: self.plugin_path(),
+                    contents: crate::plugin::OPENCODE_GATEWAY_EXTENSION
+                        .contents()
+                        .to_owned(),
+                },
+            ],
         })
     }
 }
@@ -428,7 +505,7 @@ mod tests {
     #[test]
     fn plan_writes_every_provider_entry() {
         let plan = recipe().plan().unwrap();
-        assert_eq!(plan.config_files.len(), 1);
+        // The config document is first; the capture plugin rides beside it.
         let document = parse(&plan.config_files[0].contents);
         let providers = &document["provider"];
 
@@ -475,6 +552,67 @@ mod tests {
                 "/tmp/tapes-opencode-config-XXXX".to_string(),
             )],
         );
+    }
+
+    /// The regression this plan's second file exists for: relocating the config
+    /// root also relocates opencode's plugin directory, so a plugin installed in
+    /// the user's home is invisible to a recipe-launched session. Redirected but
+    /// unattributed is the failure that produced — and it is silent, which is
+    /// why the plugin travels with the root rather than being required in it.
+    #[test]
+    fn plan_carries_the_capture_plugin_into_the_relocated_config_root() {
+        let plan = recipe().plan().unwrap();
+        let plugin = plan
+            .config_files
+            .iter()
+            .find(|file| file.path == recipe().plugin_path())
+            .expect("the plan does not carry the capture plugin");
+        assert_eq!(
+            plugin.path,
+            PathBuf::from("/tmp/tapes-opencode-config-XXXX/opencode/plugins/tapes-gateway.ts"),
+        );
+        // The bytes are the crate's own artifact, not a copy that could drift.
+        assert_eq!(
+            plugin.contents,
+            crate::plugin::OPENCODE_GATEWAY_EXTENSION.contents(),
+        );
+    }
+
+    /// The plan's plugin destination and the artifact's own install destination
+    /// are one location expressed against two roots: `~` for an installer, and
+    /// the relocated config home for a plan. `.config` is precisely the
+    /// component [`OPENCODE_CONFIG_HOME_ENV`] replaces, so the artifact's
+    /// components must be that marker followed by this module's relative
+    /// directory. Moving either alone would put a plan's plugin somewhere
+    /// opencode does not scan — the exact silent failure above, reintroduced.
+    #[test]
+    fn the_plans_plugin_directory_is_the_artifacts_own_directory() {
+        let installed = crate::plugin::OPENCODE_GATEWAY_EXTENSION.install_dir_components();
+        let expected: Vec<&str> = std::iter::once(".config")
+            .chain(PLUGIN_RELATIVE_DIR.iter().copied())
+            .collect();
+        assert_eq!(
+            installed, expected,
+            "the artifact installs to {installed:?} but a plan writes it to \
+             <config-root>/{PLUGIN_RELATIVE_DIR:?}",
+        );
+    }
+
+    /// A plan is self-contained: the plugin it writes is the whole delivery, so
+    /// `plugin install` is not a precondition for this road, and a consumer that
+    /// removes the config root removes the plugin with it.
+    #[test]
+    fn every_file_a_plan_writes_lives_under_the_root_the_consumer_owns() {
+        let recipe = recipe();
+        let plan = recipe.plan().unwrap();
+        assert_eq!(plan.config_files.len(), 2);
+        for file in &plan.config_files {
+            assert!(
+                file.path.starts_with("/tmp/tapes-opencode-config-XXXX"),
+                "{:?} escapes the config root the consumer created and deletes",
+                file.path,
+            );
+        }
     }
 
     /// A user's existing settings survive, and their explicit `npm` / `name`

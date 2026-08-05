@@ -198,11 +198,46 @@ pub const PI_GATEWAY_EXTENSION: PluginArtifact = PluginArtifact {
 /// The artifact set for a harness captured by a bundled pi extension.
 pub(crate) const PI_ARTIFACTS: &[PluginArtifact] = &[PI_GATEWAY_EXTENSION];
 
+/// opencode's capture plugin.
+///
+/// opencode *can* be redirected without one — its provider endpoints live in a
+/// JSON config file, which is what [`crate::launch::OpenCodeRecipe`] plans —
+/// but a config file cannot attribute: opencode publishes no PID-indexed
+/// session file, so a redirected session's turns land under
+/// `harness_id: unknown`. This plugin is what closes that gap. It does both
+/// halves from inside the harness: a `config` hook points the captured
+/// providers at the proxy named by [`GATEWAY_URL_ENV`], and a `chat.headers`
+/// hook stamps the `X-Tapes-*` envelope with opencode's own session id plus
+/// the [`GATEWAY_NONCE_HEADER`] echo — which is what makes opencode the second
+/// [`crate::harness::AttributionStrategy::SelfAttributing`] harness.
+///
+/// opencode auto-discovers plugins by globbing `{plugin,plugins}/*.{ts,js}`
+/// under its global config directory (`~/.config/opencode`) and the project's
+/// `.opencode/`, so installing the file is the whole installation. The
+/// documented spelling of the directory is `plugins`, which is the one used
+/// here. The one soft spot is the root: opencode resolves its config directory
+/// through `$XDG_CONFIG_HOME`, and this artifact's destination is the
+/// *default* resolution of that variable — a user who relocated it installs by
+/// hand, exactly as they already do for every other opencode plugin.
+pub const OPENCODE_GATEWAY_EXTENSION: PluginArtifact = PluginArtifact {
+    file_name: "tapes-gateway.ts",
+    install_dir: &[".config", "opencode", "plugins"],
+    contents: include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/opencode/tapes-gateway.ts"
+    )),
+};
+
+/// The artifact set for a harness captured by the bundled opencode plugin.
+pub(crate) const OPENCODE_ARTIFACTS: &[PluginArtifact] = &[OPENCODE_GATEWAY_EXTENSION];
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::envelope::{HARNESS_ID_PI, X_TAPES_HARNESS_ID, X_TAPES_HARNESS_SESSION_ID};
+    use crate::envelope::{
+        HARNESS_ID_OPENCODE, HARNESS_ID_PI, X_TAPES_HARNESS_ID, X_TAPES_HARNESS_SESSION_ID,
+    };
     use crate::harness::{PluginDelivery, REGISTRY};
 
     /// Every artifact the crate ships, however it is reached from the registry.
@@ -224,6 +259,7 @@ mod tests {
             "no harness in the registry declares a plugin artifact"
         );
         assert!(all_artifacts().contains(&&PI_GATEWAY_EXTENSION));
+        assert!(all_artifacts().contains(&&OPENCODE_GATEWAY_EXTENSION));
     }
 
     /// An artifact's destination components are joined onto a caller-supplied
@@ -416,6 +452,173 @@ mod tests {
     #[test]
     fn the_pi_extension_has_no_built_in_endpoint() {
         let contents = PI_GATEWAY_EXTENSION.contents();
+        for literal in ["127.0.0.1:", "localhost:", "http://127.0.0.1"] {
+            assert!(
+                !contents.contains(literal),
+                "the asset hard-codes {literal:?}; it must be inert without {GATEWAY_URL_ENV}"
+            );
+        }
+    }
+
+    // --- the opencode plugin, pinned the same way the pi extension is -------
+    //
+    // The two assets implement one environment contract against two different
+    // extension APIs, so each carries its own copy of the spellings and each
+    // copy is pinned independently: a drift in either asset is a silently
+    // uncaptured (or silently unattributed) harness, not a build failure.
+
+    #[test]
+    fn opencode_installs_where_opencode_discovers_plugins() {
+        // opencode globs `{plugin,plugins}/*.{ts,js}` beneath its config
+        // directory; `plugins` is the documented spelling. A destination
+        // outside that glob is an installed file opencode never loads.
+        let home = Path::new("/home/u");
+        assert_eq!(
+            OPENCODE_GATEWAY_EXTENSION.install_path(home),
+            PathBuf::from("/home/u/.config/opencode/plugins/tapes-gateway.ts"),
+        );
+    }
+
+    /// The asset reads the environment by name, so the Rust constant and the
+    /// literal in the asset are two spellings of one contract — same
+    /// reasoning as the pi test above, pinned against the opencode copy.
+    #[test]
+    fn the_opencode_plugin_reads_the_gateway_environment_contract() {
+        let contents = OPENCODE_GATEWAY_EXTENSION.contents();
+        assert!(
+            contents.contains(GATEWAY_URL_ENV),
+            "the asset does not read {GATEWAY_URL_ENV}"
+        );
+        assert!(
+            contents.contains(GATEWAY_SCHEMA_ENV),
+            "the asset does not read {GATEWAY_SCHEMA_ENV}"
+        );
+    }
+
+    /// The nonce contract, asset-side: read from the environment, echoed in
+    /// the header, both under the crate's spellings.
+    #[test]
+    fn the_opencode_plugin_echoes_the_capture_nonce_contract() {
+        let contents = OPENCODE_GATEWAY_EXTENSION.contents();
+        assert!(
+            contents.contains(GATEWAY_NONCE_ENV),
+            "the asset does not read {GATEWAY_NONCE_ENV}"
+        );
+        assert!(
+            contents.contains(GATEWAY_NONCE_HEADER),
+            "the asset does not echo the nonce in {GATEWAY_NONCE_HEADER}"
+        );
+        // And the echo is a real read-then-send: the asset reads the env by
+        // the constant's name and places the value under the header's name.
+        assert!(
+            contents.contains("process.env[GATEWAY_NONCE_ENV]"),
+            "the asset does not read the nonce from the environment"
+        );
+        assert!(
+            contents.contains("output.headers[GATEWAY_NONCE_HEADER] = nonce"),
+            "the asset does not place the nonce value under the header name"
+        );
+    }
+
+    /// The read must also be a *removal*, before any tool can run — the same
+    /// property pinned for pi, load-bearing for the same reason: shell-tool
+    /// children inherit the current environment and already pass the ancestry
+    /// check, so a lingering variable hands them both halves of the trust
+    /// decision. This asset does the read-and-delete at module load, which is
+    /// earlier still than pi's (inside the exported function).
+    #[test]
+    fn the_opencode_plugin_deletes_the_nonce_from_its_environment_at_load() {
+        let contents = OPENCODE_GATEWAY_EXTENSION.contents();
+        assert!(
+            contents.contains("delete process.env[GATEWAY_NONCE_ENV]"),
+            "the asset does not delete the nonce from its environment; \
+             shell-tool subprocesses would inherit the secret"
+        );
+        let read = contents
+            .find("process.env[GATEWAY_NONCE_ENV]")
+            .unwrap_or(usize::MAX);
+        let delete = contents
+            .find("delete process.env[GATEWAY_NONCE_ENV]")
+            .unwrap_or(0);
+        assert!(
+            read < delete,
+            "the asset must capture the nonce before deleting it"
+        );
+    }
+
+    /// opencode stamps its own envelope, so the header names in the asset are
+    /// the crate's `X-Tapes-*` contract expressed in TypeScript — a rename in
+    /// [`crate::envelope`] must fail here, not silently re-file opencode's
+    /// sessions as `unknown`.
+    #[test]
+    fn the_opencode_plugin_stamps_the_envelope_this_crate_defines() {
+        let lowered = OPENCODE_GATEWAY_EXTENSION.contents().to_ascii_lowercase();
+        assert!(
+            lowered.contains(&format!(
+                "\"{X_TAPES_HARNESS_ID}\": \"{HARNESS_ID_OPENCODE}\""
+            )),
+            "the asset does not stamp {X_TAPES_HARNESS_ID}: {HARNESS_ID_OPENCODE}"
+        );
+        assert!(
+            lowered.contains(X_TAPES_HARNESS_SESSION_ID),
+            "the asset does not stamp {X_TAPES_HARNESS_SESSION_ID}"
+        );
+    }
+
+    /// The nonce is a secret shared with the proxy alone, and the stamp runs
+    /// per request against whatever endpoint the provider actually resolved:
+    /// the asset must gate the echo on the request really routing through the
+    /// gateway, or an auth loader that swapped endpoints would carry the
+    /// secret to a real upstream.
+    #[test]
+    fn the_opencode_plugin_stamps_nothing_toward_a_real_upstream() {
+        let contents = OPENCODE_GATEWAY_EXTENSION.contents();
+        assert!(
+            contents.contains("isGatewayAddress(resolvedBaseUrl, baseUrl)"),
+            "the asset does not verify the resolved provider endpoint is the \
+             gateway before stamping the nonce and envelope"
+        );
+    }
+
+    /// …and that gate compares URLs, not strings.
+    ///
+    /// The adversarial sibling of the test above, pinned separately because the
+    /// two failures are different sizes. Failing the check above means turns go
+    /// unattributed; failing this one means the launch nonce and the session
+    /// envelope are handed to an attacker-controlled host. A textual
+    /// `resolved.startsWith(baseUrl)` looks like it asks "is this the gateway"
+    /// and instead asks "does this begin with those characters", so a gateway at
+    /// `https://gw.example` also accepts `https://gw.example.attacker.invalid` —
+    /// a different host, a registrable lookalike, and `options.baseURL` is
+    /// user-editable config. The asset must therefore compare parsed origins,
+    /// and must not carry the prefix test that this replaced.
+    #[test]
+    fn the_opencode_plugins_gateway_check_is_a_url_boundary_not_a_string_prefix() {
+        let contents = OPENCODE_GATEWAY_EXTENSION.contents();
+        assert!(
+            !contents.contains("startsWith(baseUrl)"),
+            "the asset compares the resolved endpoint to the gateway as a string \
+             prefix; a lookalike host sharing that prefix would be handed the \
+             capture nonce and the session envelope"
+        );
+        assert!(
+            contents.contains("url.origin !== gateway.origin"),
+            "the asset does not compare parsed origins, which is what makes the \
+             host boundary — scheme, host and port — actually hold"
+        );
+        // Origin alone would let a gateway mounted at a sub-path accept a
+        // sibling of it, so the path is bounded on a separator too.
+        assert!(
+            contents.contains("url.pathname.startsWith(`${mount}/`)"),
+            "the asset does not bound the gateway's mount path on a separator"
+        );
+    }
+
+    /// Same no-default-endpoint bar as the pi asset: inert without
+    /// [`GATEWAY_URL_ENV`], with no loopback literal to fall back on.
+    #[test]
+    fn the_opencode_plugin_has_no_built_in_endpoint() {
+        let contents = OPENCODE_GATEWAY_EXTENSION.contents();
         for literal in ["127.0.0.1:", "localhost:", "http://127.0.0.1"] {
             assert!(
                 !contents.contains(literal),
