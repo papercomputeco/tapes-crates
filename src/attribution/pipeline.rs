@@ -914,6 +914,11 @@ mod tests {
         let now = time::OffsetDateTime::now_utc();
         CodexSessionFile {
             session_id: sid.to_owned(),
+            // A root rollout: these tests exercise recency and provider
+            // filtering, neither of which reads lineage.
+            root_session_id: None,
+            parent_thread_id: None,
+            subagent_kind: None,
             timestamp: now - age,
             modified_at: Some(now - age),
             cwd: Some("/tmp".to_owned()),

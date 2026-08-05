@@ -52,7 +52,8 @@ pub use files::{
     FileFingerprint, SubagentMeta, TranscriptFile, fingerprint, jsonl_to_records, session_files,
 };
 pub use payload::{
-    INGEST_PATH, IngestEnvelope, TranscriptPayload, TranscriptSession, build_payload,
+    INGEST_PATH, IngestEnvelope, KIND_INTERACTED, TranscriptPayload, TranscriptSession,
+    build_payload,
 };
 pub use sweep::{SweepOptions, SweptSession, sweep};
 pub use trigger::{
