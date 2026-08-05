@@ -18,6 +18,11 @@
 //!   harness starts in exactly one place. See `docs/adding-a-harness.md`.
 //! - [`launch`] — per-harness env/config injection to run a harness under a
 //!   capture proxy.
+//! - [`config`] — persistent harness-config patch grammars: how an installer
+//!   patches a capture provider into a harness's *own* config file,
+//!   idempotently and preserving the user's content. Where [`launch`] plans
+//!   per-process config that dies with the process, this module owns the
+//!   durable install a desktop app or long-lived integration needs.
 //! - [`plugin`] — the artifacts a harness with no base-URL knob needs installed
 //!   *into* it before capture is possible at all, and the environment contract
 //!   those artifacts read. Consumers are installers; the bytes live here so
@@ -52,6 +57,7 @@
 //! Delivery, auth, and retry stay in each client.
 
 pub mod attribution;
+pub mod config;
 pub mod envelope;
 pub mod harness;
 pub mod launch;

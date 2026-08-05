@@ -49,6 +49,10 @@ serde_json = { version = "1", features = ["raw_value"] }
 snafu = "0.8"
 time = { version = "0.3", features = ["formatting", "parsing", "serde", "macros"] }
 tokio = { version = "1", features = ["rt", "sync", "time"] }
+# Format-preserving TOML editing for the codex config.toml patch grammar. The
+# version matches `platform/paper`'s workspace pin so paperd's lockfile does
+# not fork when it swaps its installer onto this crate.
+toml_edit = "0.20"
 tracing = "0.1"
 
 [dev-dependencies]
