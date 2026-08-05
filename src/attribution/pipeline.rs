@@ -640,7 +640,12 @@ fn attribute_codex_once(
     }
 
     let peer = facts.peer?;
-    let pid = peer_pid::lookup_owner(peer).pid?;
+    // Single-attempt on purpose: this runs inside `attribute_codex`'s poll
+    // loop, which already retries with an async sleep under its own
+    // deadline, so a transient scan miss is re-tried on the next round.
+    // The retrying `lookup_owner` would block this worker between its
+    // attempts and stack its backoff inside the loop's budget.
+    let pid = peer_pid::lookup_owner_once(peer).pid?;
     let matches: Vec<CodexSessionFile> = open_jsonl_sessions_by_pid(pid)
         .into_iter()
         .filter_map(|path| codex_session::read(&path))

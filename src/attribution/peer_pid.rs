@@ -56,23 +56,29 @@ use netsock::protocol::ProtocolFlags;
 /// out-live the connection it described.
 const CACHE_TTL: Duration = Duration::from_secs(60);
 
-/// How many times [`lookup_owner`] scans the socket table before
-/// conceding that no process owns the peer socket. The peer socket is
-/// fully established by the time `accept` hands us its 4-tuple, so an
-/// owner always exists — but the enumeration underneath (per-PID
+/// How many times the retrying owner lookups ([`lookup_owner`],
+/// [`lookup_owner_async`]) scan the socket table before conceding that
+/// no process owns the peer socket. The peer socket is fully
+/// established by the time `accept` hands us its 4-tuple, so an owner
+/// always exists — but the enumeration underneath (per-PID
 /// `proc_pidfdinfo` walks on macOS, a netlink dump plus `/proc` reads
 /// on Linux) is not a consistent snapshot, and under concurrent load a
 /// scan can transiently miss the socket or its owning process. A miss
 /// here is therefore usually a race, not an answer, and a couple of
 /// short retries convert it into the right PID instead of letting the
 /// caller fall through to its fail-closed path.
-const OWNER_SCAN_ATTEMPTS: u32 = 3;
+pub const OWNER_SCAN_ATTEMPTS: u32 = 3;
 
-/// Pause between [`lookup_owner`] scan attempts. Bounded worst case:
+/// Pause between owner-lookup scan attempts. Bounded worst case:
 /// `(OWNER_SCAN_ATTEMPTS - 1) * OWNER_SCAN_BACKOFF` = 20 ms, paid only
 /// when every scan misses — a first-try hit returns immediately and
 /// never sleeps.
-const OWNER_SCAN_BACKOFF: Duration = Duration::from_millis(10);
+///
+/// Public together with [`OWNER_SCAN_ATTEMPTS`] so a caller that
+/// already owns a poll loop can apply the same policy around
+/// [`lookup_owner_once`] with its own sleep, instead of nesting this
+/// module's retry inside its own.
+pub const OWNER_SCAN_BACKOFF: Duration = Duration::from_millis(10);
 
 /// Result of a peer-PID lookup attempt.
 pub struct PeerPidLookup {
@@ -127,23 +133,99 @@ pub fn lookup(candidates: &[i32], peer: SocketAddr) -> PeerPidLookup {
 /// platforms, and the peer socket provably exists. Callers' fail-closed
 /// handling of `pid: None` is unchanged — exhausting the retries still
 /// yields `None`.
+///
+/// The retry pauses with **`std::thread::sleep`**, so this variant is for
+/// synchronous callers only. From async code use [`lookup_owner_async`]
+/// (same policy, `tokio::time::sleep` between attempts), or — if the call
+/// site already sits inside a retrying poll loop, like the attribution
+/// pipeline's Codex lane — [`lookup_owner_once`], and let the outer loop
+/// own the backoff.
 pub fn lookup_owner(peer: SocketAddr) -> PeerPidLookup {
     let started = Instant::now();
-    #[cfg(target_os = "linux")]
-    let pid = resolve_with_retry(OWNER_SCAN_ATTEMPTS, OWNER_SCAN_BACKOFF, || {
-        cached_lookup_owner(peer)
-    });
-    #[cfg(not(target_os = "linux"))]
-    let pid = resolve_with_retry(OWNER_SCAN_ATTEMPTS, OWNER_SCAN_BACKOFF, || scan_owner(peer));
+    let pid = resolve_with_retry(
+        OWNER_SCAN_ATTEMPTS,
+        OWNER_SCAN_BACKOFF,
+        || owner_scan(peer),
+        std::thread::sleep,
+    );
     let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
     PeerPidLookup { pid, micros }
 }
 
-/// Run `scan` up to `attempts` times, sleeping `backoff` between misses.
+/// [`lookup_owner`] for async callers: identical scan and retry policy,
+/// but the pause between attempts is `tokio::time::sleep`, so a miss
+/// yields the worker instead of stalling every task scheduled on it.
+///
+/// The scans themselves still run inline — they are bounded kernel/procfs
+/// reads, the same cost the non-retrying lookup always paid on this path.
+/// Only the added waiting became a yield point.
+pub async fn lookup_owner_async(peer: SocketAddr) -> PeerPidLookup {
+    let started = Instant::now();
+    let pid =
+        resolve_with_retry_async(OWNER_SCAN_ATTEMPTS, OWNER_SCAN_BACKOFF, || owner_scan(peer))
+            .await;
+    let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    PeerPidLookup { pid, micros }
+}
+
+/// One un-retried owner scan, for callers that already own a retry loop.
+///
+/// The attribution pipeline's Codex lane is the motivating case: it polls
+/// under its own deadline with an async sleep between rounds, so a
+/// transient scan miss is naturally retried on the next round and a
+/// nested sleep here would only stack delays inside its budget. Callers
+/// without such a loop should prefer [`lookup_owner`] /
+/// [`lookup_owner_async`], or drive [`OWNER_SCAN_ATTEMPTS`] ×
+/// [`OWNER_SCAN_BACKOFF`] themselves.
+pub fn lookup_owner_once(peer: SocketAddr) -> PeerPidLookup {
+    let started = Instant::now();
+    let pid = owner_scan(peer);
+    let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    PeerPidLookup { pid, micros }
+}
+
+/// One socket-table scan for the peer's owner, per-OS.
+fn owner_scan(peer: SocketAddr) -> Option<i32> {
+    #[cfg(target_os = "linux")]
+    {
+        cached_lookup_owner(peer)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        scan_owner(peer)
+    }
+}
+
+/// Run `scan` up to `attempts` times, pausing via `sleep` between misses.
 /// The first `Some` wins immediately — a found-on-first-try lookup never
 /// sleeps — and there is no sleep after the final miss, so the failure
 /// path adds exactly `(attempts - 1) * backoff` of latency.
+///
+/// `sleep` is injected rather than hard-coded so the caller decides *how*
+/// waiting happens (blocking for sync contexts, recorded for tests); the
+/// async twin below owes its separate existence only to `.await` not
+/// fitting through a closure argument.
 fn resolve_with_retry(
+    attempts: u32,
+    backoff: Duration,
+    mut scan: impl FnMut() -> Option<i32>,
+    mut sleep: impl FnMut(Duration),
+) -> Option<i32> {
+    for attempt in 1..=attempts {
+        if let Some(pid) = scan() {
+            return Some(pid);
+        }
+        if attempt < attempts {
+            sleep(backoff);
+        }
+    }
+    None
+}
+
+/// [`resolve_with_retry`] with the pause as `tokio::time::sleep`. Kept
+/// byte-for-byte parallel to the sync loop; the tests drive both through
+/// the same scenarios so the twins cannot drift.
+async fn resolve_with_retry_async(
     attempts: u32,
     backoff: Duration,
     mut scan: impl FnMut() -> Option<i32>,
@@ -153,7 +235,7 @@ fn resolve_with_retry(
             return Some(pid);
         }
         if attempt < attempts {
-            std::thread::sleep(backoff);
+            tokio::time::sleep(backoff).await;
         }
     }
     None
@@ -598,44 +680,151 @@ mod tests {
 
     /// A scan that hits on the first attempt returns without ever
     /// sleeping or re-scanning — the common path pays nothing for the
-    /// retry machinery.
+    /// retry machinery. The injected sleeper records instead of
+    /// sleeping, so the assertion is on behaviour, not wall time.
     #[test]
-    fn retry_returns_first_hit_without_rescanning() {
+    fn retry_returns_first_hit_without_rescanning_or_sleeping() {
         let mut calls = 0;
-        let got = resolve_with_retry(3, Duration::from_millis(10), || {
-            calls += 1;
-            Some(42)
-        });
+        let mut sleeps: Vec<Duration> = Vec::new();
+        let got = resolve_with_retry(
+            3,
+            Duration::from_millis(10),
+            || {
+                calls += 1;
+                Some(42)
+            },
+            |pause| sleeps.push(pause),
+        );
         assert_eq!(got, Some(42));
         assert_eq!(calls, 1, "a first-try hit must not trigger extra scans");
+        assert!(sleeps.is_empty(), "a first-try hit must never sleep");
     }
 
     /// A transient miss (the concurrent-load race) is absorbed: the
-    /// scan is retried until it resolves, and the eventual owner is
-    /// returned.
+    /// scan is retried until it resolves, with one backoff pause per
+    /// miss, and the eventual owner is returned.
     #[test]
     fn retry_recovers_from_transient_scan_misses() {
         let mut calls = 0;
-        let got = resolve_with_retry(3, Duration::from_millis(1), || {
-            calls += 1;
-            (calls == 3).then_some(7)
-        });
+        let mut sleeps: Vec<Duration> = Vec::new();
+        let got = resolve_with_retry(
+            3,
+            Duration::from_millis(10),
+            || {
+                calls += 1;
+                (calls == 3).then_some(7)
+            },
+            |pause| sleeps.push(pause),
+        );
         assert_eq!(got, Some(7));
         assert_eq!(calls, 3, "retry should re-scan until the owner appears");
+        assert_eq!(
+            sleeps,
+            vec![Duration::from_millis(10); 2],
+            "one backoff pause per miss that has an attempt after it"
+        );
     }
 
-    /// A persistent miss stays a miss: exactly `attempts` scans run,
-    /// then `None` comes back so callers' fail-closed handling engages
-    /// unchanged.
+    /// A persistent miss stays a miss: exactly `attempts` scans run
+    /// with no sleep after the last one, then `None` comes back so
+    /// callers' fail-closed handling engages unchanged.
     #[test]
     fn retry_exhausts_attempts_then_fails_closed() {
         let mut calls = 0;
-        let got = resolve_with_retry(3, Duration::from_millis(1), || {
-            calls += 1;
-            None
-        });
+        let mut sleeps: Vec<Duration> = Vec::new();
+        let got = resolve_with_retry(
+            3,
+            Duration::from_millis(10),
+            || {
+                calls += 1;
+                None
+            },
+            |pause| sleeps.push(pause),
+        );
         assert_eq!(got, None);
         assert_eq!(calls, 3, "exactly `attempts` scans, no more, no fewer");
+        assert_eq!(sleeps.len(), 2, "no sleep after the final miss");
+    }
+
+    /// The async twin under a paused clock: a transient miss recovers
+    /// after exactly the backoff pauses the policy prescribes, and the
+    /// waiting is tokio-time (auto-advanced here, a worker yield in
+    /// production) rather than a blocked thread — a
+    /// `std::thread::sleep` inside would hang a paused single-thread
+    /// runtime's auto-advance, so this test doubles as the guard that
+    /// the async path never blocks.
+    #[tokio::test(start_paused = true)]
+    async fn async_retry_recovers_from_transient_scan_misses_without_blocking() {
+        let started = tokio::time::Instant::now();
+        let mut calls = 0;
+        let got = resolve_with_retry_async(3, Duration::from_millis(10), || {
+            calls += 1;
+            (calls == 3).then_some(7)
+        })
+        .await;
+        assert_eq!(got, Some(7));
+        assert_eq!(calls, 3);
+        assert_eq!(
+            started.elapsed(),
+            Duration::from_millis(20),
+            "two misses cost exactly two backoff pauses of tokio time"
+        );
+    }
+
+    /// Async first-try hit: no re-scan and zero tokio-time elapsed.
+    #[tokio::test(start_paused = true)]
+    async fn async_retry_returns_first_hit_without_sleeping() {
+        let started = tokio::time::Instant::now();
+        let mut calls = 0;
+        let got = resolve_with_retry_async(3, Duration::from_millis(10), || {
+            calls += 1;
+            Some(42)
+        })
+        .await;
+        assert_eq!(got, Some(42));
+        assert_eq!(calls, 1);
+        assert_eq!(started.elapsed(), Duration::ZERO);
+    }
+
+    /// Async exhaustion: exactly `attempts` scans, no pause after the
+    /// final miss, and the same fail-closed `None`.
+    #[tokio::test(start_paused = true)]
+    async fn async_retry_exhausts_attempts_then_fails_closed() {
+        let started = tokio::time::Instant::now();
+        let mut calls = 0;
+        let got = resolve_with_retry_async(3, Duration::from_millis(10), || {
+            calls += 1;
+            None
+        })
+        .await;
+        assert_eq!(got, None);
+        assert_eq!(calls, 3);
+        assert_eq!(started.elapsed(), Duration::from_millis(20));
+    }
+
+    /// The three public owner lookups share one scan: against a live
+    /// loopback socket, the async and single-shot variants find the
+    /// same owner the sync variant does.
+    #[tokio::test]
+    async fn async_and_once_variants_find_the_same_live_owner() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let server_addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(server_addr).unwrap();
+        let (_server_side, _peer) = listener.accept().unwrap();
+        let peer = client.local_addr().unwrap();
+        clear_cache_for(peer);
+        let me = std::process::id() as i32;
+
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let got = loop {
+            let got = lookup_owner_async(peer).await;
+            if got.pid == Some(me) || Instant::now() >= deadline {
+                break got;
+            }
+        };
+        assert_eq!(got.pid, Some(me), "async owner lookup missed {peer}");
+        // The scan having just succeeded, the un-retried variant sees it too.
+        assert_eq!(lookup_owner_once(peer).pid, Some(me));
     }
 
     #[test]

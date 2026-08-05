@@ -70,6 +70,13 @@ const MAX_ANCESTRY_HOPS: usize = 32;
 /// `launched` is the harness's PID, or `None` before it has been spawned —
 /// requests can reach a capture listener between bind and spawn, and until
 /// there is a harness to compare against, no envelope is believable.
+///
+/// The owner lookup inside retries a transiently missed scan by
+/// **blocking** this thread between attempts
+/// ([`peer_pid::lookup_owner`]), so this variant is for synchronous
+/// callers. A capture listener's async request handler should call
+/// [`peer_is_launched_harness_async`] instead — same evidence, same
+/// verdicts, but the retry pause yields the worker.
 #[must_use]
 pub fn peer_is_launched_harness(peer: SocketAddr, launched: Option<i32>) -> bool {
     let Some(launched) = launched else {
@@ -79,6 +86,21 @@ pub fn peer_is_launched_harness(peer: SocketAddr, launched: Option<i32>) -> bool
     // callers check that there is an envelope worth trusting first, and a
     // request without one never pays for this.
     let Some(peer_pid) = peer_pid::lookup_owner(peer).pid else {
+        return false;
+    };
+    is_launched_or_descendant(peer_pid, launched)
+}
+
+/// [`peer_is_launched_harness`] for async callers: identical questions in
+/// the same order, with the owner lookup's retry pause as an async sleep
+/// ([`peer_pid::lookup_owner_async`]) so a scan miss under load does not
+/// stall the worker the capture listener's other requests are running on.
+#[must_use]
+pub async fn peer_is_launched_harness_async(peer: SocketAddr, launched: Option<i32>) -> bool {
+    let Some(launched) = launched else {
+        return false;
+    };
+    let Some(peer_pid) = peer_pid::lookup_owner_async(peer).await.pid else {
         return false;
     };
     is_launched_or_descendant(peer_pid, launched)
@@ -246,5 +268,18 @@ mod tests {
         // harness", never as "cannot tell, so allow".
         let peer = "127.0.0.1:9".parse().unwrap();
         assert!(!peer_is_launched_harness(peer, Some(me())));
+    }
+
+    /// The async variant returns the same verdicts on the two refusal
+    /// paths its sync twin pins: no launched harness yet, and an
+    /// unowned peer. The unowned-peer case exhausts the owner lookup's
+    /// full retry, so under this paused clock it also proves the wait
+    /// is tokio time rather than a blocked worker — a thread sleep
+    /// would deadlock auto-advance here.
+    #[tokio::test(start_paused = true)]
+    async fn the_async_variant_refuses_the_same_peers() {
+        let peer: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+        assert!(!peer_is_launched_harness_async(peer, None).await);
+        assert!(!peer_is_launched_harness_async(peer, Some(me())).await);
     }
 }
