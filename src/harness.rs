@@ -42,7 +42,9 @@
 
 use std::path::PathBuf;
 
-use crate::envelope::{HARNESS_ID_CLAUDE, HARNESS_ID_CODEX, HARNESS_ID_OPENCODE, HARNESS_ID_PI};
+use crate::envelope::{
+    HARNESS_ID_CLAUDE, HARNESS_ID_CODEX, HARNESS_ID_CODEX_APP, HARNESS_ID_OPENCODE, HARNESS_ID_PI,
+};
 
 /// How a request's `User-Agent` identifies a harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +115,14 @@ pub enum AttributionStrategy {
     /// attribute, and overwriting it would silently re-file those sessions.
     /// A self-attributing harness contributes no attribution module at all.
     SelfAttributing,
+    /// Identity arrives as lifecycle hook reports: an installed hook plugin
+    /// runs a consumer-supplied command at session, prompt, stop, and
+    /// subagent boundaries, and the command reports the allowlisted evidence
+    /// ([`crate::attribution::codex_app::LifecycleObservation`]) to the
+    /// consumer's runtime. Peer-PID lookup does not apply — the harness is a
+    /// long-lived process the consumer configured rather than launched, so
+    /// there is no launched PID to anchor trust on.
+    LifecycleHooks,
     /// No client-side attribution: traffic is captured, but sessions land
     /// under `harness_id: unknown` until someone implements a lane.
     None,
@@ -172,6 +182,15 @@ pub enum PluginDelivery {
     /// plugin that genuinely cannot shed its branding stays in the consumer's
     /// repository and gets no variant here.
     BundledExtension(&'static [crate::plugin::PluginArtifact]),
+    /// Capture requires a hook plugin installed by the harness's *own* plugin
+    /// manager, from a source directory the consumer packages. The crate ships
+    /// the plugin's manifests as templates — structure and event set are
+    /// crate-owned, while the hook command line and the plugin's user-facing
+    /// identity are consumer-rendered slots (see
+    /// [`crate::plugin::codex_app::render_hooks_manifest`]). Nothing here is
+    /// written beneath the user's home by a `plugin install` file copy, which
+    /// is why this is not a [`Self::BundledExtension`] with different bytes.
+    HookManifestTemplates(&'static crate::plugin::codex_app::HookPluginTemplates),
 }
 
 /// Everything this crate knows about one coding-agent harness.
@@ -275,7 +294,9 @@ impl Harness {
     #[must_use]
     pub const fn plugin_artifacts(&self) -> &'static [crate::plugin::PluginArtifact] {
         match self.plugin {
-            PluginDelivery::None => &[],
+            // Templates are deliberately not artifacts: they carry un-rendered
+            // slots, so a file-copy installer must see nothing to copy.
+            PluginDelivery::None | PluginDelivery::HookManifestTemplates(_) => &[],
             PluginDelivery::BundledExtension(artifacts) => artifacts,
         }
     }
@@ -304,6 +325,28 @@ pub const CODEX: Harness = Harness {
     attribution: AttributionStrategy::OpenRollout,
     transcripts: TranscriptSource::CodexRollouts,
     plugin: PluginDelivery::None,
+};
+
+/// The Codex desktop app — a distinct harness, not a spelling of [`CODEX`].
+///
+/// The app is a long-lived Codex host the consumer *configures* rather than
+/// launches: its provider settings live in the shared `$CODEX_HOME/config.toml`
+/// (which the consumer's installer patches to point at a capture proxy), so
+/// [`LaunchSupport::Unsupported`] — a harness you can capture but not start.
+/// It speaks Codex's wire protocol and writes rollouts to the same tree, but
+/// its session identity arrives through lifecycle hook reports from an
+/// installed plugin ([`crate::attribution::codex_app`]) rather than through a
+/// peer-PID lane, and the plugin's manifests are crate-owned templates the
+/// consumer renders ([`crate::plugin::codex_app`]) and Codex's own plugin
+/// manager installs.
+pub const CODEX_APP: Harness = Harness {
+    id: HARNESS_ID_CODEX_APP,
+    aliases: &["codex-desktop"],
+    user_agent: UserAgentMatch::None,
+    launch: LaunchSupport::Unsupported,
+    attribution: AttributionStrategy::LifecycleHooks,
+    transcripts: TranscriptSource::CodexRollouts,
+    plugin: PluginDelivery::HookManifestTemplates(&crate::plugin::codex_app::CODEX_APP_TEMPLATES),
 };
 
 /// opencode. Launchable through a shared recipe, but no attribution lane
@@ -342,9 +385,10 @@ pub const PI: Harness = Harness {
 
 /// Every harness this crate knows about.
 ///
-/// Order is the order a consumer should present them in: the two harnesses
-/// with full capture support first, then the partial entries.
-pub const REGISTRY: &[Harness] = &[CLAUDE, CODEX, OPENCODE, PI];
+/// Order is the order a consumer should present them in: the harnesses with
+/// full capture support first (with the Codex app beside the Codex CLI it is
+/// a sibling of), then the partial entries.
+pub const REGISTRY: &[Harness] = &[CLAUDE, CODEX, CODEX_APP, OPENCODE, PI];
 
 /// Every registered harness.
 #[must_use]
@@ -439,6 +483,7 @@ mod tests {
     fn registry_ids_are_the_envelope_ids() {
         assert_eq!(CLAUDE.id(), crate::envelope::HARNESS_ID_CLAUDE);
         assert_eq!(CODEX.id(), crate::envelope::HARNESS_ID_CODEX);
+        assert_eq!(CODEX_APP.id(), crate::envelope::HARNESS_ID_CODEX_APP);
         assert_eq!(OPENCODE.id(), crate::envelope::HARNESS_ID_OPENCODE);
         assert_eq!(PI.id(), crate::envelope::HARNESS_ID_PI);
         // And none of them collides with the miss sentinel.
@@ -453,8 +498,40 @@ mod tests {
         assert_eq!(find("CLAUDE").map(Harness::id), Some("claude"));
         assert_eq!(find("  claude-code  ").map(Harness::id), Some("claude"));
         assert_eq!(find("codex").map(Harness::id), Some("codex"));
+        // The app is a distinct harness, not a spelling of codex — and
+        // vice-versa: neither name can drift into resolving as the other.
+        assert_eq!(find("codex-app").map(Harness::id), Some("codex-app"));
+        assert_eq!(find("codex-desktop").map(Harness::id), Some("codex-app"));
         assert!(find("gemini").is_none());
         assert!(find("").is_none());
+    }
+
+    /// The Codex desktop app's whole shape, pinned: capturable but not
+    /// launchable, attributed by lifecycle hook reports rather than any
+    /// peer-PID lane, sharing the Codex CLI's rollout tree, and carrying its
+    /// plugin as templates a consumer renders rather than files it copies.
+    #[test]
+    fn codex_app_is_the_lifecycle_hooks_variant() {
+        assert_eq!(CODEX_APP.launch(), LaunchSupport::Unsupported);
+        assert!(!CODEX_APP.is_launchable());
+        assert!(!supported_agents().contains(&"codex-app"));
+        assert_eq!(CODEX_APP.attribution(), AttributionStrategy::LifecycleHooks);
+        // Same rollout tree as the CLI: one resolver, two harnesses.
+        assert_eq!(CODEX_APP.transcripts(), CODEX.transcripts());
+        assert!(CODEX_APP.transcript_root().is_some());
+        assert!(matches!(
+            CODEX_APP.plugin(),
+            PluginDelivery::HookManifestTemplates(_)
+        ));
+        assert!(CODEX_APP.plugin_artifacts().is_empty());
+        // Exactly one lifecycle-hooks harness today; a second should force a
+        // deliberate look at what the strategy generalises to.
+        let hook_attributed: Vec<&str> = REGISTRY
+            .iter()
+            .filter(|h| h.attribution() == AttributionStrategy::LifecycleHooks)
+            .map(Harness::id)
+            .collect();
+        assert_eq!(hook_attributed, vec!["codex-app"]);
     }
 
     #[test]

@@ -43,6 +43,8 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod codex_app;
+
 /// Environment variable naming the capture-proxy base URL an installed plugin
 /// should send the harness's LLM traffic to.
 ///
@@ -439,6 +441,22 @@ mod tests {
                     "{} declares a bundled extension with no artifacts",
                     harness.id(),
                 ),
+                // Templates are rendered, not copied: `plugin_artifacts()` is
+                // the file-copy path and must stay empty so an installer does
+                // not write un-rendered slots into a harness.
+                PluginDelivery::HookManifestTemplates(templates) => {
+                    assert!(
+                        harness.plugin_artifacts().is_empty(),
+                        "{} must not expose templates as copyable artifacts",
+                        harness.id(),
+                    );
+                    assert!(
+                        !templates.plugin_manifest.trim().is_empty()
+                            && !templates.hooks_manifest.trim().is_empty(),
+                        "{} declares empty manifest templates",
+                        harness.id(),
+                    );
+                }
             }
         }
     }
