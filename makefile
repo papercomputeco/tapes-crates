@@ -12,7 +12,14 @@
 # Every target below therefore runs cargo twice — once per package — rather
 # than relying on a shared workspace that does not exist.
 
-.PHONY: help build test fmt fmt-check clippy lint check clean sync-fixtures
+.PHONY: help build test fmt fmt-check clippy lint check clean sync-fixtures pin-parity
+
+# Consumer manifests for `make pin-parity`. Defaults to the GitHub repos, which
+# is what CI compares; override with local checkouts when working in a forest
+# grove, where both consumers are already on disk:
+#
+#     make pin-parity PIN_PARITY_SOURCES="../../platform/paper ../tapesctl"
+PIN_PARITY_SOURCES ?=
 
 CARGO_TEST_FLAGS ?=
 
@@ -29,6 +36,11 @@ build:	## Build both crates (debug)
 
 test:	## Run all tests in both crates
 	cargo test $(CARGO_TEST_FLAGS)
+# `envelope-fixtures` is off by default, so the default run above never
+# compiles the corpus reader or the consumer-facing tests that prove it is
+# usable from outside the crate. Run the feature on too, or the whole point of
+# exposing it regresses silently.
+	cargo test --all-features $(CARGO_TEST_FLAGS)
 	cargo test --manifest-path $(CASSETTE_CLIENT_MANIFEST) $(CARGO_TEST_FLAGS)
 
 fmt:	## Format all sources in both crates
@@ -41,6 +53,7 @@ fmt-check:	## Verify formatting without modifying
 
 clippy:	## Run clippy with deny warnings on both crates
 	cargo clippy --all-targets -- -D warnings
+	cargo clippy --all-targets --all-features -- -D warnings
 	cargo clippy --all-targets --manifest-path $(CASSETTE_CLIENT_MANIFEST) -- -D warnings
 
 lint: fmt-check clippy	## Run all lint checks (fmt + clippy)
@@ -53,3 +66,6 @@ clean:	## Remove build artifacts from both crates
 
 sync-fixtures:	## Refresh the vendored envelope fixture corpus from a local tapes checkout
 	scripts/sync-envelope-fixtures.sh
+
+pin-parity:	## Assert every consumer pins the same tapes-harnesses revision
+	scripts/check-pin-parity.sh $(PIN_PARITY_SOURCES)

@@ -75,6 +75,26 @@ pub const CODEX_APP_TEMPLATES: HookPluginTemplates = HookPluginTemplates {
 ///
 /// All fields are plain strings; [`render_plugin_manifest`] JSON-escapes them,
 /// so quotes and backslashes in any field are safe.
+///
+/// Build one with [`HookPluginIdentity::new`] and the `with_*` setters. The
+/// fields stay public — reading and patching one is useful, and the fixture
+/// oracle style elsewhere in the crate relies on it — but the type is
+/// `#[non_exhaustive]`, so a struct literal only compiles inside this crate.
+/// Without the constructor a downstream installer got E0639 and could not call
+/// [`render_plugin_manifest`] at all, which is the whole public point of the
+/// module.
+///
+/// # Examples
+///
+/// ```
+/// use tapes_harnesses::plugin::codex_app::{HookPluginIdentity, render_plugin_manifest};
+///
+/// let identity = HookPluginIdentity::new("acme-codex", "0.1.0")
+///     .with_display_name("Acme for Codex")
+///     .with_developer_name("Acme");
+/// let manifest = render_plugin_manifest(&identity);
+/// assert!(!manifest.contains("__TAPES_"));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct HookPluginIdentity<'a> {
@@ -95,7 +115,69 @@ pub struct HookPluginIdentity<'a> {
     pub developer_name: &'a str,
 }
 
-impl HookPluginIdentity<'_> {
+impl<'a> HookPluginIdentity<'a> {
+    /// A hook plugin's identity, from the two fields that carry meaning
+    /// beyond presentation.
+    ///
+    /// `name` is what Codex records trust and enablement against, and
+    /// `version` is how a consumer invalidates the app's cached copy of an
+    /// installed plugin — get either wrong and an install misbehaves, so they
+    /// are the arguments rather than defaults.
+    ///
+    /// The five remaining fields are strings Codex only *shows*, and each
+    /// starts as `name`. That default is deliberate: every slot in
+    /// [`PLUGIN_MANIFEST_TEMPLATE`] must be filled or a literal
+    /// `__TAPES_PLUGIN_…` string appears in the user-facing plugin UI, so the
+    /// worst outcome of a forgotten `with_*` call is a repetitive UI, never a
+    /// blank field and never a leaked slot. Override each with its setter.
+    #[must_use]
+    pub const fn new(name: &'a str, version: &'a str) -> Self {
+        Self {
+            name,
+            version,
+            description: name,
+            display_name: name,
+            short_description: name,
+            long_description: name,
+            developer_name: name,
+        }
+    }
+
+    /// Set the one-line description shown beside the plugin.
+    #[must_use]
+    pub const fn with_description(mut self, description: &'a str) -> Self {
+        self.description = description;
+        self
+    }
+
+    /// Set the display name shown in the plugin UI.
+    #[must_use]
+    pub const fn with_display_name(mut self, display_name: &'a str) -> Self {
+        self.display_name = display_name;
+        self
+    }
+
+    /// Set the short marketplace description.
+    #[must_use]
+    pub const fn with_short_description(mut self, short_description: &'a str) -> Self {
+        self.short_description = short_description;
+        self
+    }
+
+    /// Set the long marketplace description.
+    #[must_use]
+    pub const fn with_long_description(mut self, long_description: &'a str) -> Self {
+        self.long_description = long_description;
+        self
+    }
+
+    /// Set the developer/author name shown to the user granting hook trust.
+    #[must_use]
+    pub const fn with_developer_name(mut self, developer_name: &'a str) -> Self {
+        self.developer_name = developer_name;
+        self
+    }
+
     /// The slot each field fills, paired with its value. One table so the
     /// render loop and the template-coverage test share a single spelling.
     fn slots(&self) -> [(&'static str, &str); 7] {
@@ -199,15 +281,53 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn identity() -> HookPluginIdentity<'static> {
-        HookPluginIdentity {
-            name: "acme-codex",
-            version: "0.1.0",
-            description: "Keeps Codex connected to acmed.",
-            display_name: "Acme for Codex",
-            short_description: "Keep Codex connected to Acme.",
-            long_description: "Forwards lifecycle metadata to local acmed.",
-            developer_name: "Acme",
-        }
+        // Built through the public constructor, not a struct literal: this is
+        // the shape a downstream installer is limited to, so the whole
+        // template-coverage suite below runs against it.
+        HookPluginIdentity::new("acme-codex", "0.1.0")
+            .with_description("Keeps Codex connected to acmed.")
+            .with_display_name("Acme for Codex")
+            .with_short_description("Keep Codex connected to Acme.")
+            .with_long_description("Forwards lifecycle metadata to local acmed.")
+            .with_developer_name("Acme")
+    }
+
+    /// A bare `new` fills every presentation slot with the plugin name. The
+    /// property that matters is not the choice of default but that no slot is
+    /// left unfilled: an unset field must never render as an empty string or
+    /// as a literal `__TAPES_…` placeholder in the plugin UI.
+    #[test]
+    fn a_minimal_identity_fills_every_slot_with_the_plugin_name() {
+        let rendered = render_plugin_manifest(&HookPluginIdentity::new("bare-codex", "2.0.0"));
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert!(
+            !rendered.contains("__TAPES_"),
+            "a slot survived a minimal render: {rendered}"
+        );
+        assert_eq!(parsed["name"], "bare-codex");
+        assert_eq!(parsed["version"], "2.0.0");
+        assert_eq!(parsed["interface"]["displayName"], "bare-codex");
+        assert_eq!(parsed["interface"]["developerName"], "bare-codex");
+        assert_eq!(parsed["author"]["name"], "bare-codex");
+    }
+
+    /// Each setter reaches exactly one slot. Distinct values per field would
+    /// pass even if two setters wrote the same slot, so assert the whole
+    /// rendered mapping rather than one field at a time.
+    #[test]
+    fn each_setter_reaches_its_own_slot() {
+        let identity = HookPluginIdentity::new("n", "v")
+            .with_description("d")
+            .with_display_name("dn")
+            .with_short_description("sd")
+            .with_long_description("ld")
+            .with_developer_name("dev");
+
+        assert_eq!(
+            identity.slots().map(|(_, value)| value),
+            ["n", "v", "d", "dn", "sd", "ld", "dev"],
+        );
     }
 
     /// The shape Codex parses a hooks file into, mirrored here so the test

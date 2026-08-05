@@ -30,4 +30,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
+      # `envelope-fixtures` is off by default, so the default run never
+      # compiles the corpus reader this crate exposes for consumers to
+      # table-test against. Lint and test it too, or it rots unnoticed.
+      - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test
+      - run: cargo test --all-features
+
+  pin-parity:
+    name: Consumer pin parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # This crate's whole promise is that both capture clients run the same
+      # harness knowledge, which is only true while they pin the same revision
+      # of it. Neither consumer's CI can assert that alone — it is a fact about
+      # the pair — so it is asserted here, from the crate they both pin.
+      #
+      # Needs a token that can read both consumers' manifests. `GITHUB_TOKEN`
+      # is scoped to this repository only, so a private consumer needs
+      # `CONSUMER_READ_TOKEN` (a read-only PAT). The script treats an
+      # unreadable source as an error rather than a skip, so a missing or
+      # under-scoped token shows up as a red job, not as a green one that
+      # checked nothing.
+      - run: make pin-parity
+        env:
+          GH_TOKEN: ${{ secrets.CONSUMER_READ_TOKEN || secrets.GITHUB_TOKEN }}
