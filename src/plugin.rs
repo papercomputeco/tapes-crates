@@ -68,10 +68,19 @@ pub const GATEWAY_SCHEMA_ENV: &str = "TAPES_GATEWAY_SCHEMA";
 /// is a descendant of the launched PID too, and could otherwise stamp another
 /// session's envelope. The launching consumer (tapesctl, paperd) generates a
 /// fresh secret per capture, sets it in this variable for the harness process,
-/// and requires it echoed back before believing any envelope. Only the
-/// extension host process sees this environment by construction of the launch;
-/// the value must never be logged, forwarded upstream, or included in captured
-/// output.
+/// and requires it echoed back before believing any envelope. The value must
+/// never be logged, forwarded upstream, or included in captured output.
+///
+/// An installed plugin must read this variable **once at load and delete it
+/// from its process environment immediately**, before any tool can run:
+/// subprocesses the harness later spawns inherit the harness's *current*
+/// environment, so the deletion keeps them from receiving the secret at all —
+/// it survives only in the plugin's own memory. With that in place the
+/// residual exposure is exactly two channels, and no more should be claimed:
+/// a same-UID process reading the harness's *original* environment out of
+/// `/proc/<pid>/environ` on Linux (that file snapshots the environment at
+/// `exec` and does not reflect the deletion), and anything the harness itself
+/// chooses to pass along explicitly.
 ///
 /// Unset means the launching client predates the nonce contract; an installed
 /// plugin must then simply not send the header rather than fail.
@@ -335,6 +344,35 @@ mod tests {
         assert!(
             contents.contains("[GATEWAY_NONCE_HEADER]: nonce"),
             "the asset does not place the nonce value under the header name"
+        );
+    }
+
+    /// The read must also be a *removal*. Subprocesses the harness spawns
+    /// inherit its current environment and already pass the ancestry check, so
+    /// a nonce left sitting in `process.env` hands every shell-tool child both
+    /// halves of the trust decision. The asset takes the value into its
+    /// closure and deletes the variable at load, before any tool can run —
+    /// and that delete is as load-bearing as the echo itself, so it is pinned
+    /// the same way the spellings are.
+    #[test]
+    fn the_pi_extension_deletes_the_nonce_from_its_environment_at_load() {
+        let contents = PI_GATEWAY_EXTENSION.contents();
+        assert!(
+            contents.contains("delete process.env[GATEWAY_NONCE_ENV]"),
+            "the asset does not delete the nonce from its environment; \
+             shell-tool subprocesses would inherit the secret"
+        );
+        // The delete must come after the one read into the closure — a delete
+        // alone would silence the echo entirely.
+        let read = contents
+            .find("process.env[GATEWAY_NONCE_ENV]")
+            .unwrap_or(usize::MAX);
+        let delete = contents
+            .find("delete process.env[GATEWAY_NONCE_ENV]")
+            .unwrap_or(0);
+        assert!(
+            read < delete,
+            "the asset must capture the nonce before deleting it"
         );
     }
 

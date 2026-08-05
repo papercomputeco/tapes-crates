@@ -36,6 +36,17 @@ function isSchemaProvider(provider: string): provider is (typeof SCHEMA_PROVIDER
 }
 
 export default function (pi: ExtensionAPI) {
+  // Take the launch secret out of the environment before anything else runs.
+  // Extensions load before any tool executes, and subprocesses the harness
+  // later spawns inherit the harness's *current* environment — so reading the
+  // nonce once and deleting the variable here means those children never
+  // receive it, and the value survives only in this closure. Deleted even when
+  // no gateway URL is set: an inert extension must not leave the secret lying
+  // in the environment either. The URL and schema variables stay — they are
+  // addresses, not secrets, and other tooling may legitimately read them.
+  const nonce = process.env[GATEWAY_NONCE_ENV];
+  delete process.env[GATEWAY_NONCE_ENV];
+
   const rawBaseUrl = process.env[GATEWAY_URL_ENV];
 
   // No capture proxy configured, so this session is not being captured: leave
@@ -52,10 +63,6 @@ export default function (pi: ExtensionAPI) {
   }
 
   const baseUrl = normalizeBaseUrl(rawBaseUrl);
-
-  // Absent when the launching client predates the nonce contract; then no
-  // header is sent and the proxy applies whatever policy it has without one.
-  const nonce = process.env[GATEWAY_NONCE_ENV];
 
   const registerCapturedProviders = (harnessSessionId?: string) => {
     // The envelope pi stamps on its own behalf. pi is the self-attributing
