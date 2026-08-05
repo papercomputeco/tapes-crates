@@ -1,0 +1,667 @@
+//! Synthesizing clap commands from a cassette surface, and resolving them
+//! back into calls.
+//!
+//! Every generated command is built here rather than derived, because the set
+//! is not known until a server has been asked. The shape deliberately matches
+//! a consumer's hand-written surface — `<noun> <method>`, whatever shared
+//! flags the consumer decorates on, and the server's JSON printed verbatim —
+//! so a cassette command is not visibly a second-class citizen next to a
+//! hand-written one.
+//!
+//! # The consumer executes
+//!
+//! This module stops at [`resolve_invocation`], which turns a parsed match
+//! back into the [`Method`] it names and the [`Call`] to make. Executing the
+//! call and printing the response stay with the consumer: tapesctl reads its
+//! own `--tapes-url` flag (added through the [`augment`] decorator), builds
+//! its client, and prints the way its hand-written commands do.
+
+use clap::{Arg, ArgMatches, Command};
+use snafu::{OptionExt, ResultExt};
+
+use crate::error::{Result, error};
+use crate::invoke::Call;
+use crate::spec::{Cassette, Location, Method, Surface};
+
+/// The flag a request body is supplied through.
+const BODY: &str = "body";
+
+/// Add a subcommand for every cassette on the surface.
+///
+/// Cassette nouns are appended to the static ones rather than replacing them,
+/// and a cassette whose name collides with a built-in command is skipped: a
+/// server must not be able to redefine what a consumer's own command means on
+/// someone's machine.
+///
+/// `decorate` is applied to every generated method command; it is where a
+/// consumer adds the flags its dispatch reads back (tapesctl adds its
+/// `--tapes-url`, with the `TAPES_URL` env fallback).
+#[must_use]
+pub fn augment<F>(mut base: Command, surface: &Surface, decorate: F) -> Command
+where
+    F: Fn(Command) -> Command,
+{
+    let built_in: Vec<String> = base
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_owned())
+        .collect();
+
+    for cassette in &surface.cassettes {
+        if built_in.iter().any(|name| name == &cassette.name) {
+            tracing::debug!(
+                cassette = %cassette.name,
+                "a cassette shares its name with a built-in command and was not generated",
+            );
+            continue;
+        }
+        base = base.subcommand(cassette_command(cassette, &decorate));
+    }
+    base
+}
+
+/// The subcommand for one cassette.
+#[must_use]
+pub fn cassette_command<F>(cassette: &Cassette, decorate: &F) -> Command
+where
+    F: Fn(Command) -> Command,
+{
+    let about = cassette
+        .description
+        .clone()
+        .unwrap_or_else(|| format!("Methods served by the {} cassette", cassette.name));
+
+    let mut command = Command::new(cassette.name.clone())
+        .about(about)
+        // Without a method there is nothing to call, and the help that lists
+        // them is the more useful answer than an error.
+        .arg_required_else_help(true)
+        .subcommand_required(true);
+
+    for method in &cassette.methods {
+        command = command.subcommand(method_command(method, decorate));
+    }
+    command
+}
+
+/// The subcommand for one method.
+#[must_use]
+pub fn method_command<F>(method: &Method, decorate: &F) -> Command
+where
+    F: Fn(Command) -> Command,
+{
+    let mut command = Command::new(method.name.clone());
+    if let Some(summary) = &method.summary {
+        command = command.about(summary.clone());
+    }
+    // The route is the one piece of context a user cannot recover from the
+    // command name, and it is what makes a generated surface auditable.
+    command = command.after_help(format!("Calls {} {}", method.http_method, method.path));
+
+    for param in &method.params {
+        let mut arg = Arg::new(param.flag.clone());
+        if let Some(description) = &param.description {
+            arg = arg.help(description.clone());
+        }
+        arg = match param.location {
+            Location::Path => arg.required(true).value_name(param.flag.to_uppercase()),
+            Location::Query | Location::Header => arg
+                .long(param.flag.clone())
+                .required(param.required)
+                .value_name("VALUE"),
+        };
+        command = command.arg(arg);
+    }
+
+    if let Some(required) = method.body {
+        command = command.arg(
+            Arg::new(BODY)
+                .long(BODY)
+                .required(required)
+                .value_name("JSON")
+                .help("Request body as JSON, or @<path> to read it from a file"),
+        );
+    }
+
+    decorate(command)
+}
+
+/// Resolve a matched cassette invocation back into the method it names and
+/// the call to make.
+///
+/// `matches` is the cassette-level match; its own subcommand names the method.
+/// Executing the returned [`Call`] — and everything about where to send it —
+/// is the consumer's.
+pub fn resolve_invocation<'s>(
+    surface: &'s Surface,
+    name: &str,
+    matches: &ArgMatches,
+) -> Result<(&'s Method, Call<'s>)> {
+    let cassette = surface
+        .cassette(name)
+        .context(error::UnknownCassetteSnafu { name })?;
+    let (method_name, method_matches) =
+        matches.subcommand().context(error::UnknownMethodSnafu {
+            cassette: name,
+            method: "",
+        })?;
+    let method = cassette
+        .methods
+        .iter()
+        .find(|candidate| candidate.name == method_name)
+        .context(error::UnknownMethodSnafu {
+            cassette: name,
+            method: method_name,
+        })?;
+
+    let call = call_for(method, method_matches)?;
+    Ok((method, call))
+}
+
+/// Assemble the request for a matched method.
+pub fn call_for<'a>(method: &'a Method, matches: &ArgMatches) -> Result<Call<'a>> {
+    let mut call = Call {
+        method: &method.http_method,
+        path: &method.path,
+        ..Default::default()
+    };
+
+    for param in &method.params {
+        let Some(value) = matches.get_one::<String>(&param.flag) else {
+            continue;
+        };
+        let pair = (param.wire.clone(), value.clone());
+        match param.location {
+            Location::Path => call.path_params.push(pair),
+            Location::Query => call.query.push(pair),
+            Location::Header => call.headers.push(pair),
+        }
+    }
+
+    // Only ask for `--body` when the operation declared one. clap panics on a
+    // lookup of an argument id the command does not define, so an unconditional
+    // read would crash every method that takes no body.
+    if method.body.is_some() {
+        if let Some(raw) = matches.get_one::<String>(BODY) {
+            call.body = Some(read_body(raw)?);
+        }
+    }
+
+    Ok(call)
+}
+
+/// Resolve a `--body` value, which is either JSON or `@<path>`.
+///
+/// The body is parsed before it is sent, not passed through: a typo in a JSON
+/// literal is otherwise reported by the cassette as a 400 whose message is about
+/// the cassette's schema rather than about the quoting mistake that caused it.
+pub fn read_body(raw: &str) -> Result<String> {
+    let text = match raw.strip_prefix('@') {
+        Some(path) => std::fs::read_to_string(path).context(error::BodyFileSnafu { path })?,
+        None => raw.to_owned(),
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&text).context(error::InvalidBodySnafu)?;
+    serde_json::to_string(&parsed).context(error::RenderBodySnafu)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::spec::{self, ReducerConfig};
+    use clap::ArgAction;
+    use serde_json::json;
+
+    /// The list tapesctl reserves, which these moved tests were written
+    /// against.
+    const RESERVED: ReducerConfig<'static> = ReducerConfig {
+        reserved_flags: &["tapes-url", "body", "help", "verbose"],
+    };
+
+    /// The decorator tapesctl passes: its server flag, with the env fallback.
+    fn with_tapes_url(command: Command) -> Command {
+        command.arg(
+            Arg::new("tapes-url")
+                .long("tapes-url")
+                .env("TAPES_URL")
+                .action(ArgAction::Set)
+                .value_name("URL")
+                .help("Base URL of the tapes server"),
+        )
+    }
+
+    /// Shadow of [`super::augment`] pinning that decorator, so the moved test
+    /// bodies read exactly as they did before the extraction.
+    fn augment(base: Command, surface: &Surface) -> Command {
+        super::augment(base, surface, with_tapes_url)
+    }
+
+    fn surface_from(name: &str, document: &serde_json::Value) -> Surface {
+        Surface {
+            cassettes: vec![spec::reduce(name, None, document, &RESERVED)],
+        }
+    }
+
+    fn hello_surface() -> Surface {
+        surface_from(
+            "hello-world",
+            &json!({"paths": {"/v1/cassettes/hello-world/hello": {
+                "get": {"operationId": "getHello", "summary": "Greet"},
+                "post": {"operationId": "createHello", "requestBody": {"required": true}}
+            }}}),
+        )
+    }
+
+    fn root() -> Command {
+        Command::new("tapesctl").subcommand(Command::new("sessions"))
+    }
+
+    #[test]
+    fn a_generated_surface_is_a_well_formed_clap_definition() {
+        // clap panics at runtime on a malformed definition, and this crate
+        // denies panics — so a spec that produced one would be a crash the user
+        // triggers just by pointing a consumer at their own server.
+        augment(root(), &hello_surface()).debug_assert();
+    }
+
+    #[test]
+    fn a_consumer_reserving_both_spellings_still_gets_a_well_formed_command() {
+        // The adversarial case behind the reserved list's re-rewrite: the
+        // consumer's decorator defines --param-body as well as --body, and a
+        // cassette parameter named `body` must be pushed past BOTH spellings
+        // — one rewrite pass would hand clap a duplicate id and panic at
+        // command construction.
+        let reserved = ReducerConfig {
+            reserved_flags: &["tapes-url", "body", "param-body", "help", "verbose"],
+        };
+        let document = json!({"paths": {"/v1/cassettes/c/thing": {
+            "post": {"operationId": "createThing", "requestBody": {"required": true},
+                "parameters": [
+                    {"name": "body", "in": "query"},
+                    {"name": "param_body", "in": "query"}
+                ]}
+        }}});
+        let surface = Surface {
+            cassettes: vec![spec::reduce("c", None, &document, &reserved)],
+        };
+        let decorate = |command: Command| {
+            with_tapes_url(command).arg(
+                Arg::new("param-body")
+                    .long("param-body")
+                    .value_name("VALUE"),
+            )
+        };
+
+        let command = super::augment(root(), &surface, decorate);
+        command.clone().debug_assert();
+
+        // And the rewritten flags are usable, not just panic-free.
+        let matches = command
+            .try_get_matches_from([
+                "tapesctl",
+                "c",
+                "create-thing",
+                "--body",
+                "{}",
+                "--param-param-body",
+                "wire-body",
+                "--param-param-body-2",
+                "wire-param-body",
+                "--tapes-url",
+                "http://x",
+            ])
+            .unwrap();
+        let (_, cassette_matches) = matches.subcommand().unwrap();
+        let (_, method_matches) = cassette_matches.subcommand().unwrap();
+        assert_eq!(
+            method_matches
+                .get_one::<String>("param-param-body")
+                .unwrap(),
+            "wire-body",
+        );
+        assert_eq!(
+            method_matches
+                .get_one::<String>("param-param-body-2")
+                .unwrap(),
+            "wire-param-body",
+        );
+    }
+
+    #[test]
+    fn a_cassette_becomes_a_noun_and_its_operations_become_methods() {
+        let command = augment(root(), &hello_surface());
+        let cassette = command
+            .get_subcommands()
+            .find(|sub| sub.get_name() == "hello-world")
+            .expect("the cassette noun should be generated");
+        let methods: Vec<&str> = cassette
+            .get_subcommands()
+            .map(clap::Command::get_name)
+            .collect();
+        assert!(methods.contains(&"get-hello"), "got: {methods:?}");
+        assert!(methods.contains(&"create-hello"), "got: {methods:?}");
+    }
+
+    #[test]
+    fn a_cassette_cannot_redefine_a_built_in_command() {
+        // A server that shipped a cassette named `sessions` would otherwise
+        // change what an existing command does on the user's machine.
+        let surface = surface_from(
+            "sessions",
+            &json!({"paths": {"/v1/cassettes/sessions/x": {"get": {"operationId": "getX"}}}}),
+        );
+        let command = augment(root(), &surface);
+        let sessions: Vec<&clap::Command> = command
+            .get_subcommands()
+            .filter(|sub| sub.get_name() == "sessions")
+            .collect();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].get_subcommands().count(), 0);
+    }
+
+    #[test]
+    fn the_generated_help_names_the_route_it_calls() {
+        // The one thing a user cannot infer from the command name.
+        let mut command = augment(root(), &hello_surface());
+        let help = command
+            .find_subcommand_mut("hello-world")
+            .and_then(|c| c.find_subcommand_mut("get-hello"))
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(
+            help.contains("GET /v1/cassettes/hello-world/hello"),
+            "got: {help}"
+        );
+    }
+
+    #[test]
+    fn the_decorator_reaches_every_generated_method() {
+        // The decorated flag is what a consumer's dispatch reads back; a
+        // method it missed would parse and then have nowhere to send the call.
+        let mut command = augment(root(), &hello_surface());
+        for name in ["get-hello", "create-hello"] {
+            let help = command
+                .find_subcommand_mut("hello-world")
+                .and_then(|c| c.find_subcommand_mut(name))
+                .unwrap()
+                .render_long_help()
+                .to_string();
+            assert!(help.contains("--tapes-url"), "{name} lost the flag: {help}");
+        }
+    }
+
+    #[test]
+    fn a_path_parameter_parses_as_a_positional_and_a_query_parameter_as_a_flag() {
+        let surface = surface_from(
+            "summary",
+            &json!({"paths": {"/v1/cassettes/summary/reports/{id}": {
+                "get": {"operationId": "getReport", "parameters": [
+                    {"name": "id", "in": "path", "required": true},
+                    {"name": "since", "in": "query"}
+                ]}
+            }}}),
+        );
+        let matches = augment(root(), &surface)
+            .try_get_matches_from([
+                "tapesctl",
+                "summary",
+                "get-report",
+                "r-1",
+                "--since",
+                "yesterday",
+                "--tapes-url",
+                "http://x",
+            ])
+            .unwrap();
+
+        let (name, cassette) = matches.subcommand().unwrap();
+        assert_eq!(name, "summary");
+        let (_, method) = cassette.subcommand().unwrap();
+        assert_eq!(method.get_one::<String>("id").unwrap(), "r-1");
+        assert_eq!(method.get_one::<String>("since").unwrap(), "yesterday");
+    }
+
+    #[test]
+    fn a_missing_required_path_parameter_is_rejected_before_any_request() {
+        let surface = surface_from(
+            "summary",
+            &json!({"paths": {"/v1/cassettes/summary/reports/{id}": {
+                "get": {"operationId": "getReport"}
+            }}}),
+        );
+        assert!(
+            augment(root(), &surface)
+                .try_get_matches_from([
+                    "tapesctl",
+                    "summary",
+                    "get-report",
+                    "--tapes-url",
+                    "http://x"
+                ])
+                .is_err(),
+        );
+    }
+
+    #[test]
+    fn a_required_body_is_required_and_an_absent_one_is_not_offered() {
+        let command = augment(root(), &hello_surface());
+        assert!(
+            command
+                .clone()
+                .try_get_matches_from([
+                    "tapesctl",
+                    "hello-world",
+                    "create-hello",
+                    "--tapes-url",
+                    "http://x"
+                ])
+                .is_err(),
+            "a required body must be demanded up front",
+        );
+        // `get-hello` declares no request body, so `--body` is not a flag it has.
+        assert!(
+            command
+                .try_get_matches_from([
+                    "tapesctl",
+                    "hello-world",
+                    "get-hello",
+                    "--body",
+                    "{}",
+                    "--tapes-url",
+                    "http://x",
+                ])
+                .is_err(),
+        );
+    }
+
+    #[test]
+    fn a_method_that_takes_no_body_still_builds_a_call() {
+        // clap panics on a lookup of an argument id the command does not
+        // define, so reading `--body` unconditionally crashed every method that
+        // declares none — which is most of them.
+        let surface = surface_from(
+            "summary",
+            &json!({"paths": {"/v1/cassettes/summary/reports": {
+                "get": {"operationId": "listReports"}
+            }}}),
+        );
+        let matches = augment(root(), &surface)
+            .try_get_matches_from([
+                "tapesctl",
+                "summary",
+                "list-reports",
+                "--tapes-url",
+                "http://x",
+            ])
+            .unwrap();
+        let (_, cassette) = matches.subcommand().unwrap();
+        let (_, method_matches) = cassette.subcommand().unwrap();
+
+        let cassette_spec = surface.cassette("summary").unwrap();
+        let call = call_for(&cassette_spec.methods[0], method_matches).unwrap();
+        assert!(call.body.is_none());
+    }
+
+    #[test]
+    fn a_body_is_validated_as_json_before_it_is_sent() {
+        // The cassette's 400 would be about its schema, not about the quoting.
+        assert!(read_body("{\"a\":1}").is_ok());
+        assert!(read_body("not json").is_err());
+    }
+
+    #[test]
+    fn a_body_can_be_read_from_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("body.json");
+        std::fs::write(&path, "{\"hello\": \"world\"}").unwrap();
+
+        let body = read_body(&format!("@{}", path.display())).unwrap();
+        assert_eq!(body, r#"{"hello":"world"}"#);
+        assert!(read_body("@/nonexistent/body.json").is_err());
+    }
+
+    #[test]
+    fn parameters_are_sent_under_their_wire_names_not_their_flag_names() {
+        // `--auth-subject` on the command line, `auth_subject` on the wire —
+        // the same split a hand-written surface makes.
+        let surface = surface_from(
+            "summary",
+            &json!({"paths": {"/v1/cassettes/summary/reports": {
+                "get": {"operationId": "listReports", "parameters": [
+                    {"name": "auth_subject", "in": "query"},
+                    {"name": "X-Report-Kind", "in": "header"}
+                ]}
+            }}}),
+        );
+        let matches = augment(root(), &surface)
+            .try_get_matches_from([
+                "tapesctl",
+                "summary",
+                "list-reports",
+                "--auth-subject",
+                "local:me",
+                "--x-report-kind",
+                "daily",
+                "--tapes-url",
+                "http://x",
+            ])
+            .unwrap();
+        let (_, cassette) = matches.subcommand().unwrap();
+        let (_, method_matches) = cassette.subcommand().unwrap();
+
+        let cassette_spec = surface.cassette("summary").unwrap();
+        let call = call_for(&cassette_spec.methods[0], method_matches).unwrap();
+
+        assert_eq!(
+            call.query,
+            vec![("auth_subject".to_owned(), "local:me".to_owned())]
+        );
+        assert_eq!(
+            call.headers,
+            vec![("X-Report-Kind".to_owned(), "daily".to_owned())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_resolved_invocation_calls_the_route_the_spec_named() {
+        use crate::transport::DirectHttp;
+        use url::Url;
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/cassettes/summary/reports/r-1"))
+            .and(query_param("since", "yesterday"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"report":"r-1"}"#))
+            .mount(&server)
+            .await;
+
+        let surface = surface_from(
+            "summary",
+            &json!({"paths": {"/v1/cassettes/summary/reports/{id}": {
+                "get": {"operationId": "getReport", "parameters": [
+                    {"name": "id", "in": "path", "required": true},
+                    {"name": "since", "in": "query"}
+                ]}
+            }}}),
+        );
+        let matches = augment(root(), &surface)
+            .try_get_matches_from([
+                "tapesctl",
+                "summary",
+                "get-report",
+                "r-1",
+                "--since",
+                "yesterday",
+                "--tapes-url",
+                &server.uri(),
+            ])
+            .unwrap();
+        let (name, cassette_matches) = matches.subcommand().unwrap();
+
+        let (_method, call) = resolve_invocation(&surface, name, cassette_matches).unwrap();
+        let transport = DirectHttp::new(Url::parse(&server.uri()).unwrap());
+        let result = transport.execute(&call).await;
+        assert!(result.is_ok(), "got: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn a_cassette_error_body_is_surfaced_rather_than_the_bare_status() {
+        use crate::transport::DirectHttp;
+        use url::Url;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/cassettes/summary/reports"))
+            .respond_with(ResponseTemplate::new(502).set_body_string(
+                r#"{"error":"cassette_unavailable","message":"summary is not answering"}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let surface = surface_from(
+            "summary",
+            &json!({"paths": {"/v1/cassettes/summary/reports": {
+                "get": {"operationId": "listReports"}
+            }}}),
+        );
+        let matches = augment(root(), &surface)
+            .try_get_matches_from([
+                "tapesctl",
+                "summary",
+                "list-reports",
+                "--tapes-url",
+                &server.uri(),
+            ])
+            .unwrap();
+        let (name, cassette_matches) = matches.subcommand().unwrap();
+
+        let (_method, call) = resolve_invocation(&surface, name, cassette_matches).unwrap();
+        let transport = DirectHttp::new(Url::parse(&server.uri()).unwrap());
+        let err = transport.execute(&call).await.unwrap_err();
+        let rendered = format!("{err}");
+        assert!(rendered.contains("502"), "got: {rendered}");
+        assert!(rendered.contains("cassette_unavailable"), "got: {rendered}");
+    }
+
+    #[test]
+    fn an_unknown_method_resolves_to_an_error_not_a_guessed_call() {
+        let surface = hello_surface();
+        let matches = augment(root(), &surface)
+            .try_get_matches_from([
+                "tapesctl",
+                "hello-world",
+                "get-hello",
+                "--tapes-url",
+                "http://x",
+            ])
+            .unwrap();
+        let (_, cassette_matches) = matches.subcommand().unwrap();
+
+        let err = resolve_invocation(&surface, "absent", cassette_matches).unwrap_err();
+        assert!(err.to_string().contains("absent"), "got: {err}");
+    }
+}
