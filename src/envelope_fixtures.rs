@@ -1,14 +1,34 @@
-//! Producer-side oracle for the shared envelope fixture corpus vendored at
+//! The shared envelope fixture corpus vendored at
 //! `vendor/tapes-envelope-fixtures/` (source: tapes `fixtures/envelope/` — see
-//! that directory's `SOURCE.md`).
+//! that directory's `SOURCE.md`), as a reader plus this crate's producer-side
+//! oracle.
 //!
 //! The corpus pins the `X-Tapes-*` header ↔ session-envelope contract. This
 //! crate is the **producer**: it turns a resolved session identity into the on-wire
 //! header set. The parsers on the other side (tapes-extproc's
 //! `ParseSessionEnvelope`, the tapes ingest reader) table-test against the same
 //! files. Drift between the two halves is otherwise invisible until a captured
-//! session lands mis-attributed, so this test exists to make the corpus
+//! session lands mis-attributed, so the oracle below makes the corpus
 //! executable here rather than merely documentary.
+//!
+//! ### Why the reader is public
+//!
+//! A capture client composes envelopes of its own — from an inbound envelope it
+//! chose to trust, from a session file it resolved, from request headers it
+//! parsed — and each composition is a place its bytes can drift from the
+//! contract. Those clients could only table-test against this corpus by
+//! re-implementing the loader, the case-direction rules, and the
+//! metadata-as-JSON comparison; a second reader is a second set of decisions
+//! about what a case *means*, which is exactly the drift the corpus exists to
+//! prevent. So the reader ships behind the `envelope-fixtures` feature, off by
+//! default: a consumer enables it under `[dev-dependencies]` and gets the same
+//! corpus, read the same way.
+//!
+//! This is a **test utility**. [`load_cases`] and [`decode_metadata`] panic on a
+//! missing, truncated, or malformed corpus rather than returning a `Result` —
+//! a broken corpus is a broken checkout, not a runtime condition to handle, and
+//! a `Result` here would invite a consumer to swallow it and silently test
+//! nothing. Do not call these from production paths.
 //!
 //! ### Which cases this side owns
 //!
@@ -46,46 +66,135 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use http::HeaderMap;
 use serde::Deserialize;
 
-use super::{
-    HARNESS_ID_UNKNOWN, TapesAttribution, X_TAPES_HARNESS_METADATA, inject_tapes_attribution,
-    inject_tapes_headers,
-};
+use super::{HARNESS_ID_UNKNOWN, TapesAttribution};
+
+/// A case's `direction`: which half of the contract it asserts.
+///
+/// Read this rather than string-matching `direction`, so a consumer's skip
+/// rule and this crate's cannot disagree about what a case claims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// `encode(envelope) == headers`, and the parsers get the same envelope
+    /// back. Both halves assert it.
+    Roundtrip,
+    /// A *lossy* producer transform (session-name truncation, oversize-metadata
+    /// drop, percent-encoding a path the reader won't decode back). The logical
+    /// input is [`FixtureCase::encode_from`], not `envelope`.
+    Encode,
+    /// Parser-only: malformed or missing-header input a well-behaved producer
+    /// never emits. There is no encode side to assert.
+    Decode,
+}
 
 /// One `cases/*.json` file. Unknown fields (`grounding`, `notes`, `error`, …)
 /// are ignored: they carry provenance for humans, not assertions for this side.
-#[derive(Debug, Deserialize)]
-struct FixtureCase {
-    name: String,
-    direction: String,
-    headers: BTreeMap<String, String>,
-    envelope: FixtureEnvelope,
+#[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
+pub struct FixtureCase {
+    /// The case's name, as its filename declares it. Use it in assertion
+    /// messages — a failure that names the case is one lookup from the file.
+    pub name: String,
+    /// Which half of the contract this case asserts, as the raw string. Prefer
+    /// [`FixtureCase::direction`].
+    pub direction: String,
+    /// The complete header set for the case, including the server-trusted
+    /// `x-paper-auth-*` headers a producer must never emit.
+    pub headers: BTreeMap<String, String>,
+    /// The envelope the headers correspond to.
+    pub envelope: FixtureEnvelope,
     /// Present only on lossy (`direction: encode`) cases: the logical envelope
     /// a producer starts from, before truncation / drop / percent-encoding.
     #[serde(default)]
-    encode_from: Option<FixtureEnvelope>,
+    pub encode_from: Option<FixtureEnvelope>,
+}
+
+impl FixtureCase {
+    /// This case's [`Direction`].
+    ///
+    /// # Panics
+    ///
+    /// If the case declares a direction this crate does not know. An
+    /// unrecognised direction means the corpus grew a contract this side has
+    /// not been taught, and silently skipping it would let the new contract go
+    /// unasserted — the failure mode the corpus exists to prevent.
+    #[must_use]
+    pub fn direction(&self) -> Direction {
+        match self.direction.as_str() {
+            "roundtrip" => Direction::Roundtrip,
+            "encode" => Direction::Encode,
+            "decode" => Direction::Decode,
+            other => panic!("{}: unknown direction {other:?}", self.name),
+        }
+    }
+
+    /// The envelope a producer starts from: [`Self::encode_from`] on a lossy
+    /// case, the case's own envelope otherwise.
+    ///
+    /// # Panics
+    ///
+    /// If a non-`encode` case carries an `encode_from`. The corpus reserves
+    /// that field for lossy cases, so a `roundtrip` case carrying one is
+    /// claiming `encode(envelope) == headers` while handing the producer a
+    /// different input. Whichever of the two it means, the case is not saying
+    /// it — better to fail than to silently prefer one.
+    #[must_use]
+    pub fn logical_envelope(&self) -> &FixtureEnvelope {
+        assert!(
+            self.encode_from.is_none() || self.direction() == Direction::Encode,
+            "{}: encode_from is reserved for lossy `encode` cases, but direction is {:?}",
+            self.name,
+            self.direction,
+        );
+        self.encode_from.as_ref().unwrap_or(&self.envelope)
+    }
+
+    /// The `x-tapes-*` subset of this case's expected headers — what a
+    /// producer must emit, with the server-trusted headers excluded.
+    #[must_use]
+    pub fn expected_tapes_headers(&self) -> BTreeMap<String, String> {
+        self.headers
+            .iter()
+            .filter(|(name, _)| name.starts_with("x-tapes-"))
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect()
+    }
 }
 
 /// The envelope side of a case. `org_id` / `auth_subject` are deliberately not
 /// modelled — they are not the producer's to emit (see module docs).
 #[derive(Debug, Clone, Deserialize)]
-struct FixtureEnvelope {
+#[non_exhaustive]
+pub struct FixtureEnvelope {
+    /// Harness id; absent means the case expects the `unknown` sentinel.
     #[serde(default)]
-    harness_id: Option<String>,
+    pub harness_id: Option<String>,
+    /// Opaque harness-side session id.
     #[serde(default)]
-    harness_session_id: Option<String>,
+    pub harness_session_id: Option<String>,
+    /// Harness version string.
     #[serde(default)]
-    harness_version: Option<String>,
+    pub harness_version: Option<String>,
+    /// Harness working directory, decoded.
     #[serde(default)]
-    cwd: Option<String>,
+    pub cwd: Option<String>,
+    /// User-given session name, decoded and untruncated.
     #[serde(default)]
-    name: Option<String>,
+    pub name: Option<String>,
+    /// Fork-parent's harness session id.
     #[serde(default)]
-    parent_harness_session_id: Option<String>,
+    pub parent_harness_session_id: Option<String>,
+    /// Free-form harness metadata, as JSON rather than base64url.
     #[serde(default)]
-    harness_metadata: Option<serde_json::Value>,
+    pub harness_metadata: Option<serde_json::Value>,
 }
 
-fn cases_dir() -> PathBuf {
+/// The directory holding the vendored `cases/*.json`.
+///
+/// Resolved from this crate's `CARGO_MANIFEST_DIR`, so a consumer that enables
+/// the feature reads the corpus out of the crate's own checkout — the same
+/// bytes this crate tests against, at whatever revision the consumer pinned.
+#[must_use]
+pub fn cases_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("vendor")
         .join("tapes-envelope-fixtures")
@@ -94,7 +203,13 @@ fn cases_dir() -> PathBuf {
 
 /// Load every vendored case, sorted by path so failures report in a stable
 /// order regardless of directory iteration order.
-fn load_cases() -> Vec<FixtureCase> {
+///
+/// # Panics
+///
+/// If the corpus directory is unreadable, empty, or holds a file that is not a
+/// valid case. See the module docs: a broken corpus is a broken checkout.
+#[must_use]
+pub fn load_cases() -> Vec<FixtureCase> {
     let dir = cases_dir();
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
@@ -125,7 +240,8 @@ fn load_cases() -> Vec<FixtureCase> {
 /// those constructors don't cover (`pi`) and field combinations they can't
 /// express. The named constructors are what production uses; this exercises the
 /// serialization they all funnel into.
-fn attribution_from(env: &FixtureEnvelope) -> TapesAttribution {
+#[must_use]
+pub fn attribution_from(env: &FixtureEnvelope) -> TapesAttribution {
     let metadata = match &env.harness_metadata {
         Some(serde_json::Value::Object(map)) => map.clone(),
         // A non-object metadata value is a parser-side concern; no producer
@@ -148,7 +264,16 @@ fn attribution_from(env: &FixtureEnvelope) -> TapesAttribution {
 }
 
 /// The `x-tapes-*` subset of a header map, as plain strings.
-fn tapes_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
+///
+/// The comparison unit for every producer assertion: pair it with
+/// [`FixtureCase::expected_tapes_headers`].
+///
+/// # Panics
+///
+/// If an emitted header value is not visible ASCII. That is a producer bug —
+/// every field is percent-encoded or base64url before it reaches a header.
+#[must_use]
+pub fn tapes_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
     headers
         .iter()
         .filter(|(name, _)| name.as_str().starts_with("x-tapes-"))
@@ -163,7 +288,17 @@ fn tapes_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
 }
 
 /// Decode a base64url(no-pad) metadata header into JSON.
-fn decode_metadata(encoded: &str) -> serde_json::Value {
+///
+/// Metadata is compared as decoded JSON, never as a base64 string: JSON key
+/// ordering is not part of the contract, so byte-comparing the encoded blob
+/// would pin an implementation detail of whichever serializer produced the
+/// fixture.
+///
+/// # Panics
+///
+/// If `encoded` is not base64url(no-pad) of a JSON document.
+#[must_use]
+pub fn decode_metadata(encoded: &str) -> serde_json::Value {
     let raw = URL_SAFE_NO_PAD
         .decode(encoded)
         .unwrap_or_else(|e| panic!("metadata header is not base64url(no-pad): {e}"));
@@ -171,6 +306,16 @@ fn decode_metadata(encoded: &str) -> serde_json::Value {
         .unwrap_or_else(|e| panic!("metadata header does not decode to JSON: {e}"))
 }
 
+// --- this crate's producer-side oracle over the corpus above ---------
+//
+// These stay `#[cfg(test)]` while the reader they use is public: a consumer
+// wants the corpus and the reading rules, not this crate's assertions about
+// its own producer.
+
+#[cfg(test)]
+use crate::envelope::{X_TAPES_HARNESS_METADATA, inject_tapes_attribution, inject_tapes_headers};
+
+#[cfg(test)]
 #[test]
 fn produces_every_encodable_fixture_case() {
     let cases = load_cases();
@@ -189,43 +334,25 @@ fn produces_every_encodable_fixture_case() {
     for case in &cases {
         // Skipping is driven purely by the case's own `direction`, never by a
         // hardcoded list here — a new case is covered the moment it is synced.
-        if case.direction == "decode" {
+        // `direction()` also rejects a direction this crate has not been
+        // taught, so a corpus that grows a new contract fails loudly here
+        // rather than quietly skipping it.
+        if case.direction() == Direction::Decode {
             skipped.push(case.name.clone());
             continue;
         }
-        assert!(
-            case.direction == "roundtrip" || case.direction == "encode",
-            "{}: unknown direction {:?}",
-            case.name,
-            case.direction,
-        );
 
         // A lossy case encodes from `encode_from`; a round-tripping one from
-        // its own envelope. The corpus reserves `encode_from` for lossy cases,
-        // which are `direction: encode` — so a `roundtrip` case carrying one is
-        // claiming `encode(envelope) == headers` while handing the producer a
-        // different input, and whichever of the two it means, the case is not
-        // saying it. Enforce it here rather than silently preferring
-        // `encode_from`, which would let that inconsistency ride.
-        assert!(
-            case.encode_from.is_none() || case.direction == "encode",
-            "{}: encode_from is reserved for lossy `encode` cases, but direction is {:?}",
-            case.name,
-            case.direction,
-        );
-        let logical = case.encode_from.as_ref().unwrap_or(&case.envelope);
+        // its own envelope, and `logical_envelope` rejects a case that
+        // declares both inconsistently.
+        let logical = case.logical_envelope();
 
         let mut headers = HeaderMap::new();
         inject_tapes_attribution(&mut headers, attribution_from(logical))
             .unwrap_or_else(|e| panic!("{}: inject failed: {e:?}", case.name));
 
         let got = tapes_headers(&headers);
-        let want: BTreeMap<String, String> = case
-            .headers
-            .iter()
-            .filter(|(name, _)| name.starts_with("x-tapes-"))
-            .map(|(name, value)| (name.clone(), value.clone()))
-            .collect();
+        let want = case.expected_tapes_headers();
 
         // Compare the header *sets* first: a missing or surplus header is a
         // clearer failure than a per-value mismatch on one of them.
@@ -282,6 +409,7 @@ fn produces_every_encodable_fixture_case() {
 /// walking the budget. The corpus's `unknown-bare` case pins the result, but
 /// only in aggregate with everything else; assert the path directly so a
 /// regression names itself.
+#[cfg(test)]
 #[test]
 fn unknown_harness_case_emits_only_the_required_header() {
     let case = load_cases()
@@ -304,7 +432,7 @@ fn unknown_harness_case_emits_only_the_required_header() {
 /// The producer loop above cannot cover it. It reconstructs headers from the
 /// parsed envelope via `inject_tapes_attribution`, which is the wrong entry
 /// point — preservation is decided in `inject_tapes_headers`, by
-/// `has_complete_inbound_tapes_envelope`, before any attribution is built. A
+/// `has_complete_inbound_envelope`, before any attribution is built. A
 /// regression that broke complete-envelope detection would leave every
 /// assertion above green while the producer silently overwrote a caller's identity
 /// with `unknown`.
@@ -316,6 +444,7 @@ fn unknown_harness_case_emits_only_the_required_header() {
 /// Selection is by shape, not by name: any case whose headers carry a usable
 /// harness id and session id is a preservation case, so a future one is
 /// covered the moment it is synced.
+#[cfg(test)]
 fn preserves_complete_inbound_envelopes(cases: &[FixtureCase]) {
     let mut checked = 0;
 

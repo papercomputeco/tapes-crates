@@ -325,7 +325,7 @@ pub fn inject_tapes_headers(
     parent_sid: Option<&str>,
 ) -> Result<(), HeaderError> {
     let Some(session) = session else {
-        if has_complete_inbound_tapes_envelope(headers) {
+        if has_complete_inbound_envelope(headers) {
             return Ok(());
         }
         clear_tapes_headers(headers);
@@ -431,6 +431,45 @@ impl TapesAttribution {
             parent_sid: parent_sid.map(str::to_owned),
             metadata,
         }
+    }
+
+    /// Read an attribution back out of an envelope a harness stamped on
+    /// itself, for harnesses whose session identity comes from a managed
+    /// extension rather than from this crate's session watchers.
+    ///
+    /// `None` unless the headers carry a **complete** envelope: a harness id
+    /// that is present and is not the [`HARNESS_ID_UNKNOWN`] sentinel, plus a
+    /// non-blank session id. That completeness rule is the point of this
+    /// constructor. The same rule decides two things in different processes —
+    /// here, whether a capture client files a turn under an inbound envelope;
+    /// and in [`inject_tapes_headers`], whether the producer *preserves* an
+    /// inbound envelope instead of overwriting it with `unknown`. Two
+    /// spellings of it drift into a request whose headers say `pi` and whose
+    /// ingest row says `unknown`, so both callers come through here.
+    ///
+    /// Only the plain-text fields are read. `cwd`, session name, and metadata
+    /// are percent-encoded or base64url on the wire, and this module is the
+    /// envelope's *producer* half — the parsers live on the tapes side and
+    /// table-test against the same corpus. Decoding here would stand up a
+    /// second, drifting implementation of an encoder that is twenty lines
+    /// above, so those fields come back empty rather than guessed. Nothing is
+    /// lost today: the self-attributing harnesses stamp exactly the fields
+    /// this reads. A harness that starts sending the encoded ones wants the
+    /// decode half added here, once, not at each call site.
+    #[must_use]
+    pub fn from_headers(headers: &HeaderMap) -> Option<Self> {
+        let harness_id =
+            envelope_field(headers, X_TAPES_HARNESS_ID).filter(|id| id != HARNESS_ID_UNKNOWN)?;
+        let session_id = envelope_field(headers, X_TAPES_HARNESS_SESSION_ID)?;
+        Some(Self {
+            harness_id,
+            session_id: Some(session_id),
+            version: envelope_field(headers, X_TAPES_HARNESS_VERSION),
+            cwd: None,
+            name: None,
+            parent_sid: envelope_field(headers, X_TAPES_PARENT_HARNESS_SESSION_ID),
+            metadata: serde_json::Map::new(),
+        })
     }
 
     /// Claude traffic attributed to a `~/.claude/sessions/<pid>.json`
@@ -565,19 +604,28 @@ pub fn inject_tapes_attribution(
 /// envelope tapes needs to group turns under a stable session. Used for
 /// harnesses whose session identity is supplied by a managed extension
 /// rather than by this crate's session watchers.
-fn has_complete_inbound_tapes_envelope(headers: &HeaderMap) -> bool {
-    let harness_id = headers
-        .get(X_TAPES_HARNESS_ID)
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|v| !v.is_empty() && *v != HARNESS_ID_UNKNOWN);
-    let harness_session_id = headers
-        .get(X_TAPES_HARNESS_SESSION_ID)
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|v| !v.is_empty());
+///
+/// Delegates to [`TapesAttribution::from_headers`] so the rule has exactly one
+/// implementation — see that constructor for why a second spelling is a bug
+/// rather than a duplication.
+#[must_use]
+pub fn has_complete_inbound_envelope(headers: &HeaderMap) -> bool {
+    TapesAttribution::from_headers(headers).is_some()
+}
 
-    harness_id.is_some() && harness_session_id.is_some()
+/// One `X-Tapes-*` header's value, trimmed, treating absent, non-ASCII,
+/// and blank alike as "not stated".
+///
+/// Distinct from [`header_str`], which deliberately does not trim: that one
+/// feeds [`HarnessThreadRule::DivergentPair`], where the comparison is against
+/// another raw header value and must see the bytes that arrived.
+fn envelope_field(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 /// Remove every `X-Tapes-*` header in `headers` in-place. Called from
@@ -671,14 +719,17 @@ fn try_insert_metadata(
     try_insert_string(headers, X_TAPES_HARNESS_METADATA, &encoded, budget);
 }
 
-// Table test over the vendored shared envelope fixtures — the producer half of
-// the `X-Tapes-*` contract that the tapes-side parsers test against. Declared
-// as a child module of `envelope` (rather than an integration test) so it can
-// construct a `TapesAttribution` field-by-field: the corpus covers harnesses
-// and field combinations the named constructors don't express.
-#[cfg(test)]
+// The vendored shared envelope fixtures: a public reader (under the
+// `envelope-fixtures` feature) plus this crate's own producer-side oracle over
+// them. Declared as a child module of `envelope` rather than as an integration
+// test so it can construct a `TapesAttribution` field-by-field — the corpus
+// covers harnesses and field combinations the named constructors don't express.
+//
+// Compiled for this crate's own tests regardless of the feature, so the oracle
+// runs on a bare `cargo test`.
+#[cfg(any(test, feature = "envelope-fixtures"))]
 #[path = "envelope_fixtures.rs"]
-mod envelope_fixtures;
+pub mod fixtures;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -1413,6 +1464,150 @@ mod tests {
             ("thread-id", CODEX_CHILD),
         ]);
         assert_eq!(thread_id(&headers), Some(CLAUDE_AGENT));
+    }
+
+    /// A complete inbound envelope reads back with its plain-text fields, and
+    /// the encoded ones stay empty rather than half-parsed.
+    #[test]
+    fn from_headers_reads_a_complete_inbound_envelope() {
+        let headers = headers_from(&[
+            (X_TAPES_HARNESS_ID, HARNESS_ID_PI),
+            (X_TAPES_HARNESS_SESSION_ID, "sess-1"),
+            (X_TAPES_HARNESS_VERSION, "1.2.3"),
+            (X_TAPES_PARENT_HARNESS_SESSION_ID, "sess-0"),
+            // Wire-encoded fields the producer half deliberately does not
+            // decode back; see `from_headers`.
+            (X_TAPES_CWD, "%2Ftmp%2Fwork"),
+            (X_TAPES_HARNESS_METADATA, "e30"),
+        ]);
+
+        let attribution = TapesAttribution::from_headers(&headers).expect("envelope is complete");
+        assert_eq!(attribution.harness_id, HARNESS_ID_PI);
+        assert_eq!(attribution.session_id.as_deref(), Some("sess-1"));
+        assert_eq!(attribution.version.as_deref(), Some("1.2.3"));
+        assert_eq!(attribution.parent_sid.as_deref(), Some("sess-0"));
+        assert_eq!(attribution.cwd, None);
+        assert_eq!(attribution.name, None);
+        assert!(attribution.metadata.is_empty());
+    }
+
+    /// Every shape the completeness rule rejects, in one place. Each is a
+    /// request a consumer must file as unattributed rather than under a
+    /// half-stated identity.
+    #[test]
+    fn from_headers_rejects_incomplete_envelopes() {
+        let cases: &[(&str, Vec<(&'static str, &str)>)] = &[
+            ("no headers at all", vec![]),
+            (
+                "harness id but no session id",
+                vec![(X_TAPES_HARNESS_ID, HARNESS_ID_PI)],
+            ),
+            (
+                "session id but no harness id",
+                vec![(X_TAPES_HARNESS_SESSION_ID, "sess-1")],
+            ),
+            (
+                "the unknown sentinel is not an identity",
+                vec![
+                    (X_TAPES_HARNESS_ID, HARNESS_ID_UNKNOWN),
+                    (X_TAPES_HARNESS_SESSION_ID, "sess-1"),
+                ],
+            ),
+            (
+                "a blank harness id",
+                vec![
+                    (X_TAPES_HARNESS_ID, "   "),
+                    (X_TAPES_HARNESS_SESSION_ID, "sess-1"),
+                ],
+            ),
+            (
+                "a blank session id",
+                vec![
+                    (X_TAPES_HARNESS_ID, HARNESS_ID_PI),
+                    (X_TAPES_HARNESS_SESSION_ID, ""),
+                ],
+            ),
+        ];
+
+        for (why, pairs) in cases {
+            let headers = headers_from(pairs);
+            assert!(
+                TapesAttribution::from_headers(&headers).is_none(),
+                "{why}: an incomplete envelope must not read back as an identity",
+            );
+        }
+    }
+
+    /// Values are trimmed, so whitespace padding neither defeats the
+    /// completeness rule nor rides into the attribution.
+    #[test]
+    fn from_headers_trims_envelope_values() {
+        let headers = headers_from(&[
+            (X_TAPES_HARNESS_ID, "  pi  "),
+            (X_TAPES_HARNESS_SESSION_ID, "  sess-1  "),
+        ]);
+        let attribution = TapesAttribution::from_headers(&headers).expect("padding is not absence");
+        assert_eq!(attribution.harness_id, HARNESS_ID_PI);
+        assert_eq!(attribution.session_id.as_deref(), Some("sess-1"));
+    }
+
+    /// The bug this hoist exists to prevent: the rule that decides whether the
+    /// producer PRESERVES an inbound envelope and the rule that decides
+    /// whether a consumer FILES a turn under one must be the same rule. If
+    /// they ever diverge, a request's headers say `pi` while its ingest row
+    /// says `unknown`.
+    ///
+    /// Asserted as agreement across the whole case table rather than by
+    /// inspecting either implementation, so a future re-spelling of one side
+    /// fails here.
+    #[test]
+    fn envelope_preservation_and_readback_apply_one_rule() {
+        let cases: &[Vec<(&'static str, &str)>] = &[
+            vec![],
+            vec![(X_TAPES_HARNESS_ID, HARNESS_ID_PI)],
+            vec![(X_TAPES_HARNESS_SESSION_ID, "sess-1")],
+            vec![
+                (X_TAPES_HARNESS_ID, HARNESS_ID_UNKNOWN),
+                (X_TAPES_HARNESS_SESSION_ID, "sess-1"),
+            ],
+            vec![
+                (X_TAPES_HARNESS_ID, HARNESS_ID_PI),
+                (X_TAPES_HARNESS_SESSION_ID, ""),
+            ],
+            vec![
+                (X_TAPES_HARNESS_ID, HARNESS_ID_PI),
+                (X_TAPES_HARNESS_SESSION_ID, "sess-1"),
+            ],
+        ];
+
+        for pairs in cases {
+            let mut headers = headers_from(pairs);
+            let readable = TapesAttribution::from_headers(&headers).is_some();
+            assert_eq!(
+                has_complete_inbound_envelope(&headers),
+                readable,
+                "the predicate and the reader disagree about {pairs:?}",
+            );
+
+            // And the producer must act on that same answer: a complete
+            // envelope survives an unattributed injection untouched, an
+            // incomplete one is replaced by the `unknown` sentinel.
+            let before = headers.clone();
+            inject_tapes_headers(&mut headers, None, None).unwrap();
+            if readable {
+                assert_eq!(
+                    headers.get(X_TAPES_HARNESS_ID),
+                    before.get(X_TAPES_HARNESS_ID),
+                    "a complete envelope was overwritten: {pairs:?}",
+                );
+            } else {
+                assert_eq!(
+                    headers.get(X_TAPES_HARNESS_ID).unwrap(),
+                    HARNESS_ID_UNKNOWN,
+                    "an incomplete envelope was not replaced with the sentinel: {pairs:?}",
+                );
+            }
+        }
     }
 
     /// The pair rule reads the same header spellings the rollout-id lookup

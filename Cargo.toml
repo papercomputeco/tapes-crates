@@ -29,6 +29,25 @@ description = "Shared, open-source client-side harness knowledge for Tapes captu
 name = "tapes_harnesses"
 path = "src/lib.rs"
 
+[features]
+# Exposes `envelope::fixtures`: the reader for the shared envelope fixture
+# corpus vendored under `vendor/tapes-envelope-fixtures/`, so a consumer can
+# table-test its own envelope composition against the same cases this crate
+# does instead of re-implementing the loader and the case-direction rules.
+#
+# Off by default, and it must stay that way. The corpus is only reachable
+# because a git-dependency checkout carries the whole repo, and the reader
+# panics by design on a malformed corpus — neither belongs in a production
+# build. Consumers enable it under `[dev-dependencies]`:
+#
+#     [dev-dependencies]
+#     tapes-harnesses = { git = "...", rev = "...", features = ["envelope-fixtures"] }
+#
+# Feature unification means a normal `[dependencies]` entry for the same crate
+# picks the feature up too — that is fine (the module is inert unless called)
+# and is why it carries no extra dependencies of its own.
+envelope-fixtures = []
+
 # Dependency versions match `platform/paper`, which the attribution and
 # envelope modules were extracted from, so paperd's lockfile does not fork
 # when it consumes this crate.
