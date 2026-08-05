@@ -12,7 +12,14 @@
 # Every target below therefore runs cargo twice — once per package — rather
 # than relying on a shared workspace that does not exist.
 
-.PHONY: help build test fmt fmt-check clippy lint check clean sync-fixtures
+.PHONY: help build test fmt fmt-check clippy lint check clean sync-fixtures pin-parity
+
+# Consumer manifests for `make pin-parity`. Defaults to the GitHub repos, which
+# is what CI compares; override with local checkouts when working in a forest
+# grove, where both consumers are already on disk:
+#
+#     make pin-parity PIN_PARITY_SOURCES="../../platform/paper ../tapesctl"
+PIN_PARITY_SOURCES ?=
 
 CARGO_TEST_FLAGS ?=
 
@@ -59,3 +66,6 @@ clean:	## Remove build artifacts from both crates
 
 sync-fixtures:	## Refresh the vendored envelope fixture corpus from a local tapes checkout
 	scripts/sync-envelope-fixtures.sh
+
+pin-parity:	## Assert every consumer pins the same tapes-harnesses revision
+	scripts/check-pin-parity.sh $(PIN_PARITY_SOURCES)
