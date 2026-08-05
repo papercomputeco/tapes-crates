@@ -15,6 +15,16 @@ const SCHEMA_PROVIDERS = ["anthropic", "openai"] as const;
 // constants in `crate::plugin`, which the crate's tests pin against this file.
 const GATEWAY_URL_ENV = "TAPES_GATEWAY_URL";
 const GATEWAY_SCHEMA_ENV = "TAPES_GATEWAY_SCHEMA";
+const GATEWAY_NONCE_ENV = "TAPES_GATEWAY_NONCE";
+
+// The header the nonce is echoed back in. A per-launch secret the capture
+// client generated: the proxy's peer-PID ancestry check cannot tell this
+// extension's requests apart from requests made by the harness's own
+// subprocesses (a shell tool's child is a descendant too), and the echoed
+// nonce is what does. Only this process was handed the value, the proxy
+// validates and strips it before forwarding, and it must never be written
+// anywhere else — not logged, not surfaced in the UI.
+const GATEWAY_NONCE_HEADER = "x-tapes-gateway-nonce";
 
 function normalizeBaseUrl(url: string): string {
   const trimmed = url.replace(/\/+$/, "");
@@ -26,6 +36,17 @@ function isSchemaProvider(provider: string): provider is (typeof SCHEMA_PROVIDER
 }
 
 export default function (pi: ExtensionAPI) {
+  // Take the launch secret out of the environment before anything else runs.
+  // Extensions load before any tool executes, and subprocesses the harness
+  // later spawns inherit the harness's *current* environment — so reading the
+  // nonce once and deleting the variable here means those children never
+  // receive it, and the value survives only in this closure. Deleted even when
+  // no gateway URL is set: an inert extension must not leave the secret lying
+  // in the environment either. The URL and schema variables stay — they are
+  // addresses, not secrets, and other tooling may legitimately read them.
+  const nonce = process.env[GATEWAY_NONCE_ENV];
+  delete process.env[GATEWAY_NONCE_ENV];
+
   const rawBaseUrl = process.env[GATEWAY_URL_ENV];
 
   // No capture proxy configured, so this session is not being captured: leave
@@ -47,16 +68,22 @@ export default function (pi: ExtensionAPI) {
     // The envelope pi stamps on its own behalf. pi is the self-attributing
     // harness: the capture client cannot recover this session's identity from
     // a peer-PID lookup, so what these headers carry is the only attribution
-    // the turn will ever have.
-    const headers = harnessSessionId
+    // the turn will ever have. The nonce echo rides alongside it — without
+    // the echo the proxy has no way to distinguish this extension from a
+    // subprocess of the harness forging an envelope.
+    const envelope = harnessSessionId
       ? {
           "X-Tapes-Harness-Id": "pi",
           "X-Tapes-Harness-Session-Id": harnessSessionId,
         }
       : undefined;
+    const headers = {
+      ...(nonce ? { [GATEWAY_NONCE_HEADER]: nonce } : undefined),
+      ...envelope,
+    };
 
     for (const provider of CAPTURED_PROVIDERS) {
-      pi.registerProvider(provider, headers ? { baseUrl, headers } : { baseUrl });
+      pi.registerProvider(provider, Object.keys(headers).length > 0 ? { baseUrl, headers } : { baseUrl });
     }
   };
 

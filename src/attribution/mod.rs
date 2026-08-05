@@ -42,6 +42,7 @@
 pub mod claude;
 pub mod codex;
 pub mod peer_pid;
+pub mod peer_trust;
 pub mod pipeline;
 
 // --- compatibility aliases ---------------------------------------------
@@ -70,6 +71,7 @@ pub use codex::{
     open_jsonl_sessions_by_pid, rollout_id as codex_rollout_id, spawn_codex_watcher,
 };
 pub use peer_pid::{PeerPidLookup, lookup as peer_pid_lookup};
+pub use peer_trust::{is_launched_or_descendant, peer_is_launched_harness};
 pub use pipeline::{
     Attributed, AttributionConfig, AttributionState, CodexProviderFilter, ForkParentCache,
     RequestFacts, attribute, ua_matches_claude,
