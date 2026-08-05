@@ -19,6 +19,7 @@
 //!   "agent_type": "...",         // from agent-<id>.meta.json
 //!   "description": "...",
 //!   "tool_use_id": "toolu_...",  // the fork edge
+//!   "kind": "interacted",        // anchor re-entry rows only
 //!   "records": [ ...verbatim JSONL lines... ]
 //! }
 //! ```
@@ -156,9 +157,30 @@ pub struct TranscriptPayload<'a> {
     /// deriver attaches. Omitted when empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_use_id: Option<&'a str>,
+    /// Lifecycle qualifier for a Codex `sub_agent_activity` anchor row.
+    ///
+    /// `Some("interacted")` marks a re-entry record — a `send_message` or
+    /// `followup_task` aimed at an already-spawned thread, with `agent_id` the
+    /// target thread and `tool_use_id` the triggering call. `None` means spawn
+    /// evidence, which is the legacy default and the only thing a transcript
+    /// file ever is: [`build_payload`] therefore always leaves it unset, and an
+    /// anchor builder sets it through this field directly.
+    ///
+    /// The server keys a raw row's dedup on the payload bytes and reads the
+    /// latest version per (session, agent, lifecycle kind), so an `interacted`
+    /// row versions separately from the `started` anchor it shares an
+    /// `agent_id` with rather than superseding it. That is also why the field
+    /// is `Option` with `skip_serializing_if` rather than an empty-string
+    /// sentinel, and why it sits *after* `tool_use_id`: a spawn row's bytes
+    /// must stay identical to what earlier builds already ingested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<&'a str>,
     /// The transcript's JSONL content as a JSON array, verbatim.
     pub records: &'a RawValue,
 }
+
+/// The [`TranscriptPayload::kind`] value marking a re-entry anchor row.
+pub const KIND_INTERACTED: &str = "interacted";
 
 /// Assemble the payload for one transcript file.
 ///
@@ -186,6 +208,9 @@ pub fn build_payload<'a>(
         agent_type: some_nonempty(&file.meta.agent_type),
         description: some_nonempty(&file.meta.description),
         tool_use_id: some_nonempty(&file.meta.tool_use_id),
+        // A transcript file is always spawn evidence; only an anchor row
+        // qualifies its lifecycle. See [`TranscriptPayload::kind`].
+        kind: None,
         records,
     }
 }
@@ -294,6 +319,47 @@ mod tests {
         // Unknown optionals stay omitted rather than becoming null.
         assert!(!got.contains("harness_version"), "got: {got}");
         assert!(!got.contains("cwd"), "got: {got}");
+    }
+
+    /// An unset `kind` must not appear on the wire *at all*. This is the
+    /// stability constraint the whole field is shaped around: spawn-evidence
+    /// rows were ingested by builds that predate `kind`, and the server's raw
+    /// dedup keys on the payload bytes, so a `"kind":null` — or any reordering
+    /// that moved an existing field — would re-ingest every already-stored row
+    /// as a new version.
+    #[test]
+    fn an_unset_kind_leaves_the_payload_bytes_unchanged() {
+        let session = session();
+        let file = subagent_file();
+        let records = RawValue::from_string("[]".to_owned()).unwrap();
+        let payload = build_payload(&session, &file, &records);
+        assert!(payload.kind.is_none(), "build_payload never sets kind");
+        let got = serde_json::to_string(&payload).unwrap();
+        assert!(!got.contains("kind"), "got: {got}");
+        assert_eq!(
+            got,
+            r#"{"session":{"org_id":"","auth_subject":"","harness_id":"claude","harness_session_id":"0ea3c2cc-fe9d-41ff-aab1-4134ad00c350","harness_version":"2.1.161","cwd":"/Users/me/src/repo"},"agent_id":"abc","agent_type":"general-purpose","description":"dig","tool_use_id":"toolu_01","records":[]}"#,
+        );
+    }
+
+    /// A caller that *does* qualify the row — the Codex anchor lane — gets
+    /// `kind` between `tool_use_id` and `records`. Field order is part of the
+    /// contract, not an accident: it keeps a spawn row's bytes a strict prefix
+    /// of the shape an interacted row extends.
+    #[test]
+    fn an_anchor_kind_serializes_after_tool_use_id() {
+        let session = session();
+        let file = subagent_file();
+        let records = RawValue::from_string("[]".to_owned()).unwrap();
+        let payload = TranscriptPayload {
+            kind: Some(KIND_INTERACTED),
+            ..build_payload(&session, &file, &records)
+        };
+        let got = serde_json::to_string(&payload).unwrap();
+        assert!(
+            got.contains(r#""tool_use_id":"toolu_01","kind":"interacted","records":[]"#),
+            "got: {got}",
+        );
     }
 
     /// The records bytes embed verbatim, including key order and interior
