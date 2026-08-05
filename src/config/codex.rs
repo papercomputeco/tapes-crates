@@ -17,7 +17,11 @@
 //! * `[model_providers.<id>]` — declare it: `name`, `base_url`,
 //!   `wire_api = "responses"`, the optional attribution header, and the auth
 //!   keys for the chosen [`CodexAuth`] mode (setting one mode's keys and
-//!   *removing* the other's, so switching modes never leaves both behind);
+//!   *removing* the other's, so switching modes never leaves both behind).
+//!   Attribution entries are a managed set, not append-only: an
+//!   `http_headers` entry carrying the provider id as its value is this
+//!   grammar's own shape, and any such entry that is not the current header
+//!   is scrubbed, so renaming the header cannot accumulate stale ones;
 //! * `features.enable_request_compression = false` — a compressed request
 //!   body is opaque to a capture proxy, in this grammar exactly as in the
 //!   launch recipe's;
@@ -117,8 +121,15 @@ impl CodexProviderPatch {
     /// Same contract as
     /// [`CodexRecipe::with_attribution_header`](crate::launch::CodexRecipe::with_attribution_header):
     /// the header name is the consumer's private channel to its own proxy, so
-    /// there is no default. Unset, the patch neither writes nor removes an
-    /// `http_headers` table.
+    /// there is no default.
+    ///
+    /// The grammar owns the attribution entries in the provider's
+    /// `http_headers` table: on apply, any entry carrying the provider id as
+    /// its value — the only shape this grammar writes — that is not the
+    /// current header is removed, so renaming the header retires the old
+    /// entry instead of accumulating both. Unset, the same scrub runs (and
+    /// drops the container it emptied); user-added headers with any other
+    /// value are provably not ours and always survive.
     pub fn with_attribution_header(mut self, header: impl Into<String>) -> Self {
         self.attribution_header = Some(header.into());
         self
@@ -176,6 +187,7 @@ pub fn apply_provider(
         provider["name"] = value(&patch.display_name);
         provider["base_url"] = value(&patch.base_url);
         provider["wire_api"] = value(WIRE_API);
+        scrub_stale_attribution_headers(provider, provider_id, patch.attribution_header.as_deref());
         if let Some(header) = &patch.attribution_header {
             let headers = ensure_table(
                 provider,
@@ -386,6 +398,45 @@ fn ensure_table<'a>(
         .ok_or_else(|| CodexConfigError::NotATable {
             key: display_key.to_string(),
         })
+}
+
+/// Remove stale attribution entries from the provider's `http_headers`
+/// table, so renaming (or dropping) the attribution header retires the old
+/// entry instead of leaving codex sending both.
+///
+/// "Ours" is decided by the only shape this grammar ever writes:
+/// `<header> = "<provider_id>"`. An entry whose value is the provider id is
+/// indistinguishable from a patch-written one and is treated as managed; an
+/// entry with any other value is provably not ours and survives, like every
+/// other user byte. The container itself is dropped only when this scrub is
+/// what emptied it — a user's own empty `http_headers` table is left alone.
+fn scrub_stale_attribution_headers(
+    provider: &mut Table,
+    provider_id: &str,
+    current_header: Option<&str>,
+) {
+    let Some(headers) = provider
+        .get_mut("http_headers")
+        .and_then(Item::as_table_like_mut)
+    else {
+        return;
+    };
+    let stale: Vec<String> = headers
+        .iter()
+        .filter(|(name, entry)| {
+            entry.as_str() == Some(provider_id) && Some(*name) != current_header
+        })
+        .map(|(name, _)| name.to_string())
+        .collect();
+    if stale.is_empty() {
+        return;
+    }
+    for name in &stale {
+        headers.remove(name);
+    }
+    if headers.is_empty() && current_header.is_none() {
+        provider.remove("http_headers");
+    }
 }
 
 /// Remove each named override from `shell_environment_policy.set`, leaving
@@ -646,6 +697,91 @@ set = { EXISTING_FLAG = "keep-me", ACME_EXECUTABLE = "/obsolete/acme" }
         let applied = apply_provider(existing, &chatgpt_patch()).unwrap();
         assert!(applied.contains("EXISTING_FLAG = \"keep-me\""));
         assert!(!applied.contains("ACME_EXECUTABLE"), "{applied}");
+    }
+
+    /// Fixture: renaming the attribution header and reapplying leaves
+    /// exactly one attribution entry — the old one is this grammar's own
+    /// shape (value = provider id) and is scrubbed, not accumulated.
+    #[test]
+    fn renaming_the_attribution_header_retires_the_old_entry() {
+        let first = apply_provider("", &chatgpt_patch()).unwrap();
+        assert!(first.contains(r#"X-Acme-Codex-Attribution = "acme-openai""#));
+
+        let renamed = CodexProviderPatch::new(
+            "acme-openai",
+            "Acme OpenAI",
+            "http://127.0.0.1:51539/v1/openai-chatgpt/chatgpt-codex",
+            CodexAuth::ChatGpt,
+        )
+        .with_attribution_header("X-Acme-Attribution")
+        .with_scrubbed_env_override("ACME_EXECUTABLE");
+        let second = apply_provider(&first, &renamed).unwrap();
+        assert!(
+            !second.contains("X-Acme-Codex-Attribution"),
+            "the stale header accumulated:\n{second}"
+        );
+        assert_eq!(
+            second.matches(r#" = "acme-openai""#).count(),
+            2, // model_provider selection + the one current attribution entry
+            "{second}"
+        );
+        assert!(second.contains(r#"X-Acme-Attribution = "acme-openai""#));
+        assert!(is_provider_applied(&second, &renamed).unwrap());
+    }
+
+    /// Fixture: the managed-set boundary, pinned in both directions. A
+    /// user-added header in our provider table with its own value is provably
+    /// not this grammar's and survives; one whose value is the provider id is
+    /// indistinguishable from ours and is scrubbed.
+    #[test]
+    fn user_headers_survive_unless_they_wear_the_grammars_own_shape() {
+        let existing = r#"[model_providers.acme-openai]
+name = "Acme OpenAI"
+base_url = "http://127.0.0.1:51539/v1/openai-chatgpt/chatgpt-codex"
+wire_api = "responses"
+requires_openai_auth = true
+
+[model_providers.acme-openai.http_headers]
+X-User-Extra = "user-value"
+X-Left-Over = "acme-openai"
+"#;
+        let applied = apply_provider(existing, &chatgpt_patch()).unwrap();
+        assert!(
+            applied.contains(r#"X-User-Extra = "user-value""#),
+            "{applied}"
+        );
+        assert!(!applied.contains("X-Left-Over"), "{applied}");
+        assert!(applied.contains(r#"X-Acme-Codex-Attribution = "acme-openai""#));
+        assert!(is_provider_applied(&applied, &chatgpt_patch()).unwrap());
+    }
+
+    /// Fixture: a patch with no attribution header retires a previously
+    /// installed one — and the container it emptied — while a container
+    /// holding a user's own header keeps both the header and itself.
+    #[test]
+    fn dropping_the_attribution_header_removes_the_managed_entry_and_its_container() {
+        let headerless = CodexProviderPatch::new(
+            "acme-openai",
+            "Acme OpenAI",
+            "http://127.0.0.1:51539/v1/openai-chatgpt/chatgpt-codex",
+            CodexAuth::ChatGpt,
+        );
+        let installed = apply_provider("", &chatgpt_patch()).unwrap();
+        let applied = apply_provider(&installed, &headerless).unwrap();
+        assert!(!applied.contains("http_headers"), "{applied}");
+        assert!(is_provider_applied(&applied, &headerless).unwrap());
+
+        // With a user header present, only the managed entry goes.
+        let mixed = apply_provider(
+            "[model_providers.acme-openai.http_headers]\nX-User-Extra = \"user-value\"\n",
+            &chatgpt_patch(),
+        )
+        .unwrap();
+        let applied = apply_provider(&mixed, &headerless).unwrap();
+        assert!(applied.contains("[model_providers.acme-openai.http_headers]"));
+        assert!(applied.contains(r#"X-User-Extra = "user-value""#));
+        assert!(!applied.contains("X-Acme-Codex-Attribution"), "{applied}");
+        assert!(is_provider_applied(&applied, &headerless).unwrap());
     }
 
     /// Fixture: adversarial-but-valid TOML. Literal strings, multi-line
