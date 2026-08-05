@@ -27,10 +27,11 @@
 //! recipe, and the consumer constructs it with the arguments only the consumer
 //! has.
 //!
-//! Plugin assets are the one thing the registry does hand out whole. `pi` is
-//! captured by an in-harness extension, and unlike a recipe an extension takes
-//! no per-consumer inputs — it is a fixed file that reads its endpoint from the
-//! environment at runtime. So [`PluginDelivery::BundledExtension`] carries the
+//! Plugin assets are the one thing the registry does hand out whole. `pi` and
+//! `opencode` are captured by in-harness extensions, and unlike a recipe an
+//! extension takes no per-consumer inputs — it is a fixed file that reads its
+//! endpoint from the environment at runtime. So
+//! [`PluginDelivery::BundledExtension`] carries the
 //! [`crate::plugin::PluginArtifact`]s themselves, and an installer needs
 //! nothing from the registry but the harness name the user typed.
 //!
@@ -349,17 +350,29 @@ pub const CODEX_APP: Harness = Harness {
     plugin: PluginDelivery::HookManifestTemplates(&crate::plugin::codex_app::CODEX_APP_TEMPLATES),
 };
 
-/// opencode. Launchable through a shared recipe, but no attribution lane
-/// exists yet — an honest partial entry, and the shape most new harnesses
-/// start in.
+/// opencode — the second self-attributing shape, reached by a different road
+/// than pi's.
+///
+/// opencode has a redirect story without any plugin: its provider endpoints
+/// live in a config document, which [`crate::launch::OpenCodeRecipe`] plans —
+/// so [`LaunchSupport::Recipe`] stays. What no config file can do is
+/// *attribute*: opencode publishes no PID-indexed session file (its sessions
+/// live in a SQLite database), so a purely redirected session's turns file
+/// under `harness_id: unknown`. The bundled plugin
+/// ([`crate::plugin::OPENCODE_GATEWAY_EXTENSION`]) closes that gap from
+/// inside the harness — it both redirects the captured providers through a
+/// `config` hook and stamps the complete `X-Tapes-*` envelope (with the
+/// capture-nonce echo) through a `chat.headers` hook. A consumer may
+/// therefore launch opencode either way: recipe plus plugin, or — like pi —
+/// plugin alone with the environment contract doing all the pointing.
 pub const OPENCODE: Harness = Harness {
     id: HARNESS_ID_OPENCODE,
     aliases: &[],
     user_agent: UserAgentMatch::None,
     launch: LaunchSupport::Recipe,
-    attribution: AttributionStrategy::None,
+    attribution: AttributionStrategy::SelfAttributing,
     transcripts: TranscriptSource::None,
-    plugin: PluginDelivery::None,
+    plugin: PluginDelivery::BundledExtension(crate::plugin::OPENCODE_ARTIFACTS),
 };
 
 /// pi — the self-attributing shape.
@@ -589,15 +602,45 @@ mod tests {
         assert_eq!(PI.attribution(), AttributionStrategy::SelfAttributing);
         assert!(matches!(PI.plugin(), PluginDelivery::BundledExtension(_)));
         assert_eq!(PI.transcripts(), TranscriptSource::None);
-        // Exactly one self-attributing harness today; if a second appears, the
-        // preserve-the-inbound-envelope branch needs revisiting rather than
-        // silently generalising.
+        // This set once held pi alone, with a note that a second entry should
+        // force a look at whether `Attributed::stamp`'s
+        // preserve-the-inbound-envelope branch generalises. opencode was that
+        // second entry, and the look happened: the branch preserves any
+        // *complete* inbound envelope without consulting the harness id, so it
+        // holds for every self-attributing harness by construction — what
+        // each one must do in exchange is stamp the complete envelope from
+        // inside, which `src/plugin.rs` pins per asset.
         let self_attributing: Vec<&str> = REGISTRY
             .iter()
             .filter(|h| h.attribution() == AttributionStrategy::SelfAttributing)
             .map(Harness::id)
             .collect();
-        assert_eq!(self_attributing, vec!["pi"]);
+        assert_eq!(self_attributing, vec!["opencode", "pi"]);
+    }
+
+    /// opencode's whole shape: still launchable through the crate's config
+    /// recipe, now self-attributing through the bundled plugin — the one
+    /// harness with both a redirect story and an in-harness extension. The
+    /// pairing is deliberate: the recipe can redirect but cannot attribute
+    /// (opencode keeps sessions in SQLite, not a PID-indexed file), and the
+    /// plugin does both, so a consumer that installs the plugin needs nothing
+    /// from the recipe at all.
+    #[test]
+    fn opencode_is_self_attributing_and_still_recipe_launchable() {
+        assert_eq!(OPENCODE.launch(), LaunchSupport::Recipe);
+        assert!(supported_agents().contains(&"opencode"));
+        assert_eq!(OPENCODE.attribution(), AttributionStrategy::SelfAttributing);
+        assert!(matches!(
+            OPENCODE.plugin(),
+            PluginDelivery::BundledExtension(_)
+        ));
+        // No transcript tree: the SQLite database is not a tree the transcript
+        // sweep can walk, so the wire lane is the whole capture.
+        assert_eq!(OPENCODE.transcripts(), TranscriptSource::None);
+        // The installer's path: the resolved name reaches the artifact.
+        let artifacts = find("opencode").expect("registered").plugin_artifacts();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].file_name(), "tapes-gateway.ts");
     }
 
     /// The path a `plugin install` walks, end to end: a user types a name, the

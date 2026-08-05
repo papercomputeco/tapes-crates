@@ -50,10 +50,11 @@ registry, so `cargo test` will tell you if a declaration is inconsistent: a
 duplicated name, an id the envelope never emits, a transcript tree that cannot
 be located, a User-Agent rule that claims traffic it should not.
 
-A declaration alone is a real, useful state. `OPENCODE` is exactly this: it is
-launchable, and it has no attribution lane yet. Its sessions capture and land
-under `harness_id: unknown` until someone writes one. Land the declaration,
-then add capability.
+A declaration alone is a real, useful state: launchable, with no attribution
+lane yet, its sessions capturing and landing under `harness_id: unknown` until
+someone writes one. `OPENCODE` lived in exactly that state for a while — a
+recipe and `AttributionStrategy::None` — before its bundled plugin made it
+self-attributing. Land the declaration, then add capability.
 
 ## Step 2 — a launch recipe, if the agent needs one
 
@@ -334,13 +335,14 @@ The registry holds five entries and not all of them are complete:
 | --- | --- | --- | --- | --- | --- |
 | `user_agent` | `Prefix("claude")` | `None` | `None` | `None` | `None` |
 | `launch` | `Recipe` | `Recipe` | `Unsupported` | `Recipe` | `ConsumerOwned` |
-| `attribution` | `SessionsDir` | `OpenRollout` | `LifecycleHooks` | `None` | `SelfAttributing` |
+| `attribution` | `SessionsDir` | `OpenRollout` | `LifecycleHooks` | `SelfAttributing` | `SelfAttributing` |
 | `transcripts` | `ClaudeProjects` | `CodexRollouts` | `CodexRollouts` | `None` | `None` |
-| `plugin` | `None` | `None` | `HookManifestTemplates` | `None` | `BundledExtension` |
+| `plugin` | `None` | `None` | `HookManifestTemplates` | `BundledExtension` | `BundledExtension` |
 
-`OPENCODE` is the honest partial entry, and the shape most new harnesses should
-start in. It is worth being precise about what that state does and does not buy,
-because "it's in the registry" is easy to over-read.
+`OPENCODE` spent a long stretch as the honest partial entry — a recipe with
+`AttributionStrategy::None` — and that state is still the shape most new
+harnesses should start in, so it is worth being precise about what it does and
+does not buy, because "it's in the registry" is easy to over-read.
 
 **What a partial entry gets you.** `find()` resolves the name, so a consumer
 answers "this harness needs no plugin" instead of "unknown harness".
@@ -351,33 +353,28 @@ config document that points opencode at the proxy — so the *crate* can plan th
 launch that makes its traffic capturable.
 
 **What it does not get you.** No attribution lane, which is the whole of the
-difference. opencode traffic matches no User-Agent rule and arrives on no Codex
-route, so the pipeline returns `Attributed::UnknownHarness` and the envelope is
-stamped `harness_id: unknown`. The turns land; the session is anonymous. And
-with `TranscriptSource::None` there is no fork skeleton to upload, so even a
-session you later identify by hand has a complete call inventory and no
-subagent structure.
+difference. Partial-entry traffic matches no User-Agent rule and arrives on no
+Codex route, so the pipeline returns `Attributed::UnknownHarness` and the
+envelope is stamped `harness_id: unknown`. The turns land; the session is
+anonymous. And with `TranscriptSource::None` there is no fork skeleton to
+upload, so even a session you later identify by hand has a complete call
+inventory and no subagent structure.
 
-**What it does not get you *yet*, for reasons outside this crate.** Neither
-shipped consumer actually starts opencode today, despite `LaunchSupport::Recipe`
-and `supported_agents()` both saying it is launchable:
+That is exactly the gap opencode's bundled plugin closed. The recipe could
+always redirect, but a config file cannot name the session it belongs to;
+`assets/opencode/tapes-gateway.ts` stamps the complete envelope (and the
+capture-nonce echo) from inside the harness, which is what moved `OPENCODE`
+from `None` to `SelfAttributing` — the pi road, taken by a harness that also
+kept its recipe.
 
-- `tapesctl start` does not consult the registry at all. It keeps a local
-  two-variant enum (`crates/tapesctl/src/start/mod.rs`) with a hand-rolled
-  `parse()`, a hardcoded error string listing `claude, codex`
-  (`crates/tapesctl/src/error.rs`), and a test asserting that `opencode` is
-  *rejected*. Only `tapesctl plugin install` is registry-derived.
-- paper's `SUPPORTED_AGENTS` is pinned to the registry's attribution-capable
-  subset, and `AttributionStrategy::None` is exactly what that filter excludes —
-  so a partial entry is invisible to `paper start` by construction, not by
-  oversight.
-
-Take that as the realistic bar rather than a discouragement: a declaration plus
-a recipe is a genuine, landable contribution, and landing it is what makes the
-attribution work reviewable in isolation afterwards. But if your goal is
-`<consumer> start <your-harness>` working end to end, the registry entry is
-necessary and not sufficient, and the remaining work is a pull request against
-the consumer.
+Take the partial state as a realistic bar rather than a discouragement: a
+declaration plus a recipe is a genuine, landable contribution, and landing it
+is what makes the attribution work reviewable in isolation afterwards. But if
+your goal is `<consumer> start <your-harness>` working end to end, the registry
+entry is necessary and not sufficient — the remaining work is the attribution
+capability here, and then a pull request against the consumer (paper's
+`SUPPORTED_AGENTS` filters to the attribution-capable subset, so a partial
+entry is invisible to `paper start` by construction, not by oversight).
 
 ## Proving a new attribution lane
 

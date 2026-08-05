@@ -815,6 +815,15 @@ mod tests {
         clear_cache_for(peer);
         let me = std::process::id() as i32;
 
+        // Both variants get the same wall-clock budget, because what is under
+        // test is which *owner* they agree on — not how few scans it takes to
+        // see it. A single socket-table scan is allowed to miss a socket that
+        // exists: that is precisely why `lookup_owner` and `lookup_owner_async`
+        // retry at all, and on a platform whose `owner_scan` is uncached
+        // (everything but Linux) `lookup_owner_once` has nothing to fall back
+        // on, so under a loaded test binary it misses often enough to matter.
+        // Asserting a bare `lookup_owner_once` here was asserting that the
+        // documented transient-miss case never happens.
         let deadline = Instant::now() + Duration::from_millis(250);
         let got = loop {
             let got = lookup_owner_async(peer).await;
@@ -823,8 +832,15 @@ mod tests {
             }
         };
         assert_eq!(got.pid, Some(me), "async owner lookup missed {peer}");
-        // The scan having just succeeded, the un-retried variant sees it too.
-        assert_eq!(lookup_owner_once(peer).pid, Some(me));
+
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let once = loop {
+            let once = lookup_owner_once(peer);
+            if once.pid == Some(me) || Instant::now() >= deadline {
+                break once;
+            }
+        };
+        assert_eq!(once.pid, Some(me), "single-shot owner lookup missed {peer}");
     }
 
     #[test]
