@@ -151,22 +151,105 @@ pub const X_TAPES_SESSION_NAME_CAP: usize = 256;
 /// parsers.
 const UTF8_VALUE_ESCAPE: &AsciiSet = &CONTROLS.add(b' ').add(b'%').add(b'"').add(b'\\').add(0x7f);
 
-/// Harness-native sub-thread headers, in priority order — first present wins.
+/// Claude Code's sub-thread header, in priority order — first present wins.
 ///
-/// A harness that runs subagents fires their API calls with a per-thread
-/// identifier. Claude Code stamps `x-claude-code-agent-id` on every call made
-/// from a subagent context (including its security-monitor checks) and omits it
-/// on the main thread. Capturing it makes thread attribution **deterministic at
-/// capture time** rather than something downstream has to recover by joining on
-/// content.
+/// Claude Code stamps `x-claude-code-agent-id` on every call made from a
+/// subagent context (including its security-monitor checks) and omits it on the
+/// main thread, so presence alone is the signal.
+pub const CLAUDE_THREAD_ID_HEADERS: &[&str] = &["x-claude-code-agent-id"];
+
+/// Codex's thread id for one call: equal to [`CODEX_SESSION_ID_HEADER`] on a
+/// root turn, a distinct id on a spawned sub-thread's turn.
+///
+/// Also read — as an ordered first-present list rather than as a pair — by
+/// [`crate::attribution::codex::session::CODEX_ROLLOUT_ID_HEADERS`], which
+/// answers a different question: *which rollout* a request belongs to. Both
+/// take their spelling from here so the two readings cannot drift apart.
+pub const CODEX_THREAD_ID_HEADER: &str = "thread-id";
+
+/// Codex's root session id, present on every Codex call.
+pub const CODEX_SESSION_ID_HEADER: &str = "session-id";
+
+/// How one harness's request headers name the sub-thread a call was made from.
+///
+/// The two shapes exist because harnesses disagree about what a header's
+/// *presence* means, and a single flat list of names cannot express both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HarnessThreadRule {
+    /// The harness stamps a dedicated header **only** on sub-thread calls, so
+    /// presence is the whole signal. Names are tried in order; the first one
+    /// present with a non-empty value wins.
+    FirstPresent(&'static [&'static str]),
+    /// The harness stamps both headers on **every** call, and the sub-thread
+    /// signal is their divergence rather than either one's presence.
+    ///
+    /// Both must be present and differ. Each guard earns its place:
+    ///
+    /// * An **equal** pair is a root turn. Codex sets `thread-id` ==
+    ///   `session-id` there, so a flat first-present entry for `thread-id`
+    ///   would stamp a thread id on every root turn — which is not cosmetic:
+    ///   downstream, a non-empty thread id routes the root spine off the main
+    ///   spine and silently degrades the session's derived status.
+    /// * A **lone** thread id, with no session id beside it, is not a
+    ///   recognised shape for this harness at all. Treating it as a sub-thread
+    ///   would risk that same misrouting on evidence the rule cannot confirm,
+    ///   so it resolves to nothing instead.
+    DivergentPair {
+        /// Header carrying this call's thread id.
+        thread: &'static str,
+        /// Header carrying the root session id the thread id is compared against.
+        session: &'static str,
+    },
+}
+
+impl HarnessThreadRule {
+    /// Apply this rule to a request's headers.
+    ///
+    /// `None` means "this rule recognises nothing here" — a main-thread call,
+    /// or a request belonging to a different harness.
+    #[must_use]
+    pub fn resolve<'h>(&self, headers: &'h HeaderMap) -> Option<&'h str> {
+        match *self {
+            Self::FirstPresent(names) => names.iter().find_map(|name| header_str(headers, name)),
+            Self::DivergentPair { thread, session } => {
+                let thread_id = header_str(headers, thread)?;
+                let session_id = header_str(headers, session)?;
+                (thread_id != session_id).then_some(thread_id)
+            }
+        }
+    }
+}
+
+/// Every harness's sub-thread rule, in the order [`thread_id`] tries them.
 ///
 /// This is harness knowledge, so it lives here rather than in each capture
 /// client; the rest of a client's pipeline is harness-neutral and only ever
-/// sees the resolved thread id. The list mirrors tapes-extproc's
-/// `harnessThreadIDHeaders` — the two must agree, since extproc reads these off
-/// the wire for exactly the same purpose. Add other harnesses' equivalents to
-/// both as they are identified.
-pub const HARNESS_THREAD_ID_HEADERS: &[&str] = &["x-claude-code-agent-id"];
+/// sees the resolved thread id. The table mirrors tapes-extproc's `ThreadID` —
+/// the two must agree, since extproc reads these off the wire for exactly the
+/// same purpose. Add other harnesses' rules to both as they are identified.
+///
+/// Order is precedence, and it is only observable when one request carries
+/// evidence for two harnesses at once. Claude's dedicated header is the more
+/// specific signal, so it is tried first, matching extproc.
+pub const HARNESS_THREAD_ID_RULES: &[HarnessThreadRule] = &[
+    HarnessThreadRule::FirstPresent(CLAUDE_THREAD_ID_HEADERS),
+    HarnessThreadRule::DivergentPair {
+        thread: CODEX_THREAD_ID_HEADER,
+        session: CODEX_SESSION_ID_HEADER,
+    },
+];
+
+/// A header's value as a string, treating absent, non-ASCII and empty alike as
+/// "not stated". No trimming: the comparison in
+/// [`HarnessThreadRule::DivergentPair`] is against another raw header value,
+/// and extproc compares the bytes it received.
+fn header_str<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+}
 
 /// Resolve the harness-native sub-thread id for a request.
 ///
@@ -176,12 +259,9 @@ pub const HARNESS_THREAD_ID_HEADERS: &[&str] = &["x-claude-code-agent-id"];
 /// request — the harness set it, and upstream may legitimately see it.
 #[must_use]
 pub fn thread_id(headers: &HeaderMap) -> Option<&str> {
-    HARNESS_THREAD_ID_HEADERS.iter().find_map(|name| {
-        headers
-            .get(*name)
-            .and_then(|value| value.to_str().ok())
-            .filter(|value| !value.is_empty())
-    })
+    HARNESS_THREAD_ID_RULES
+        .iter()
+        .find_map(|rule| rule.resolve(headers))
 }
 
 /// Returns true if `name` is in [`HOP_BY_HOP_HEADERS`] (case-insensitive).
@@ -1171,28 +1251,109 @@ mod tests {
         );
     }
 
+    // --- sub-thread resolution ------------------------------------------
+    //
+    // These mirror tapes-extproc's `TestThreadID` case for case. The ids are
+    // the same captured wire evidence its table uses, so a divergence between
+    // the two implementations shows up as one of these failing rather than as
+    // a mis-shaped session weeks later.
+
+    const CODEX_ROOT: &str = "019f863d-0cd6-7ce2-b481-20abd683a14e";
+    const CODEX_CHILD: &str = "019f8713-2213-75e3-be33-36fd2f8dd384";
+    const CLAUDE_AGENT: &str = "agent-0a1b2c3d";
+
+    fn headers_from(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for (name, value) in pairs {
+            headers.insert(
+                HeaderName::from_static(name),
+                HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        headers
+    }
+
     #[test]
     fn thread_id_reads_the_claude_subagent_header() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-claude-code-agent-id",
-            HeaderValue::from_static("agent-7"),
-        );
-        assert_eq!(thread_id(&headers), Some("agent-7"));
+        let headers = headers_from(&[("x-claude-code-agent-id", CLAUDE_AGENT)]);
+        assert_eq!(thread_id(&headers), Some(CLAUDE_AGENT));
     }
 
     #[test]
     fn thread_id_is_absent_on_a_main_thread_call() {
         // Claude Code omits the header entirely on the main thread, which is
         // what makes its presence a reliable subagent signal.
-        let headers = HeaderMap::new();
+        let headers = headers_from(&[("content-type", "application/json")]);
         assert_eq!(thread_id(&headers), None);
     }
 
     #[test]
     fn a_blank_thread_id_counts_as_absent() {
-        let mut headers = HeaderMap::new();
-        headers.insert("x-claude-code-agent-id", HeaderValue::from_static(""));
+        let headers = headers_from(&[("x-claude-code-agent-id", "")]);
         assert_eq!(thread_id(&headers), None);
+    }
+
+    #[test]
+    fn a_codex_child_turn_resolves_to_its_thread_id() {
+        let headers = headers_from(&[("session-id", CODEX_ROOT), ("thread-id", CODEX_CHILD)]);
+        assert_eq!(thread_id(&headers), Some(CODEX_CHILD));
+    }
+
+    /// The root guard, and the reason Codex cannot be expressed as a flat
+    /// first-present entry: it stamps `thread-id` on *every* call, equal to
+    /// `session-id` on a root turn. A flat entry would stamp a thread id on
+    /// every root turn and misroute the root spine.
+    #[test]
+    fn a_codex_root_turn_has_no_thread_id() {
+        let headers = headers_from(&[("session-id", CODEX_ROOT), ("thread-id", CODEX_ROOT)]);
+        assert_eq!(thread_id(&headers), None);
+    }
+
+    #[test]
+    fn a_codex_session_id_alone_is_a_main_thread_call() {
+        let headers = headers_from(&[("session-id", CODEX_ROOT)]);
+        assert_eq!(thread_id(&headers), None);
+    }
+
+    /// The second guard: a `thread-id` with no `session-id` beside it is not a
+    /// recognised Codex shape, so the pair rule declines rather than guessing
+    /// on half the evidence.
+    #[test]
+    fn a_lone_thread_id_is_not_a_codex_shape() {
+        let headers = headers_from(&[("thread-id", CODEX_CHILD)]);
+        assert_eq!(thread_id(&headers), None);
+    }
+
+    /// Rule order is precedence. Only observable when one request carries
+    /// evidence for two harnesses at once, which is exactly when a silent
+    /// reordering would matter.
+    #[test]
+    fn the_claude_rule_wins_over_a_codex_shaped_pair() {
+        let headers = headers_from(&[
+            ("x-claude-code-agent-id", CLAUDE_AGENT),
+            ("session-id", CODEX_ROOT),
+            ("thread-id", CODEX_CHILD),
+        ]);
+        assert_eq!(thread_id(&headers), Some(CLAUDE_AGENT));
+    }
+
+    /// The pair rule reads the same header spellings the rollout-id lookup
+    /// does. They answer different questions and must not drift apart.
+    #[test]
+    fn the_codex_pair_names_the_rollout_id_headers() {
+        let pair = HARNESS_THREAD_ID_RULES
+            .iter()
+            .find_map(|rule| match rule {
+                HarnessThreadRule::DivergentPair { thread, session } => Some((*thread, *session)),
+                HarnessThreadRule::FirstPresent(_) => None,
+            })
+            .expect("codex is declared as a divergent pair");
+        assert_eq!(
+            [pair.0, pair.1],
+            [
+                crate::attribution::codex::session::CODEX_ROLLOUT_ID_HEADERS[0],
+                crate::attribution::codex::session::CODEX_ROLLOUT_ID_HEADERS[1],
+            ],
+        );
     }
 }
