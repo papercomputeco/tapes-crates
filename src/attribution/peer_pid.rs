@@ -56,6 +56,24 @@ use netsock::protocol::ProtocolFlags;
 /// out-live the connection it described.
 const CACHE_TTL: Duration = Duration::from_secs(60);
 
+/// How many times [`lookup_owner`] scans the socket table before
+/// conceding that no process owns the peer socket. The peer socket is
+/// fully established by the time `accept` hands us its 4-tuple, so an
+/// owner always exists — but the enumeration underneath (per-PID
+/// `proc_pidfdinfo` walks on macOS, a netlink dump plus `/proc` reads
+/// on Linux) is not a consistent snapshot, and under concurrent load a
+/// scan can transiently miss the socket or its owning process. A miss
+/// here is therefore usually a race, not an answer, and a couple of
+/// short retries convert it into the right PID instead of letting the
+/// caller fall through to its fail-closed path.
+const OWNER_SCAN_ATTEMPTS: u32 = 3;
+
+/// Pause between [`lookup_owner`] scan attempts. Bounded worst case:
+/// `(OWNER_SCAN_ATTEMPTS - 1) * OWNER_SCAN_BACKOFF` = 20 ms, paid only
+/// when every scan misses — a first-try hit returns immediately and
+/// never sleeps.
+const OWNER_SCAN_BACKOFF: Duration = Duration::from_millis(10);
+
 /// Result of a peer-PID lookup attempt.
 pub struct PeerPidLookup {
     /// Matched PID, if any candidate owned the peer socket.
@@ -103,14 +121,42 @@ pub fn lookup(candidates: &[i32], peer: SocketAddr) -> PeerPidLookup {
 /// socket inode and UID, then we inspect only processes owned by that UID. That
 /// keeps manual Codex proxy attribution working without crawling root-owned
 /// fd tables.
+///
+/// A `None` from a single scan is retried (see [`OWNER_SCAN_ATTEMPTS`]):
+/// the socket table enumeration is racy under concurrent load on both
+/// platforms, and the peer socket provably exists. Callers' fail-closed
+/// handling of `pid: None` is unchanged — exhausting the retries still
+/// yields `None`.
 pub fn lookup_owner(peer: SocketAddr) -> PeerPidLookup {
     let started = Instant::now();
     #[cfg(target_os = "linux")]
-    let pid = cached_lookup_owner(peer);
+    let pid = resolve_with_retry(OWNER_SCAN_ATTEMPTS, OWNER_SCAN_BACKOFF, || {
+        cached_lookup_owner(peer)
+    });
     #[cfg(not(target_os = "linux"))]
-    let pid = scan_owner(peer);
+    let pid = resolve_with_retry(OWNER_SCAN_ATTEMPTS, OWNER_SCAN_BACKOFF, || scan_owner(peer));
     let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
     PeerPidLookup { pid, micros }
+}
+
+/// Run `scan` up to `attempts` times, sleeping `backoff` between misses.
+/// The first `Some` wins immediately — a found-on-first-try lookup never
+/// sleeps — and there is no sleep after the final miss, so the failure
+/// path adds exactly `(attempts - 1) * backoff` of latency.
+fn resolve_with_retry(
+    attempts: u32,
+    backoff: Duration,
+    mut scan: impl FnMut() -> Option<i32>,
+) -> Option<i32> {
+    for attempt in 1..=attempts {
+        if let Some(pid) = scan() {
+            return Some(pid);
+        }
+        if attempt < attempts {
+            std::thread::sleep(backoff);
+        }
+    }
+    None
 }
 
 #[cfg(target_os = "linux")]
@@ -548,6 +594,48 @@ mod tests {
 
         clear_cache_for(v4);
         clear_cache_for(v6);
+    }
+
+    /// A scan that hits on the first attempt returns without ever
+    /// sleeping or re-scanning — the common path pays nothing for the
+    /// retry machinery.
+    #[test]
+    fn retry_returns_first_hit_without_rescanning() {
+        let mut calls = 0;
+        let got = resolve_with_retry(3, Duration::from_millis(10), || {
+            calls += 1;
+            Some(42)
+        });
+        assert_eq!(got, Some(42));
+        assert_eq!(calls, 1, "a first-try hit must not trigger extra scans");
+    }
+
+    /// A transient miss (the concurrent-load race) is absorbed: the
+    /// scan is retried until it resolves, and the eventual owner is
+    /// returned.
+    #[test]
+    fn retry_recovers_from_transient_scan_misses() {
+        let mut calls = 0;
+        let got = resolve_with_retry(3, Duration::from_millis(1), || {
+            calls += 1;
+            (calls == 3).then_some(7)
+        });
+        assert_eq!(got, Some(7));
+        assert_eq!(calls, 3, "retry should re-scan until the owner appears");
+    }
+
+    /// A persistent miss stays a miss: exactly `attempts` scans run,
+    /// then `None` comes back so callers' fail-closed handling engages
+    /// unchanged.
+    #[test]
+    fn retry_exhausts_attempts_then_fails_closed() {
+        let mut calls = 0;
+        let got = resolve_with_retry(3, Duration::from_millis(1), || {
+            calls += 1;
+            None
+        });
+        assert_eq!(got, None);
+        assert_eq!(calls, 3, "exactly `attempts` scans, no more, no fewer");
     }
 
     #[test]
