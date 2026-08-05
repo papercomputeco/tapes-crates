@@ -118,26 +118,51 @@ impl HookPluginIdentity<'_> {
 /// expansions passes through byte-exact to Codex.
 #[must_use]
 pub fn render_hooks_manifest(hook_command: &str) -> String {
-    render_slot(HOOKS_MANIFEST_TEMPLATE, HOOK_COMMAND_SLOT, hook_command)
+    render_slots(
+        HOOKS_MANIFEST_TEMPLATE,
+        &[(HOOK_COMMAND_SLOT, hook_command)],
+    )
 }
 
 /// Render the plugin manifest with the consumer's identity strings.
 #[must_use]
 pub fn render_plugin_manifest(identity: &HookPluginIdentity) -> String {
-    identity.slots().iter().fold(
-        PLUGIN_MANIFEST_TEMPLATE.to_owned(),
-        |manifest, (slot, value)| render_slot(&manifest, slot, value),
-    )
+    render_slots(PLUGIN_MANIFEST_TEMPLATE, &identity.slots())
 }
 
-/// Replace every quoted occurrence of `slot` with the JSON-escaped `value`.
+/// Replace every quoted slot occurrence with its JSON-escaped value, in one
+/// pass over the template.
 ///
-/// Substitution targets `"__SLOT__"` including its quotes and replaces it
-/// with a complete JSON string literal, so escaping cannot be forgotten and a
-/// slot can never be half-replaced inside a larger value.
-fn render_slot(template: &str, slot: &str, value: &str) -> String {
-    let quoted_slot = format!("\"{slot}\"");
-    template.replace(&quoted_slot, &json_string_literal(value))
+/// Substitution targets `"__SLOT__"` including its quotes and emits a
+/// complete JSON string literal, so escaping cannot be forgotten and a slot
+/// can never be half-replaced inside a larger value. Single-pass is
+/// load-bearing, not a micro-optimisation: only *template* text is ever
+/// scanned for slots, and substituted values go straight to the output. A
+/// sequential per-slot `replace` re-scans earlier insertions, so an identity
+/// value that merely *contains* another slot's placeholder — pathological but
+/// consumer-controlled — would itself get substituted. Here such a value
+/// passes through verbatim (escaped), like every other value byte.
+fn render_slots(template: &str, slots: &[(&str, &str)]) -> String {
+    let mut rendered = String::with_capacity(template.len());
+    let mut rest = template;
+    loop {
+        // The earliest quoted slot in the remaining *template* text wins;
+        // everything before it is emitted untouched.
+        let next = slots
+            .iter()
+            .filter_map(|(slot, value)| {
+                let quoted = format!("\"{slot}\"");
+                rest.find(&quoted).map(|at| (at, quoted.len(), *value))
+            })
+            .min_by_key(|(at, ..)| *at);
+        let Some((at, slot_len, value)) = next else {
+            rendered.push_str(rest);
+            return rendered;
+        };
+        rendered.push_str(&rest[..at]);
+        rendered.push_str(&json_string_literal(value));
+        rest = &rest[at + slot_len..];
+    }
 }
 
 /// `value` as a complete JSON string literal, quotes included.
@@ -231,6 +256,47 @@ mod tests {
                 registrations[0].hooks[0].command, command,
                 "{event}'s command did not survive rendering byte-exact"
             );
+        }
+    }
+
+    /// Substituted values are output, not template: an identity value that
+    /// contains — or *is* — another slot's placeholder must survive
+    /// verbatim, not get substituted itself. The sharpest case is exact
+    /// equality: the value's own JSON-literal quotes complete the quoted
+    /// `"__SLOT__"` pattern, so a sequential per-slot `replace` re-scanning
+    /// its earlier insertions would swap the name for the version. Values
+    /// merely embedding the spelling ride along as regression cover.
+    #[test]
+    fn a_value_containing_another_slots_placeholder_survives_verbatim() {
+        let mut identity = identity();
+        identity.name = "__TAPES_PLUGIN_VERSION__";
+        identity.long_description = "mentions __TAPES_PLUGIN_NAME__ in prose";
+        let rendered = render_plugin_manifest(&identity);
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(
+            parsed["name"], "__TAPES_PLUGIN_VERSION__",
+            "the name was re-substituted as if it were template text"
+        );
+        assert_eq!(
+            parsed["interface"]["longDescription"],
+            "mentions __TAPES_PLUGIN_NAME__ in prose"
+        );
+        // And the real slots still rendered normally around them.
+        assert_eq!(parsed["version"], "0.1.0");
+        assert_eq!(parsed["interface"]["displayName"], "Acme for Codex");
+    }
+
+    /// Same property on the hooks side: a command containing the command
+    /// slot's own quoted spelling is emitted once, escaped, and the five
+    /// real slots are the only things substituted.
+    #[test]
+    fn a_command_containing_the_slot_spelling_survives_verbatim() {
+        let command = "run --note '\"__TAPES_HOOK_COMMAND__\"'";
+        let rendered = render_hooks_manifest(command);
+        let parsed: HookFile = serde_json::from_str(&rendered).unwrap();
+        for registrations in parsed.hooks.values() {
+            assert_eq!(registrations[0].hooks[0].command, command);
         }
     }
 
