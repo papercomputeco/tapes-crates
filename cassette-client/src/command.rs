@@ -264,6 +264,69 @@ mod tests {
     }
 
     #[test]
+    fn a_consumer_reserving_both_spellings_still_gets_a_well_formed_command() {
+        // The adversarial case behind the reserved list's re-rewrite: the
+        // consumer's decorator defines --param-body as well as --body, and a
+        // cassette parameter named `body` must be pushed past BOTH spellings
+        // — one rewrite pass would hand clap a duplicate id and panic at
+        // command construction.
+        let reserved = ReducerConfig {
+            reserved_flags: &["tapes-url", "body", "param-body", "help", "verbose"],
+        };
+        let document = json!({"paths": {"/v1/cassettes/c/thing": {
+            "post": {"operationId": "createThing", "requestBody": {"required": true},
+                "parameters": [
+                    {"name": "body", "in": "query"},
+                    {"name": "param_body", "in": "query"}
+                ]}
+        }}});
+        let surface = Surface {
+            cassettes: vec![spec::reduce("c", None, &document, &reserved)],
+        };
+        let decorate = |command: Command| {
+            with_tapes_url(command).arg(
+                Arg::new("param-body")
+                    .long("param-body")
+                    .value_name("VALUE"),
+            )
+        };
+
+        let command = super::augment(root(), &surface, decorate);
+        command.clone().debug_assert();
+
+        // And the rewritten flags are usable, not just panic-free.
+        let matches = command
+            .try_get_matches_from([
+                "tapesctl",
+                "c",
+                "create-thing",
+                "--body",
+                "{}",
+                "--param-param-body",
+                "wire-body",
+                "--param-param-body-2",
+                "wire-param-body",
+                "--tapes-url",
+                "http://x",
+            ])
+            .unwrap();
+        let (_, cassette_matches) = matches.subcommand().unwrap();
+        let (_, method_matches) = cassette_matches.subcommand().unwrap();
+        assert_eq!(
+            method_matches
+                .get_one::<String>("param-param-body")
+                .unwrap(),
+            "wire-body",
+        );
+        assert_eq!(
+            method_matches
+                .get_one::<String>("param-param-body-2")
+                .unwrap(),
+            "wire-param-body",
+        );
+    }
+
+    #[test]
     fn a_cassette_becomes_a_noun_and_its_operations_become_methods() {
         let command = augment(root(), &hello_surface());
         let cassette = command

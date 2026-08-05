@@ -42,7 +42,9 @@ const HTTP_METHODS: [&str; 8] = [
 pub struct ReducerConfig<'a> {
     /// Flag names the generated surface cannot hand to a cassette parameter,
     /// because the consumer's subcommand defines them itself. A colliding
-    /// parameter is presented as `param-<flag>`; its wire name is untouched.
+    /// parameter is presented as `param-<flag>`, prefixed again as many times
+    /// as it takes to clear the reserved set, and suffixed with a counter if
+    /// it then collides with a sibling; its wire name is untouched.
     pub reserved_flags: &'a [&'a str],
 }
 
@@ -336,13 +338,25 @@ fn finish_params(path: &str, params: Vec<Param>, reducer: &ReducerConfig<'_>) ->
 
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for param in &mut ordered {
-        if reducer.reserved_flags.contains(&param.flag.as_str()) {
-            param.flag = format!("param-{}", param.flag);
+        // Keep prefixing until the name is clear of the reserved set: a
+        // consumer is free to reserve a rewrite's spelling too (`body` AND
+        // `param-body`), and a single pass would emit a still-reserved flag —
+        // which clap punishes with a duplicate-id panic the moment the
+        // command is constructed. The set is finite, so this terminates.
+        let mut base = param.flag.clone();
+        while reducer.reserved_flags.contains(&base.as_str()) {
+            base = format!("param-{base}");
         }
-        let mut candidate = param.flag.clone();
+        // Then make it unique among its siblings — and never let the counter
+        // land back on a reserved name either. The order of the checks
+        // matters: `insert` records the candidate as taken, so a reserved
+        // candidate must be rejected before it is offered to the set.
+        let mut candidate = base.clone();
         let mut suffix = 2;
-        while !seen.insert(candidate.clone()) {
-            candidate = format!("{}-{suffix}", param.flag);
+        while reducer.reserved_flags.contains(&candidate.as_str())
+            || !seen.insert(candidate.clone())
+        {
+            candidate = format!("{base}-{suffix}");
             suffix += 1;
         }
         param.flag = candidate;
@@ -668,6 +682,79 @@ mod tests {
         assert_eq!(flags, vec!["param-tapes-url", "param-body"]);
         // The wire names are untouched — only the presentation moved.
         assert_eq!(cassette.methods[0].params[0].wire, "tapes_url");
+    }
+
+    #[test]
+    fn a_reserved_rewrite_that_is_itself_reserved_is_rewritten_again() {
+        // A consumer is free to reserve both a name and its rewrite (`body`
+        // AND `param-body`). One rewrite pass would emit the still-reserved
+        // `param-body`, and clap panics on the duplicate argument id the
+        // moment the command is constructed — a crash a server's spec could
+        // trigger on a user's machine.
+        let adversarial = ReducerConfig {
+            reserved_flags: &["body", "param-body", "help"],
+        };
+        let document = json!({"paths": {"/v1/cassettes/c/reports": {
+            "get": {"operationId": "listReports", "parameters": [
+                {"name": "body", "in": "query"}
+            ]}
+        }}});
+        let cassette = super::reduce("c", None, &document, &adversarial);
+        let param = &cassette.methods[0].params[0];
+        assert_eq!(param.flag, "param-param-body");
+        // The wire name is untouched — only the presentation moved.
+        assert_eq!(param.wire, "body");
+    }
+
+    #[test]
+    fn sibling_rewrites_that_collide_come_out_unique_and_unreserved() {
+        // `body` is reserved twice over, and `param_body` kebabs onto the
+        // same rewrite chain — the pair must come out distinct from each
+        // other AND clear of the reserved set.
+        let adversarial = ReducerConfig {
+            reserved_flags: &["body", "param-body"],
+        };
+        let document = json!({"paths": {"/v1/cassettes/c/reports": {
+            "get": {"operationId": "listReports", "parameters": [
+                {"name": "body", "in": "query"},
+                {"name": "param_body", "in": "query"}
+            ]}
+        }}});
+        let cassette = super::reduce("c", None, &document, &adversarial);
+        let flags: Vec<&str> = cassette.methods[0]
+            .params
+            .iter()
+            .map(|p| p.flag.as_str())
+            .collect();
+        assert_eq!(flags, vec!["param-param-body", "param-param-body-2"]);
+        for flag in flags {
+            assert!(
+                !adversarial.reserved_flags.contains(&flag),
+                "{flag:?} is still reserved",
+            );
+        }
+    }
+
+    #[test]
+    fn a_uniqueness_suffix_may_not_land_on_a_reserved_name() {
+        // The counter that separates colliding siblings can itself produce a
+        // reserved spelling; it has to keep counting past it.
+        let adversarial = ReducerConfig {
+            reserved_flags: &["since-id-2"],
+        };
+        let document = json!({"paths": {"/v1/cassettes/c/reports": {
+            "get": {"operationId": "listReports", "parameters": [
+                {"name": "since_id", "in": "query"},
+                {"name": "sinceId", "in": "header"}
+            ]}
+        }}});
+        let cassette = super::reduce("c", None, &document, &adversarial);
+        let flags: Vec<&str> = cassette.methods[0]
+            .params
+            .iter()
+            .map(|p| p.flag.as_str())
+            .collect();
+        assert_eq!(flags, vec!["since-id", "since-id-3"]);
     }
 
     #[test]
