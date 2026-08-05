@@ -574,9 +574,43 @@ mod tests {
     fn the_opencode_plugin_stamps_nothing_toward_a_real_upstream() {
         let contents = OPENCODE_GATEWAY_EXTENSION.contents();
         assert!(
-            contents.contains("startsWith(baseUrl)"),
+            contents.contains("isGatewayAddress(resolvedBaseUrl, baseUrl)"),
             "the asset does not verify the resolved provider endpoint is the \
              gateway before stamping the nonce and envelope"
+        );
+    }
+
+    /// …and that gate compares URLs, not strings.
+    ///
+    /// The adversarial sibling of the test above, pinned separately because the
+    /// two failures are different sizes. Failing the check above means turns go
+    /// unattributed; failing this one means the launch nonce and the session
+    /// envelope are handed to an attacker-controlled host. A textual
+    /// `resolved.startsWith(baseUrl)` looks like it asks "is this the gateway"
+    /// and instead asks "does this begin with those characters", so a gateway at
+    /// `https://gw.example` also accepts `https://gw.example.attacker.invalid` —
+    /// a different host, a registrable lookalike, and `options.baseURL` is
+    /// user-editable config. The asset must therefore compare parsed origins,
+    /// and must not carry the prefix test that this replaced.
+    #[test]
+    fn the_opencode_plugins_gateway_check_is_a_url_boundary_not_a_string_prefix() {
+        let contents = OPENCODE_GATEWAY_EXTENSION.contents();
+        assert!(
+            !contents.contains("startsWith(baseUrl)"),
+            "the asset compares the resolved endpoint to the gateway as a string \
+             prefix; a lookalike host sharing that prefix would be handed the \
+             capture nonce and the session envelope"
+        );
+        assert!(
+            contents.contains("url.origin !== gateway.origin"),
+            "the asset does not compare parsed origins, which is what makes the \
+             host boundary — scheme, host and port — actually hold"
+        );
+        // Origin alone would let a gateway mounted at a sub-path accept a
+        // sibling of it, so the path is bounded on a separator too.
+        assert!(
+            contents.contains("url.pathname.startsWith(`${mount}/`)"),
+            "the asset does not bound the gateway's mount path on a separator"
         );
     }
 

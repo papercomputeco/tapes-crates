@@ -363,8 +363,20 @@ pub const CODEX_APP: Harness = Harness {
 /// inside the harness — it both redirects the captured providers through a
 /// `config` hook and stamps the complete `X-Tapes-*` envelope (with the
 /// capture-nonce echo) through a `chat.headers` hook. A consumer may
-/// therefore launch opencode either way: recipe plus plugin, or — like pi —
+/// therefore launch opencode either way: through the recipe, or — like pi —
 /// plugin alone with the environment contract doing all the pointing.
+///
+/// The two roads are declared together on purpose, and the pairing has one
+/// sharp edge worth knowing about here rather than discovering. The recipe
+/// redirects by relocating opencode's whole config root, which moves the
+/// plugin directory along with it, so an *installed* plugin is not on any path
+/// a recipe-launched session scans. That combination used to capture traffic
+/// and attribute none of it, silently. A plan therefore writes the plugin into
+/// its own config root — see [`crate::launch::opencode`] for why that is the
+/// fix rather than making the two deliveries exclusive here. Which is also why
+/// this entry keeps both [`LaunchSupport::Recipe`] and
+/// [`PluginDelivery::BundledExtension`]: they compose, and the registry would
+/// be lying if it said otherwise.
 pub const OPENCODE: Harness = Harness {
     id: HARNESS_ID_OPENCODE,
     aliases: &[],

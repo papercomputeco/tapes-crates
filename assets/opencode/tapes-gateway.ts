@@ -46,6 +46,47 @@ function isCapturedProvider(provider: string): boolean {
   return (CAPTURED_PROVIDERS as readonly string[]).includes(provider);
 }
 
+// Is `candidate` an address on the capture proxy this plugin was pointed at?
+//
+// Gates the nonce and the envelope, so it is a security boundary and not a
+// convenience: it decides whether a per-launch secret is put on a request. It
+// must therefore compare URLs as URLs. A textual prefix test — the candidate
+// string beginning with the gateway string — reads as if it means the same
+// thing and does not: with a gateway at
+// `https://gw.example`, such a test also accepts
+// `https://gw.example.attacker.invalid`, an entirely different host that would
+// then be handed the launch nonce and the session envelope. Registering a
+// lookalike domain is cheap, and `options.baseURL` is user-editable config, so
+// that is a live exfiltration path rather than a theoretical one.
+//
+// Both halves below are boundary comparisons on parsed components:
+//
+// * `origin` covers scheme, host, and port as one unit, so no host that merely
+//   begins with the gateway's can pass. Comparing parsed origins rather than
+//   splicing the string also avoids re-implementing authority parsing, which is
+//   where this class of bug usually comes from. (An unparseable candidate, or
+//   one with a non-HTTP scheme, gets the opaque origin `"null"`; the gateway URL
+//   is normalised to http/https above, so its origin is never `"null"` and such
+//   a candidate can never match.)
+// * the path check keeps a gateway mounted on a sub-path from accepting a
+//   sibling of it — `/capture` must not match `/capture-elsewhere` — while
+//   still accepting the mount point itself and anything beneath it.
+function isGatewayAddress(candidate: string, gatewayUrl: string): boolean {
+  let url: URL;
+  let gateway: URL;
+  try {
+    url = new URL(candidate);
+    gateway = new URL(gatewayUrl);
+  } catch {
+    return false;
+  }
+  if (url.origin !== gateway.origin) {
+    return false;
+  }
+  const mount = gateway.pathname.replace(/\/+$/, "");
+  return url.pathname === mount || url.pathname.startsWith(`${mount}/`);
+}
+
 // A single export, and it is a function: opencode treats *every* export of a
 // plugin module as a plugin factory and throws on one that is not callable.
 export const TapesGateway = async ({ client }: { client?: any }) => {
@@ -139,11 +180,13 @@ export const TapesGateway = async ({ client }: { client?: any }) => {
 
       // The redirect must actually have stuck before anything is stamped. A
       // provider whose resolved base URL is not the proxy's — an auth loader
-      // that swapped endpoints, a later config layer that won — is sending
-      // this request to a real upstream, and the nonce must never travel to
-      // one: it is a secret shared with the proxy alone.
+      // that swapped endpoints, a later config layer that won, a hand-edited
+      // config naming a lookalike host — is sending this request somewhere
+      // that is not the capture proxy, and the nonce must never travel there:
+      // it is a secret shared with the proxy alone. See `isGatewayAddress`
+      // for why this is a parsed-URL comparison and not a string prefix.
       const resolvedBaseUrl = input.provider?.options?.baseURL;
-      if (typeof resolvedBaseUrl !== "string" || !resolvedBaseUrl.startsWith(baseUrl)) {
+      if (typeof resolvedBaseUrl !== "string" || !isGatewayAddress(resolvedBaseUrl, baseUrl)) {
         warn(
           `unrouted:${providerID}`,
           `the ${providerID} provider is not routing through the capture proxy; this session's ` +
