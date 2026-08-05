@@ -1,0 +1,62 @@
+# Dual-licensed under MIT OR Apache-2.0 — see LICENSE-MIT and LICENSE-APACHE
+# at the repository root.
+#
+# `publish` stays false until the first deliberate crates.io release; flip it
+# together with that release PR, alongside the sibling `tapes-harnesses` crate.
+
+# This crate is its own workspace root. The empty table is load-bearing: it
+# stops Cargo from walking up and adopting whatever workspace happens to own
+# the directory this repo was checked out into — a real case, since the crate
+# is vendored as a member of the Paper forest, whose root manifest is an
+# unrelated workspace. It also keeps this package a *sibling* of the
+# repository-root `tapes-harnesses` crate rather than a member of it, so each
+# is consumed by git pin independently.
+[workspace]
+
+[package]
+name = "tapes-cassette-client"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+publish = false
+authors = ["Paper Compute"]
+repository = "https://github.com/papercomputeco/tapes-harnesses"
+description = "Shared client-side machinery for the generated tapes cassette surface: discovery, OpenAPI reduction, the on-disk surface cache, clap command synthesis, and the no-auth HTTP transport."
+
+[lib]
+name = "tapes_cassette_client"
+path = "src/lib.rs"
+
+# Dependency versions match `tapesctl`, which this machinery was extracted
+# from, so the consumer's lockfile does not fork when it consumes this crate.
+[dependencies]
+# `string` lets a Command/Arg be named by an owned String rather than only by
+# a `&'static str`. The generated cassette surface is built from a document
+# fetched at runtime, so every one of its names is owned; without this
+# feature that surface cannot be expressed at all.
+clap = { version = "4", features = ["string"] }
+dirs = "5"
+http = "1"
+# reqwest is built WITHOUT any compression feature on purpose, matching the
+# consumers: the transport must hand back the server's bytes as sent.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+snafu = "0.8"
+tracing = "0.1"
+url = "2"
+
+[dev-dependencies]
+# The tests pin tapesctl's decorator shape, whose `--tapes-url` falls back to
+# an environment variable; `env` is a test-only need, the library itself never
+# reads one through clap.
+clap = { version = "4", features = ["env", "string"] }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

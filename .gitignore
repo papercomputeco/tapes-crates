@@ -9,3 +9,7 @@
 
 # Claude Code
 .claude/
+
+# The sibling package builds into its own target (it is its own workspace
+# root); ignore it the same way as the repository root crate's.
+/cassette-client/target/
