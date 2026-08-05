@@ -1,0 +1,16 @@
+{
+  "name": "__TAPES_PLUGIN_NAME__",
+  "version": "__TAPES_PLUGIN_VERSION__",
+  "description": "__TAPES_PLUGIN_DESCRIPTION__",
+  "author": {
+    "name": "__TAPES_PLUGIN_DEVELOPER_NAME__"
+  },
+  "interface": {
+    "displayName": "__TAPES_PLUGIN_DISPLAY_NAME__",
+    "shortDescription": "__TAPES_PLUGIN_SHORT_DESCRIPTION__",
+    "longDescription": "__TAPES_PLUGIN_LONG_DESCRIPTION__",
+    "developerName": "__TAPES_PLUGIN_DEVELOPER_NAME__",
+    "category": "Productivity",
+    "capabilities": ["Lifecycle hooks"]
+  }
+}

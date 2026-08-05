@@ -120,6 +120,19 @@ pub const HARNESS_ID_CLAUDE: &str = "claude";
 /// Harness-id attached for Codex traffic.
 pub const HARNESS_ID_CODEX: &str = "codex";
 
+/// Harness-id for the Codex desktop app.
+///
+/// A distinct harness, not an alias of [`HARNESS_ID_CODEX`]: the app is a
+/// long-lived Codex host a consumer configures rather than launches, and its
+/// session identity arrives through lifecycle hook reports (see
+/// [`crate::attribution::codex_app`]) rather than through the peer-PID lanes.
+/// It shares Codex's wire protocol and rollout tree, so requests still carry
+/// the `thread-id`/`session-id` pair and transcripts still land under
+/// `$CODEX_HOME/sessions` — what differs is who answers "which session is
+/// this?", and keying captured sessions by a distinct id keeps that
+/// difference visible downstream.
+pub const HARNESS_ID_CODEX_APP: &str = "codex-app";
+
 /// Harness-id attached for opencode traffic.
 ///
 /// opencode capture arrives with the standalone client; the constant lives

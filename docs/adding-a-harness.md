@@ -100,6 +100,14 @@ change sessions nobody is capturing; and if it stamps an envelope itself, the
 header names must match `src/envelope.rs`, since a rename there would otherwise
 silently re-file the agent's sessions as `unknown`.
 
+An agent whose plugin is installed by the agent's *own* plugin manager, and
+whose hook command or identity strings are irreducibly the consumer's, cannot
+ship as fixed artifacts. It ships as **templates** instead —
+`PluginDelivery::HookManifestTemplates`, where the crate owns the JSON
+structure and event set and the consumer renders its command and identity into
+slots (see `src/plugin/codex_app.rs`). The vendor-neutrality bar is the same;
+only the branding *slots* are consumer-filled.
+
 ## Step 3 — an attribution strategy
 
 Attribution is how a captured session gets a real identity instead of a
@@ -116,6 +124,12 @@ synthetic one. Which strategy applies is a property of the agent, not a choice:
   envelope from inside itself, through an extension a peer-PID lookup cannot
   see. There is no lane to write: the client's whole job is to *preserve* what
   arrives, which is what `Attributed::stamp` does. `PI` is this shape.
+- **`LifecycleHooks`** — the agent is a long-lived host the consumer
+  configures rather than launches, so no peer-PID lane can anchor on a
+  launched process. Identity arrives instead as allowlisted lifecycle reports
+  from a hook plugin installed into the agent; the crate owns the parsed
+  shape of those reports, and the consumer owns receiving them. The Codex
+  desktop app (`CODEX_APP`) is this shape; see `src/attribution/codex_app/`.
 - **`None`** — no client-side attribution yet.
 
 New attribution code goes in `src/attribution/<harness>/`, grouped by harness.
@@ -299,9 +313,13 @@ directions: declaring a tree the crate cannot locate fails, and so does
 ### `plugin`
 
 Whether capture needs a file installed **into** the harness.
-`plugin_artifacts()` flattens both variants to a slice, and that slice is the
+`plugin_artifacts()` flattens the variants to a slice, and that slice is the
 whole input to a `plugin install`: resolve the typed name through `find()`,
 take the slice, write each artifact beneath the user's home.
+`HookManifestTemplates` deliberately flattens to the empty slice — templates
+carry un-rendered slots, so a file-copy installer must see nothing to copy;
+an installer for that shape renders through `src/plugin/codex_app.rs` and
+packages the result for the harness's own plugin manager instead.
 
 The empty slice is the ordinary case and is not an error. An installer must be
 able to tell "nothing to do" from "no such harness" — `tapesctl plugin install
@@ -310,15 +328,15 @@ claude` says the harness needs no plugin, writes nothing at all, and exits zero
 
 ## Partial entries and full ones
 
-The registry holds four entries and only two of them are complete:
+The registry holds five entries and not all of them are complete:
 
-| field | `CLAUDE` | `CODEX` | `OPENCODE` | `PI` |
-| --- | --- | --- | --- | --- |
-| `user_agent` | `Prefix("claude")` | `None` | `None` | `None` |
-| `launch` | `Recipe` | `Recipe` | `Recipe` | `ConsumerOwned` |
-| `attribution` | `SessionsDir` | `OpenRollout` | `None` | `SelfAttributing` |
-| `transcripts` | `ClaudeProjects` | `CodexRollouts` | `None` | `None` |
-| `plugin` | `None` | `None` | `None` | `BundledExtension` |
+| field | `CLAUDE` | `CODEX` | `CODEX_APP` | `OPENCODE` | `PI` |
+| --- | --- | --- | --- | --- | --- |
+| `user_agent` | `Prefix("claude")` | `None` | `None` | `None` | `None` |
+| `launch` | `Recipe` | `Recipe` | `Unsupported` | `Recipe` | `ConsumerOwned` |
+| `attribution` | `SessionsDir` | `OpenRollout` | `LifecycleHooks` | `None` | `SelfAttributing` |
+| `transcripts` | `ClaudeProjects` | `CodexRollouts` | `CodexRollouts` | `None` | `None` |
+| `plugin` | `None` | `None` | `HookManifestTemplates` | `None` | `BundledExtension` |
 
 `OPENCODE` is the honest partial entry, and the shape most new harnesses should
 start in. It is worth being precise about what that state does and does not buy,

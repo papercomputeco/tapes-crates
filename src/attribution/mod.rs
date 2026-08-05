@@ -17,6 +17,11 @@
 //!   fork-parent recovery.
 //! * [`codex`] — the open-rollout lane: `session_meta` reader, per-PID open
 //!   files, and the rollout watcher.
+//! * [`codex_app`] — the Codex desktop app's lifecycle-hook lane: the parsed,
+//!   allowlisted shape of the hook payloads an installed plugin's command
+//!   receives. The app shares Codex's wire protocol and rollout tree but is
+//!   configured rather than launched, so its identity evidence arrives at
+//!   lifecycle boundaries instead of through a peer-PID lookup.
 //! * [`peer_pid`] — harness-agnostic. Maps an accepted loopback connection to
 //!   one of a candidate PID set via per-OS kernel APIs; both lanes use it.
 //! * [`pipeline`] — the composition: [`attribute`] takes one request's facts
@@ -41,6 +46,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod codex_app;
 pub mod peer_pid;
 pub mod peer_trust;
 pub mod pipeline;
