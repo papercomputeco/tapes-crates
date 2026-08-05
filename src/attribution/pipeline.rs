@@ -320,14 +320,16 @@ impl AttributionState {
 /// whole request would invite the pipeline to start reading Paper-specific
 /// headers itself.
 ///
-/// Evidence for harness N+1 gets added here, so construct one with
-/// `..Default::default()` rather than an exhaustive literal: every field means
-/// "no evidence" when defaulted, and a consumer that supplies none of a new
-/// harness's evidence keeps compiling and keeps its old behavior. `Default` is
-/// derived for exactly this. (`#[non_exhaustive]` would force the same
-/// discipline, but it forbids struct literals outright, leaving consumers to
-/// build the value by field reassignment — which Clippy rejects under
-/// `-D warnings`.)
+/// Deliberately exhaustive, like [`Attributed`] and for the same reason.
+/// Adding a field here breaks every consumer's literal, and that is the point:
+/// a consumer that *has* the new evidence must be made to decide whether to
+/// supply it. Letting the field default to "no evidence" would compile, and
+/// would quietly capture less than the consumer is able to — one capture path
+/// silently drifting below the other is precisely the parity failure this
+/// crate exists to prevent, and unlike a compile error it announces nothing.
+///
+/// `Default` is still derived, for tests and for consumers that genuinely have
+/// only a few facts to state.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RequestFacts<'a> {
     /// Peer address of the accepted loopback connection. The Claude lane maps
