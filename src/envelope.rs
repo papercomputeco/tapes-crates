@@ -363,6 +363,14 @@ impl TapesAttribution {
     /// Codex traffic whose session identity has not been resolved.
     #[must_use]
     pub fn codex() -> Self {
+        Self::codex_with_metadata(serde_json::Map::new())
+    }
+
+    /// Codex traffic with no resolved rollout, carrying request-derived
+    /// metadata (a proxy that saw useful request headers but could not
+    /// name a session still forwards what it learned).
+    #[must_use]
+    pub fn codex_with_metadata(metadata: serde_json::Map<String, serde_json::Value>) -> Self {
         Self {
             harness_id: HARNESS_ID_CODEX.to_owned(),
             session_id: None,
@@ -370,7 +378,7 @@ impl TapesAttribution {
             cwd: None,
             name: None,
             parent_sid: None,
-            metadata: serde_json::Map::new(),
+            metadata,
         }
     }
 
@@ -382,13 +390,32 @@ impl TapesAttribution {
         cli_version: Option<&str>,
         metadata: serde_json::Map<String, serde_json::Value>,
     ) -> Self {
+        Self::codex_session_with_parent(session_id, None, cwd, cli_version, metadata)
+    }
+
+    /// Codex traffic attributed to a session id with optional resume/fork
+    /// parent lineage.
+    ///
+    /// `parent_sid` keeps the envelope's resume/fork meaning: it must name
+    /// a harness SESSION, never a sub-thread. A thread-spawn transcript's
+    /// `parent_thread_id` names a THREAD, and emitting it here would make a
+    /// consumer placeholder-insert a bogus session keyed by that thread id
+    /// — pass `None` for subagent rollouts.
+    #[must_use]
+    pub fn codex_session_with_parent(
+        session_id: &str,
+        parent_sid: Option<&str>,
+        cwd: Option<&str>,
+        cli_version: Option<&str>,
+        metadata: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
         Self {
             harness_id: HARNESS_ID_CODEX.to_owned(),
             session_id: Some(session_id.to_owned()),
             version: cli_version.map(str::to_owned),
             cwd: cwd.map(str::to_owned),
             name: None,
-            parent_sid: None,
+            parent_sid: parent_sid.map(str::to_owned),
             metadata,
         }
     }
@@ -824,6 +851,44 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(json["originator"], "codex-tui");
+    }
+
+    /// Ported from paperd's `TapesAttributionExt` shim (PCC-1056): the
+    /// metadata-only and parent-lineage constructors fill exactly the
+    /// fields their arguments name and nothing else.
+    #[test]
+    fn codex_constructors_fill_only_the_fields_their_arguments_name() {
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("k".to_owned(), serde_json::Value::String("v".to_owned()));
+
+        let bare = TapesAttribution::codex_with_metadata(metadata.clone());
+        assert_eq!(bare.harness_id, HARNESS_ID_CODEX);
+        assert!(bare.session_id.is_none());
+        assert!(bare.parent_sid.is_none());
+        assert_eq!(bare.metadata, metadata);
+
+        let keyed = TapesAttribution::codex_session_with_parent(
+            "sid-1",
+            Some("parent-sid"),
+            Some("/tmp/x"),
+            Some("0.99.0"),
+            metadata.clone(),
+        );
+        assert_eq!(keyed.harness_id, HARNESS_ID_CODEX);
+        assert_eq!(keyed.session_id.as_deref(), Some("sid-1"));
+        assert_eq!(keyed.parent_sid.as_deref(), Some("parent-sid"));
+        assert_eq!(keyed.cwd.as_deref(), Some("/tmp/x"));
+        assert_eq!(keyed.version.as_deref(), Some("0.99.0"));
+        assert_eq!(keyed.metadata, metadata);
+
+        // The pre-existing constructors are the no-argument special
+        // cases of the new ones and must stay behaviorally identical.
+        let plain = TapesAttribution::codex();
+        assert!(plain.session_id.is_none() && plain.metadata.is_empty());
+        let sessioned =
+            TapesAttribution::codex_session("sid-1", Some("/tmp/x"), Some("0.99.0"), metadata);
+        assert!(sessioned.parent_sid.is_none());
+        assert_eq!(sessioned.session_id.as_deref(), Some("sid-1"));
     }
 
     #[test]
