@@ -29,12 +29,20 @@ use tracing::warn;
 /// parent, which is precisely the misattribution this list exists to prevent.
 ///
 /// This is harness knowledge, so it lives here rather than in each capture
-/// client, mirroring [`crate::envelope::HARNESS_THREAD_ID_HEADERS`]. Both
-/// names are unprefixed and so are in principle claimable by another harness;
-/// that is harmless here because the value is only ever used as an *exact*
-/// match against a live rollout's own session id, and a non-match refuses
-/// rather than guesses.
-pub const CODEX_ROLLOUT_ID_HEADERS: &[&str] = &["thread-id", "session-id"];
+/// client. Both names are unprefixed and so are in principle claimable by
+/// another harness; that is harmless here because the value is only ever used
+/// as an *exact* match against a live rollout's own session id, and a non-match
+/// refuses rather than guesses.
+///
+/// The same two headers are read a second way, by
+/// [`crate::envelope::HARNESS_THREAD_ID_RULES`], to answer a different
+/// question: not *which rollout* a request belongs to, but whether it was made
+/// from a sub-thread. That reading needs the pair, because on a root turn the
+/// two are equal. The spellings come from there so the two cannot drift apart.
+pub const CODEX_ROLLOUT_ID_HEADERS: &[&str] = &[
+    crate::envelope::CODEX_THREAD_ID_HEADER,
+    crate::envelope::CODEX_SESSION_ID_HEADER,
+];
 
 /// Resolve the id of the rollout a Codex request belongs to.
 ///
