@@ -72,17 +72,20 @@ pub use codex::watcher as codex_watcher;
 // most, hoisted so the common case is one `use`.
 
 pub use claude::{ClaudeSessionFile, default_sessions_dir};
+pub use codex::request as codex_request;
 pub use codex::{
-    CODEX_ROLLOUT_ID_HEADERS, CodexSessionFile, CodexWatcherSnapshot, CodexWatcherSnapshotHandle,
-    open_jsonl_sessions_by_pid, rollout_id as codex_rollout_id, spawn_codex_watcher,
+    CODEX_ROLLOUT_ID_HEADERS, CodexHookEvidence, CodexRequestIdentity, CodexSelection,
+    CodexSelectionEvidence, CodexSelectionResult, CodexSessionFile, CodexWatcherSnapshot,
+    CodexWatcherSnapshotHandle, open_jsonl_sessions_by_pid, rollout_id as codex_rollout_id,
+    spawn_codex_watcher,
 };
 pub use peer_pid::{PeerPidLookup, lookup as peer_pid_lookup};
 pub use peer_trust::{
     is_launched_or_descendant, peer_is_launched_harness, peer_is_launched_harness_async,
 };
 pub use pipeline::{
-    Attributed, AttributionConfig, AttributionState, CodexProviderFilter, ForkParentCache,
-    RequestFacts, attribute, ua_matches_claude,
+    Attributed, AttributionConfig, AttributionOutcome, AttributionState, CodexProviderFilter,
+    ForkParentCache, RequestFacts, attribute, attribute_with_evidence, ua_matches_claude,
 };
 pub use watcher::{Snapshot as WatcherSnapshotHandle, WatcherSnapshot, spawn as spawn_watcher};
 

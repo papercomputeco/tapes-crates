@@ -19,42 +19,33 @@
 //!   `~/.claude/sessions/<pid>.json`. On a hit, recover fork-parent lineage
 //!   (cached per session id). A miss yields [`Attributed::UnknownHarness`].
 //! * **Codex lane.** Codex writes no PID-indexed session file, so identity is
-//!   recovered from the rollout JSONL a live `codex` process holds open: try
-//!   the launch marker first, then the peer PID's open files, then — only when
-//!   no marker was supplied — fall back to a single recent session. A miss
-//!   yields [`Attributed::Undecided`].
+//!   recovered from the rollout JSONL a live `codex` process holds open, plus
+//!   what the request says about itself. The rungs, their order, and their
+//!   bounded wait live in [`super::codex::select`]; a miss still emits an
+//!   envelope, because a Codex request carries its own account of its identity
+//!   even when no rollout could be resolved.
 //!
 //! ## Threads inside one Codex process
 //!
 //! Neither the marker nor the PID identifies a *thread*. A `codex` running
 //! subagents is one process, launched once, holding the parent rollout and
-//! every child rollout open simultaneously — so both lanes can legitimately
-//! see several live sessions at once, and any tie-break among them attaches a
-//! turn to whichever thread flushed last. The request itself is the only thing
-//! that knows: Codex stamps the id of the rollout it belongs to on every
-//! inference call ([`codex_session::rollout_id`]), which the consumer passes as
-//! [`RequestFacts::codex_rollout_id`]. Both lanes narrow by it first and treat
-//! "the request named a rollout that is not among these" as a refusal.
+//! every child rollout open simultaneously — so both can legitimately see
+//! several live sessions at once, and any tie-break among them attaches a turn
+//! to whichever thread flushed last. The request itself is the only thing that
+//! knows, which is why the Codex lane takes a whole
+//! [`CodexRequestIdentity`] rather than a session id: the thread it names, the
+//! parent it names, and whether its two accounts of itself agree.
 //!
-//! Where that evidence is absent and several live sessions remain, both lanes
-//! now refuse rather than guess, matching the recent-session fallback. The
-//! asymmetry is deliberate and is the same one the whole Codex lane is built
-//! on: a missed attribution heals when the transcript is reconciled, while a
-//! wrong one is permanent and silently corrupts a subagent family's shape.
-//!
-//! ## Why the two misses differ
+//! ## Why the miss cases differ
 //!
 //! [`Attributed::UnknownHarness`] emits an envelope that says "harness
-//! unknown"; [`Attributed::Undecided`] emits **no envelope at all**. This
-//! asymmetry is inherited from paperd and is deliberate. A Claude-lane miss is
-//! a *known* harness whose session id we failed to resolve, and ingest should
-//! record the turn under a synthetic session. A Codex-lane miss is ambiguous —
-//! the recent-session fallback refuses to guess between concurrent Codex
-//! sessions rather than attach traffic to the wrong one — and stamping
-//! `harness_id: codex` with no session id would assert an identity the
-//! pipeline just declined to assert. Encoding the difference in the type,
-//! rather than in each consumer's `if let`, is why [`Attributed::envelope`]
-//! returns an `Option`.
+//! unknown". A Codex-lane miss emits a *Codex* envelope with no session id but
+//! with the request's own allowlisted identifiers and the consumer's
+//! correlation id — the join key an attribution-repair pass needs to find the
+//! turn again. That is not an identity the pipeline declined to assert: the
+//! route already established the harness, and a child-shaped request names its
+//! root session in its own headers whether or not any rollout was on disk.
+//! Withholding it would make an unresolved turn permanently unrepairable.
 //!
 //! # What stays parameterized
 //!
@@ -69,27 +60,29 @@
 //!   knowledge, not harness knowledge;
 //! * the **Codex provider id** ([`CodexProviderFilter`]) its launch recipe
 //!   configured, so the pipeline can tell its own traffic from a Codex session
-//!   pointed at some other provider.
+//!   pointed at some other provider;
+//! * **lifecycle-hook evidence** ([`RequestFacts::codex_hook_evidence`]), when
+//!   the consumer has a hook lane at all. It is injected as a trait rather
+//!   than forked into a second algorithm: a consumer without one passes `None`
+//!   and the hook rungs simply never fire.
 //!
-//! That last one is why [`CodexProviderFilter`] exists rather than a hardcoded
-//! `paper-openai` test: a standalone `tapesctl` names its provider something
-//! else entirely, and a shared crate that only recognised Paper's spelling
-//! would silently attribute nothing for every other consumer.
+//! The provider filter is why [`CodexProviderFilter`] exists rather than a
+//! hardcoded `paper-openai` test: a standalone `tapesctl` names its provider
+//! something else entirely, and a shared crate that only recognised Paper's
+//! spelling would silently attribute nothing for every other consumer.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Mutex, PoisonError};
 
 use tokio::time::{Duration, Instant};
-use tracing::warn;
 
 use super::claude::{ClaudeSessionFile, WatcherSnapshotHandle, fork_parent};
-use super::codex::{
-    CodexSessionFile, CodexWatcherSnapshotHandle, open_jsonl_sessions_by_pid,
-    session as codex_session,
-};
+use super::codex::request::{self as codex_request, CodexRequestIdentity};
+use super::codex::select::{CodexHookEvidence, CodexSelectionEvidence};
+use super::codex::{CodexSessionFile, CodexWatcherSnapshotHandle, select as codex_select};
 use super::{Attribution, peer_pid};
-use crate::envelope::TapesAttribution;
+use crate::envelope::{HARNESS_ID_CODEX_APP, TapesAttribution};
 
 /// Default bound on the Claude-lane wait for a freshly-created session file.
 ///
@@ -326,6 +319,17 @@ impl AttributionState {
 /// route grammar and its own marker header name by this point, and passing the
 /// whole request would invite the pipeline to start reading Paper-specific
 /// headers itself.
+///
+/// Deliberately exhaustive, like [`Attributed`] and for the same reason.
+/// Adding a field here breaks every consumer's literal, and that is the point:
+/// a consumer that *has* the new evidence must be made to decide whether to
+/// supply it. Letting the field default to "no evidence" would compile, and
+/// would quietly capture less than the consumer is able to — one capture path
+/// silently drifting below the other is precisely the parity failure this
+/// crate exists to prevent, and unlike a compile error it announces nothing.
+///
+/// `Default` is still derived, for tests and for consumers that genuinely have
+/// only a few facts to state.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RequestFacts<'a> {
     /// Peer address of the accepted loopback connection. The Claude lane maps
@@ -337,7 +341,7 @@ pub struct RequestFacts<'a> {
     /// non-blank. The *name* of that header is the consumer's business.
     pub codex_marker: Option<&'a str>,
     /// The id of the rollout this Codex request says it belongs to, as
-    /// resolved by [`codex_session::rollout_id`].
+    /// resolved by [`super::codex::session::rollout_id`].
     ///
     /// Unlike [`Self::codex_marker`], the header names here are *harness*
     /// knowledge and so are the crate's — a consumer should pass
@@ -346,14 +350,39 @@ pub struct RequestFacts<'a> {
     /// within one Codex process, and without it a subagent family is
     /// indistinguishable by PID alone.
     ///
-    /// `None` means *no evidence*, which leaves the pre-existing conservative
-    /// policy in force. It never means "matches nothing".
+    /// `None` means *no evidence*, which leaves the conservative policy in
+    /// force. It never means "matches nothing".
+    ///
+    /// Superseded by [`Self::codex_identity`] when that is supplied: the
+    /// identity reads the same two headers and additionally withholds them
+    /// from a request that contradicts itself.
     pub codex_rollout_id: Option<&'a str>,
     /// Whether the consumer's routing says this request is Codex traffic.
     pub codex_route: bool,
+    /// Everything else the Codex request states about itself, parsed by
+    /// [`CodexRequestIdentity::from_headers`].
+    ///
+    /// Passed as a reference rather than parsed here because the consumer
+    /// needs the same value for its own diagnostics — and because it carries
+    /// the consumer's per-request correlation id, which only the consumer can
+    /// mint in a form its own records will agree with.
+    ///
+    /// `None` degrades gracefully: the identity-driven rungs stand down, the
+    /// envelope carries no request-derived identifiers, and the lane behaves
+    /// as it did before the identity vocabulary existed.
+    pub codex_identity: Option<&'a CodexRequestIdentity>,
+    /// Lifecycle-hook evidence, for consumers that have a hook lane.
+    ///
+    /// See [`CodexHookEvidence`] for why this is injected rather than assumed.
+    pub codex_hook_evidence: Option<&'a dyn CodexHookEvidence>,
 }
 
 /// The outcome of attributing one request.
+///
+/// Deliberately exhaustive, unlike [`RequestFacts`]. A consumer that has not
+/// been taught a newly added outcome should fail to build rather than fall
+/// through a catch-all arm and file the turn as if nothing had happened —
+/// silent unattribution is the failure mode this lane exists to prevent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Attributed {
     /// Claude traffic resolved to a session file, with any recovered lineage.
@@ -363,15 +392,35 @@ pub enum Attributed {
         /// Fork parent's harness session id, when lineage was recovered.
         parent_session_id: Option<String>,
     },
-    /// Codex traffic resolved to a rollout file.
+    /// Codex traffic, whether or not a rollout was resolved.
+    ///
+    /// The session is optional because a Codex request is self-describing:
+    /// even with a cold watcher its headers name the thread and, for a
+    /// sub-thread, the root session to key on. See the module docs on why the
+    /// miss cases differ.
     Codex {
-        /// The resolved rollout `session_meta`.
-        session: CodexSessionFile,
+        /// The resolved rollout `session_meta`, when a rung answered.
+        session: Option<CodexSessionFile>,
+        /// What the request said about itself.
+        identity: Box<CodexRequestIdentity>,
+        /// The session was *configured* through the desktop app's plugin
+        /// rather than launched, so it files under the `codex-app` harness.
+        ///
+        /// Decided by lifecycle-hook evidence for the id this envelope will
+        /// key on — always the root for a sub-thread's request, matching the
+        /// id the hook reported — so every turn of one session lands under one
+        /// harness. Consumers with no hook lane never see it set.
+        codex_app: bool,
     },
     /// Claude-lane miss: a known-shaped request we could not attribute.
     /// Emits the `harness_id: unknown` envelope.
     UnknownHarness,
-    /// Codex-lane miss: the pipeline declined to guess. Emits no envelope.
+    /// No assertion at all: emits no envelope and preserves whatever arrived.
+    ///
+    /// No longer produced by [`attribute`] — the Codex lane, which was its only
+    /// source, now always emits at least the request's own account of itself.
+    /// Retained because it is the only way to express "write nothing", which a
+    /// consumer composing its own outcome may still need.
     Undecided,
 }
 
@@ -389,7 +438,20 @@ impl Attributed {
                 session,
                 parent_session_id.as_deref(),
             )),
-            Self::Codex { session } => Some(codex_envelope(session)),
+            Self::Codex {
+                session,
+                identity,
+                codex_app,
+            } => {
+                let mut envelope = match session {
+                    Some(session) => codex_request::codex_envelope(session, identity),
+                    None => codex_request::request_envelope(identity),
+                };
+                if *codex_app {
+                    envelope.harness_id = HARNESS_ID_CODEX_APP.to_owned();
+                }
+                Some(envelope)
+            }
             Self::UnknownHarness => Some(TapesAttribution::unknown()),
             Self::Undecided => None,
         }
@@ -407,8 +469,8 @@ impl Attributed {
     /// envelope is still cleared.
     pub fn stamp(&self, headers: &mut http::HeaderMap) -> Result<(), crate::envelope::HeaderError> {
         match self {
-            // The pipeline declined to assert an identity, so it writes
-            // nothing at all — see the module docs on the two misses.
+            // No assertion at all, so nothing is written — see the module docs
+            // on the miss cases.
             Self::Undecided => Ok(()),
             Self::UnknownHarness => crate::envelope::inject_tapes_headers(headers, None, None),
             Self::Claude {
@@ -418,9 +480,10 @@ impl Attributed {
                 headers,
                 TapesAttribution::claude(session, parent_session_id.as_deref()),
             ),
-            Self::Codex { session } => {
-                crate::envelope::inject_tapes_attribution(headers, codex_envelope(session))
-            }
+            Self::Codex { .. } => match self.envelope() {
+                Some(envelope) => crate::envelope::inject_tapes_attribution(headers, envelope),
+                None => Ok(()),
+            },
         }
     }
 
@@ -443,10 +506,13 @@ impl Attributed {
                 cwd: session.cwd.clone(),
                 auth_subject: None,
             },
-            Self::Codex { session } => Attribution {
-                session_id: Some(session.session_id.clone()),
+            Self::Codex {
+                session, identity, ..
+            } => Attribution {
+                session_id: codex_request::envelope_session_id(identity, session.as_ref())
+                    .map(str::to_owned),
                 parent_session_id: None,
-                cwd: session.cwd.clone(),
+                cwd: session.as_ref().and_then(|session| session.cwd.clone()),
                 auth_subject: None,
             },
             Self::UnknownHarness | Self::Undecided => Attribution::default(),
@@ -467,14 +533,29 @@ impl Attributed {
         }
     }
 
-    /// The resolved Codex session, when the Codex lane hit.
+    /// The resolved Codex rollout, when a rung answered.
     #[must_use]
     pub fn codex_session(&self) -> Option<&CodexSessionFile> {
         match self {
-            Self::Codex { session } => Some(session),
+            Self::Codex { session, .. } => session.as_ref(),
             _ => None,
         }
     }
+}
+
+/// An [`Attributed`] outcome plus the Codex ladder's working, for consumers
+/// that record why a turn was attributed the way it was.
+///
+/// Separate from [`Attributed`] because the evidence is diagnostics, not
+/// identity: it must not become something a consumer has to destructure to
+/// stamp a header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AttributionOutcome {
+    /// Who sent this request.
+    pub attributed: Attributed,
+    /// What the Codex ladder considered, for Codex traffic only.
+    pub codex_evidence: Option<CodexSelectionEvidence>,
 }
 
 /// Case-insensitive `claude*` prefix check for the User-Agent gate.
@@ -504,14 +585,53 @@ pub async fn attribute(
     config: &AttributionConfig,
     facts: RequestFacts<'_>,
 ) -> Attributed {
+    attribute_with_evidence(state, config, facts)
+        .await
+        .attributed
+}
+
+/// Attribute one request and keep the Codex ladder's working.
+///
+/// Same algorithm as [`attribute`], which is a thin wrapper over it. A
+/// consumer that journals attribution decisions — so an unresolved turn can be
+/// repaired later — calls this instead of re-deriving the evidence itself.
+pub async fn attribute_with_evidence(
+    state: &AttributionState,
+    config: &AttributionConfig,
+    facts: RequestFacts<'_>,
+) -> AttributionOutcome {
     if facts.codex_route || facts.codex_marker.is_some() {
-        return match attribute_codex(state, config, facts).await {
-            Some(session) => Attributed::Codex { session },
-            None => Attributed::Undecided,
+        let owned;
+        let identity = match facts.codex_identity {
+            Some(identity) => identity,
+            None => {
+                owned = CodexRequestIdentity::default();
+                &owned
+            }
+        };
+        let selected = codex_select::select(state, config, facts, identity).await;
+        // The desktop-app split. A session with lifecycle-hook evidence was
+        // configured through the app's plugin rather than launched, so it
+        // files under `codex-app`, keeping app capture distinguishable from a
+        // launched `codex` CLI. Keyed on the id the envelope will carry, so
+        // every turn of one session lands under one harness.
+        let codex_app = codex_request::envelope_session_id(identity, selected.session.as_ref())
+            .is_some_and(|session_id| {
+                facts
+                    .codex_hook_evidence
+                    .is_some_and(|hooks| hooks.has_hook_session(session_id))
+            });
+        return AttributionOutcome {
+            attributed: Attributed::Codex {
+                session: selected.session,
+                identity: Box::new(identity.clone()),
+                codex_app,
+            },
+            codex_evidence: Some(selected.evidence),
         };
     }
 
-    match attribute_claude(state, config, facts).await {
+    let attributed = match attribute_claude(state, config, facts).await {
         Some(session) => {
             let parent_session_id = discover_parent_cached(state, &session).await;
             Attributed::Claude {
@@ -520,6 +640,10 @@ pub async fn attribute(
             }
         }
         None => Attributed::UnknownHarness,
+    };
+    AttributionOutcome {
+        attributed,
+        codex_evidence: None,
     }
 }
 
@@ -584,302 +708,11 @@ async fn discover_parent_cached(
     parent
 }
 
-/// Codex lane: bounded poll over marker/peer-PID matching, then — only when no
-/// marker was supplied — a conservative recent-session fallback.
-async fn attribute_codex(
-    state: &AttributionState,
-    config: &AttributionConfig,
-    facts: RequestFacts<'_>,
-) -> Option<CodexSessionFile> {
-    let deadline = Instant::now() + config.codex_timeout;
-    loop {
-        if let Some(session) = attribute_codex_once(state, config, facts) {
-            return Some(session);
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            // A marker was supplied and never matched: the launch told us
-            // exactly which provider to expect, so falling back to "some
-            // recent session" would override explicit information with a
-            // guess. Only the unmarked path may fall back.
-            return facts
-                .codex_marker
-                .is_none()
-                .then(|| attribute_recent_codex(state, config, facts.codex_rollout_id))
-                .flatten();
-        }
-        tokio::time::sleep(config.codex_poll.min(remaining)).await;
-    }
-}
-
-fn attribute_codex_once(
-    state: &AttributionState,
-    config: &AttributionConfig,
-    facts: RequestFacts<'_>,
-) -> Option<CodexSessionFile> {
-    let cutoff = time::OffsetDateTime::now_utc() - config.codex_recent_window;
-    let snapshot = state.codex_watcher.load_full();
-    let recent: Vec<&CodexSessionFile> = snapshot
-        .sessions
-        .iter()
-        .filter(|session| is_live_candidate(session, config, cutoff))
-        .collect();
-
-    if let Some(marker) = facts.codex_marker {
-        let matches: Vec<&CodexSessionFile> = recent
-            .iter()
-            .copied()
-            .filter(|session| session.has_model_provider(marker))
-            .collect();
-        if let Some(session) = marker_match(
-            facts.codex_rollout_id,
-            matches.into_iter().cloned().collect(),
-        ) {
-            return Some(session);
-        }
-    }
-
-    let peer = facts.peer?;
-    // Single-attempt on purpose: this runs inside `attribute_codex`'s poll
-    // loop, which already retries with an async sleep under its own
-    // deadline, so a transient scan miss is re-tried on the next round.
-    // The retrying `lookup_owner` would block this worker between its
-    // attempts and stack its backoff inside the loop's budget.
-    let pid = peer_pid::lookup_owner_once(peer).pid?;
-    let matches: Vec<CodexSessionFile> = open_jsonl_sessions_by_pid(pid)
-        .into_iter()
-        .filter_map(|path| codex_session::read(&path))
-        .filter(|session| is_live_candidate(session, config, cutoff))
-        .collect();
-    peer_match(facts.codex_rollout_id, matches)
-}
-
-/// Last resort: exactly one recent session of ours, or nothing.
-///
-/// The request's named rollout binds here exactly as it does in the marker
-/// and peer lanes — this path fires after a discovery timeout, when the
-/// named rollout is often precisely the file the watcher has not surfaced
-/// yet, and handing such a turn to the one session that IS visible would be
-/// a permanent cross-thread attribution. With no rollout evidence the old
-/// policy stands: several distinct live sessions are refused, and rotation
-/// of a single session collapses to its newest file.
-fn attribute_recent_codex(
-    state: &AttributionState,
-    config: &AttributionConfig,
-    rollout_id: Option<&str>,
-) -> Option<CodexSessionFile> {
-    let cutoff = time::OffsetDateTime::now_utc() - config.codex_recent_window;
-    let snapshot = state.codex_watcher.load_full();
-    let candidates: Vec<CodexSessionFile> = snapshot
-        .sessions
-        .iter()
-        .filter(|session| is_live_candidate(session, config, cutoff))
-        .cloned()
-        .collect();
-    let candidates = narrow_by_rollout_id(rollout_id, candidates)?;
-    one_live_session_or_refuse(
-        "recent-session",
-        "multiple recent sessions and the request named no rollout",
-        candidates,
-    )
-}
-
-fn is_live_candidate(
-    session: &CodexSessionFile,
-    config: &AttributionConfig,
-    cutoff: time::OffsetDateTime,
-) -> bool {
-    config.codex_provider.matches_session(session)
-        && session.modified_at.is_some_and(|ts| ts >= cutoff)
-}
-
-/// Narrow a candidate set to the rollout the request itself names.
-///
-/// This is the only evidence that separates *threads* inside one Codex
-/// process. A `codex` running subagents holds the parent rollout and every
-/// child rollout open at once and stamps each request with the id of the
-/// rollout it belongs to, so an exact match against each candidate's own
-/// session id is a decision rather than a guess.
-///
-/// Returns `None` — refuse — when the request named a rollout and none of the
-/// candidates are it. The request is authoritative about its own identity, so
-/// "not one of these" is information, not a reason to fall back to a tie-break
-/// over the others. Returns the set untouched when there is no evidence to
-/// apply, leaving each lane's own policy in force.
-fn narrow_by_rollout_id(
-    rollout_id: Option<&str>,
-    candidates: Vec<CodexSessionFile>,
-) -> Option<Vec<CodexSessionFile>> {
-    let Some(rollout_id) = rollout_id else {
-        return Some(candidates);
-    };
-    if candidates.is_empty() {
-        // Nothing to disagree with yet — the rollout may still be appearing on
-        // disk, and the caller's bounded poll is what waits for it.
-        return Some(candidates);
-    }
-    let selected: Vec<CodexSessionFile> = candidates
-        .iter()
-        .filter(|session| session.session_id == rollout_id)
-        .cloned()
-        .collect();
-    if selected.is_empty() {
-        let refs: Vec<&CodexSessionFile> = candidates.iter().collect();
-        warn!(
-            rollout_id,
-            count = candidates.len(),
-            sample = ?sample_of(&refs),
-            "codex-session: the request names a rollout none of the live candidates \
-             are; refusing to guess",
-        );
-        return None;
-    }
-    Some(selected)
-}
-
-/// Resolve a candidate set down to one session, refusing on ambiguity.
-///
-/// Several files sharing ONE session id are rollout rotation — newest wins,
-/// since they are the same session either way. Several DISTINCT live sessions
-/// mean the evidence that produced this set does not actually identify a
-/// single session, and picking the newest would attach this request to
-/// whichever thread happened to flush last. A missed attribution heals through
-/// transcript reconciliation; a wrong one is permanent, so refuse.
-fn one_live_session_or_refuse(
-    reason: &str,
-    detail: &str,
-    candidates: Vec<CodexSessionFile>,
-) -> Option<CodexSessionFile> {
-    let mut ids: Vec<&str> = candidates
-        .iter()
-        .map(|session| session.session_id.as_str())
-        .collect();
-    ids.sort_unstable();
-    ids.dedup();
-    if ids.len() > 1 {
-        let refs: Vec<&CodexSessionFile> = candidates.iter().collect();
-        warn!(
-            reason,
-            count = candidates.len(),
-            sample = ?sample_of(&refs),
-            "codex-session: {detail}; refusing to guess",
-        );
-        return None;
-    }
-    unique_or_newest(reason, candidates)
-}
-
-/// Resolve marker matches. The marker is fresh per launch BY CONTRACT, so
-/// several live files may only legitimately share one when they belong to the
-/// same session (rollout rotation) — newest wins there. Two DISTINCT live
-/// sessions sharing a marker means either a consumer reused a provider id
-/// across concurrent processes or one process is running subagents; picking
-/// the newest would silently attach one thread's traffic to the other's
-/// session. The request's own rollout id settles it when present; otherwise
-/// the marker lane refuses and attribution falls through to peer-PID evidence
-/// (or stays undecided).
-fn marker_match(
-    rollout_id: Option<&str>,
-    candidates: Vec<CodexSessionFile>,
-) -> Option<CodexSessionFile> {
-    let candidates = narrow_by_rollout_id(rollout_id, candidates)?;
-    one_live_session_or_refuse(
-        "marker",
-        "marker shared by multiple LIVE sessions and the request named no rollout",
-        candidates,
-    )
-}
-
-/// Resolve the rollouts one PID holds open.
-///
-/// The lane's original premise was that a `codex` process holds exactly one
-/// live rollout and any others are stale files, which made newest-wins safe.
-/// Subagents break that premise: the parent rollout and every child rollout
-/// are open at once and ALL are live, so newest-wins attaches a turn to
-/// whichever thread wrote last. The request's own rollout id distinguishes
-/// them; without it, several live sessions under one PID are simply ambiguous.
-fn peer_match(
-    rollout_id: Option<&str>,
-    candidates: Vec<CodexSessionFile>,
-) -> Option<CodexSessionFile> {
-    let candidates = narrow_by_rollout_id(rollout_id, candidates)?;
-    one_live_session_or_refuse(
-        "peer-open-file",
-        "one process holds multiple LIVE rollouts open (a subagent family) and the \
-         request named no rollout",
-        candidates,
-    )
-}
-
-/// Collapse candidates that are already known to be ONE session.
-///
-/// Every caller reaches this through [`one_live_session_or_refuse`], which has
-/// already established that the set holds at most one distinct session id, so
-/// a tie here is rollout rotation and newest-wins is a choice between files
-/// rather than between sessions. Do not call this directly on a set whose
-/// session ids have not been checked — that is the newest-wins guess this lane
-/// used to make.
-fn unique_or_newest(reason: &str, candidates: Vec<CodexSessionFile>) -> Option<CodexSessionFile> {
-    match candidates.as_slice() {
-        [] => None,
-        [session] => Some(session.clone()),
-        _ => {
-            let refs: Vec<&CodexSessionFile> = candidates.iter().collect();
-            warn!(
-                reason,
-                count = candidates.len(),
-                sample = ?sample_of(&refs),
-                "codex-session: one session across multiple rollout files; \
-                 using most recently modified",
-            );
-            candidates
-                .into_iter()
-                .max_by_key(|session| session.modified_at.unwrap_or(session.timestamp))
-        }
-    }
-}
-
-fn sample_of(candidates: &[&CodexSessionFile]) -> Vec<String> {
-    candidates
-        .iter()
-        .take(3)
-        .map(|session| format!("{} ({})", session.session_id, session.path.display()))
-        .collect()
-}
-
-/// Build the Codex envelope, including the metadata blob ingest stores as
-/// `sessions.harness_metadata`.
-///
-/// `transcriptPath` is always present: it is the operator's join key from a
-/// captured session back to the rollout file on disk.
-fn codex_envelope(session: &CodexSessionFile) -> TapesAttribution {
-    let mut metadata = serde_json::Map::new();
-    let mut put = |key: &str, value: &Option<String>| {
-        if let Some(value) = value {
-            metadata.insert(key.to_owned(), serde_json::Value::String(value.clone()));
-        }
-    };
-    put("originator", &session.originator);
-    put("source", &session.source);
-    put("threadSource", &session.thread_source);
-    put("modelProvider", &session.model_provider);
-    metadata.insert(
-        "transcriptPath".to_owned(),
-        serde_json::Value::String(session.path.display().to_string()),
-    );
-
-    TapesAttribution::codex_session(
-        &session.session_id,
-        session.cwd.as_deref(),
-        session.cli_version.as_deref(),
-        metadata,
-    )
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::attribution::codex::session as codex_session;
     use crate::attribution::{CodexWatcherSnapshot, WatcherSnapshot};
     use crate::envelope::{HARNESS_ID_CLAUDE, HARNESS_ID_CODEX, HARNESS_ID_UNKNOWN};
     use arc_swap::ArcSwap;
@@ -1073,11 +906,48 @@ mod tests {
     }
 
     #[test]
-    fn codex_lane_miss_emits_no_envelope_at_all() {
-        // Not "an envelope with no session id" — no envelope. Stamping
-        // `harness_id: codex` here would assert an identity the pipeline just
-        // declined to assert.
+    fn an_explicit_no_assertion_emits_no_envelope_at_all() {
+        // Not "an envelope with no session id" — no envelope. The Codex lane
+        // no longer produces this outcome (its misses still carry the
+        // request's own account of itself), but the outcome remains the one
+        // way to say "write nothing".
         assert!(Attributed::Undecided.envelope().is_none());
+    }
+
+    #[test]
+    fn a_codex_miss_still_carries_the_request_identity_it_had() {
+        // The repair contract: a turn nobody could attribute must still be
+        // findable later, which means its correlation id has to go out.
+        let attributed = Attributed::Codex {
+            session: None,
+            identity: Box::new(
+                CodexRequestIdentity::default().with_correlation_id("correlation-1"),
+            ),
+            codex_app: false,
+        };
+        let envelope = attributed.envelope().expect("a codex miss still stamps");
+        assert_eq!(envelope.harness_id, HARNESS_ID_CODEX);
+        assert_eq!(envelope.session_id, None);
+        assert_eq!(
+            envelope.metadata[crate::attribution::codex::request::REQUEST_CORRELATION_METADATA_KEY],
+            "correlation-1",
+        );
+    }
+
+    #[test]
+    fn hook_evidence_files_a_session_under_the_desktop_app_harness() {
+        let attributed = Attributed::Codex {
+            session: Some(codex_file(
+                "sid-app",
+                "paper-openai",
+                time::Duration::seconds(1),
+            )),
+            identity: Box::new(CodexRequestIdentity::default()),
+            codex_app: true,
+        };
+        let envelope = attributed.envelope().unwrap();
+        assert_eq!(envelope.harness_id, crate::envelope::HARNESS_ID_CODEX_APP);
+        assert_eq!(envelope.session_id.as_deref(), Some("sid-app"));
     }
 
     // --- provider filtering ---------------------------------------------
@@ -1120,8 +990,8 @@ mod tests {
             ..RequestFacts::default()
         };
         assert_eq!(
-            attribute(&state, &config(), facts).await,
-            Attributed::Undecided,
+            attribute(&state, &config(), facts).await.codex_session(),
+            None
         );
     }
 
@@ -1166,8 +1036,8 @@ mod tests {
         // Newest-wins would be wrong here: neither session presented evidence
         // tying it to *this* request.
         assert_eq!(
-            attribute(&state, &config(), facts).await,
-            Attributed::Undecided,
+            attribute(&state, &config(), facts).await.codex_session(),
+            None
         );
     }
 
@@ -1191,8 +1061,8 @@ mod tests {
             ..RequestFacts::default()
         };
         assert_eq!(
-            attribute(&state, &config(), facts).await,
-            Attributed::Undecided,
+            attribute(&state, &config(), facts).await.codex_session(),
+            None
         );
     }
 
@@ -1236,8 +1106,8 @@ mod tests {
             ..RequestFacts::default()
         };
         assert_eq!(
-            attribute(&state, &config(), facts).await,
-            Attributed::Undecided,
+            attribute(&state, &config(), facts).await.codex_session(),
+            None
         );
     }
 
@@ -1259,8 +1129,8 @@ mod tests {
             ..RequestFacts::default()
         };
         assert_eq!(
-            attribute(&state, &config(), facts).await,
-            Attributed::Undecided,
+            attribute(&state, &config(), facts).await.codex_session(),
+            None
         );
     }
 
@@ -1287,127 +1157,6 @@ mod tests {
             got.codex_session().map(|s| s.session_id.as_str()),
             Some("wanted"),
         );
-    }
-
-    #[test]
-    fn rotation_ties_break_to_the_most_recently_modified() {
-        // One session, two rollout files: a choice between FILES, which is the
-        // only tie `unique_or_newest` is still allowed to see.
-        let older = codex_file("sid-a", "paper-openai", time::Duration::minutes(5));
-        let newer = codex_file("sid-a", "paper-openai", time::Duration::seconds(5));
-        let got = unique_or_newest("marker", vec![older, newer]);
-        assert_eq!(got.map(|s| s.session_id), Some("sid-a".to_owned()));
-    }
-
-    // A marker is fresh per launch by contract; two DISTINCT live sessions
-    // sharing one means a consumer reused a provider id across concurrent
-    // processes, or one process is running subagents. Guessing (newest) would
-    // attach one thread's traffic to the other's session — refuse instead.
-    #[test]
-    fn marker_shared_by_distinct_live_sessions_refuses() {
-        let a = codex_file("sid-a", "tapesctl-openai-x", time::Duration::minutes(1));
-        let b = codex_file("sid-b", "tapesctl-openai-x", time::Duration::minutes(2));
-        assert!(marker_match(None, vec![a, b]).is_none());
-    }
-
-    // Same session, several rollout files (rotation): newest wins as before.
-    #[test]
-    fn marker_same_session_rotation_picks_newest() {
-        let older = codex_file("sid-a", "tapesctl-openai-x", time::Duration::minutes(9));
-        let newer = codex_file("sid-a", "tapesctl-openai-x", time::Duration::minutes(1));
-        let got = marker_match(None, vec![older, newer]).expect("same-session rotation resolves");
-        assert_eq!(got.session_id, "sid-a");
-    }
-
-    // --- PCC-1059: thread-aware peer-lane disambiguation -----------------
-
-    /// The reported scenario: ONE `codex` process running subagents holds the
-    /// parent rollout and each child rollout open at once, so the peer-PID lane
-    /// legitimately sees several LIVE sessions. Newest-wins here attached a
-    /// turn to whichever thread flushed last.
-    fn subagent_family() -> Vec<CodexSessionFile> {
-        vec![
-            // The parent, quiet while the children work.
-            codex_file("sid-parent", "paper-openai", time::Duration::seconds(30)),
-            codex_file("sid-child-a", "paper-openai", time::Duration::seconds(20)),
-            // Whichever child wrote last is what newest-wins would return.
-            codex_file("sid-child-b", "paper-openai", time::Duration::seconds(1)),
-        ]
-    }
-
-    #[test]
-    fn peer_lane_selects_the_thread_the_request_names_not_the_newest() {
-        // The parent's own turn, arriving while a child is mid-write. The
-        // request names `sid-parent`; newest-wins would have said `sid-child-b`.
-        let got = peer_match(Some("sid-parent"), subagent_family())
-            .expect("the named rollout is right there among the candidates");
-        assert_eq!(got.session_id, "sid-parent");
-    }
-
-    #[test]
-    fn peer_lane_selects_a_child_thread_over_a_newer_sibling() {
-        let got = peer_match(Some("sid-child-a"), subagent_family())
-            .expect("a child thread is selectable by its own rollout id");
-        assert_eq!(got.session_id, "sid-child-a");
-    }
-
-    #[test]
-    fn peer_lane_refuses_a_live_subagent_family_with_no_thread_evidence() {
-        // No rollout id on the request (an older Codex, or a consumer that has
-        // not wired it up). Several LIVE sessions under one PID is exactly the
-        // ambiguity the marker lane already refuses; the peer lane kept
-        // newest-wins only because its stale-duplicate premise predates
-        // subagents.
-        assert!(peer_match(None, subagent_family()).is_none());
-    }
-
-    #[test]
-    fn peer_lane_refuses_when_the_named_rollout_is_not_among_the_candidates() {
-        // The request is authoritative about its own identity: "none of these"
-        // is information, not a licence to tie-break over the rest.
-        assert!(peer_match(Some("sid-elsewhere"), subagent_family()).is_none());
-    }
-
-    #[test]
-    fn a_lone_rollout_still_attributes_without_thread_evidence() {
-        // The overwhelmingly common single-threaded case must not regress into
-        // a refusal just because evidence is absent.
-        let sole = vec![codex_file(
-            "sid-sole",
-            "paper-openai",
-            time::Duration::seconds(5),
-        )];
-        let got = peer_match(None, sole).expect("one live rollout is unambiguous");
-        assert_eq!(got.session_id, "sid-sole");
-    }
-
-    #[test]
-    fn thread_evidence_still_collapses_rotation_of_the_named_session() {
-        // Two files, one named session: a choice between files, not sessions.
-        let older = codex_file("sid-child-a", "paper-openai", time::Duration::minutes(4));
-        let newer = codex_file("sid-child-a", "paper-openai", time::Duration::seconds(2));
-        let noise = codex_file("sid-parent", "paper-openai", time::Duration::seconds(1));
-        let got = peer_match(Some("sid-child-a"), vec![older, newer, noise])
-            .expect("rotation of the named session resolves");
-        assert_eq!(got.session_id, "sid-child-a");
-    }
-
-    #[test]
-    fn an_empty_candidate_set_is_a_miss_not_a_refusal() {
-        // The rollout may still be appearing on disk; the caller's bounded poll
-        // is what waits for it, so this must stay a plain miss.
-        assert!(peer_match(Some("sid-parent"), Vec::new()).is_none());
-        assert!(narrow_by_rollout_id(Some("sid-parent"), Vec::new()).is_some());
-    }
-
-    #[test]
-    fn the_marker_lane_is_thread_aware_too() {
-        // A marked launch running subagents: every rollout in the family shares
-        // the launch's provider id, so the marker alone cannot separate them
-        // and would refuse. The request's rollout id settles it.
-        let got = marker_match(Some("sid-child-b"), subagent_family())
-            .expect("thread evidence resolves what the marker cannot");
-        assert_eq!(got.session_id, "sid-child-b");
     }
 
     #[test]
@@ -1506,7 +1255,10 @@ mod tests {
         session.source = Some("cli".to_owned());
         session.thread_source = Some("main".to_owned());
 
-        let envelope = codex_envelope(&session);
+        let envelope = crate::attribution::codex::request::codex_envelope(
+            &session,
+            &CodexRequestIdentity::default(),
+        );
         assert_eq!(envelope.harness_id, HARNESS_ID_CODEX);
         assert_eq!(envelope.session_id.as_deref(), Some("sid-1"));
         assert_eq!(envelope.version.as_deref(), Some("0.9.0"));
@@ -1525,7 +1277,10 @@ mod tests {
     #[test]
     fn absent_codex_metadata_fields_are_omitted_not_nulled() {
         let session = codex_file("sid-2", "paper-openai", time::Duration::seconds(5));
-        let envelope = codex_envelope(&session);
+        let envelope = crate::attribution::codex::request::codex_envelope(
+            &session,
+            &CodexRequestIdentity::default(),
+        );
         assert!(!envelope.metadata.contains_key("source"));
         assert!(!envelope.metadata.contains_key("threadSource"));
     }

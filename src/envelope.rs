@@ -183,6 +183,40 @@ pub const CODEX_THREAD_ID_HEADER: &str = "thread-id";
 /// Codex's root session id, present on every Codex call.
 pub const CODEX_SESSION_ID_HEADER: &str = "session-id";
 
+/// The thread that spawned this call's thread — **one hop**, not the root.
+///
+/// Present only on a sub-thread's calls. At depth 1 it equals
+/// [`CODEX_SESSION_ID_HEADER`]; deeper, it names the immediate parent while the
+/// session header stays pinned to the root. That pairing is what makes a
+/// request self-describing enough to be joined against a rollout transcript's
+/// own `parent_thread_id` — see
+/// [`crate::attribution::codex::request::CodexRequestIdentity`].
+pub const CODEX_PARENT_THREAD_ID_HEADER: &str = "x-codex-parent-thread-id";
+
+/// A JSON restatement of the identity headers, plus the turn id.
+///
+/// Codex sends the same session/thread/parent/subagent-kind values here that it
+/// sends as individual headers, so the blob is a *corroborating* source rather
+/// than an authoritative one: where the two disagree the request's account of
+/// itself is not trustworthy at all (see `conflicting_metadata`). It is also
+/// the only carrier of the turn id.
+///
+/// The blob additionally carries the user's prompt and other conversation
+/// content. Parsing is therefore an allowlist, exactly as it is for the
+/// desktop app's lifecycle payloads: see
+/// [`crate::attribution::codex_app`].
+pub const CODEX_TURN_METADATA_HEADER: &str = "x-codex-turn-metadata";
+
+/// The legacy, unstructured spelling of a sub-thread's kind.
+///
+/// Codex names the collaboration *transport* here (`collab_spawn`) while its
+/// structured metadata and the rollout transcript name the *thread source*
+/// (`thread_spawn`). The two are canonicalised to one vocabulary before
+/// comparison — see
+/// [`crate::attribution::codex::request::canonical_subagent_kind`] — so a
+/// request that says both things does not read as self-contradictory.
+pub const OPENAI_SUBAGENT_HEADER: &str = "x-openai-subagent";
+
 /// How one harness's request headers name the sub-thread a call was made from.
 ///
 /// The two shapes exist because harnesses disagree about what a header's
