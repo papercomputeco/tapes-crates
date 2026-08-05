@@ -319,6 +319,15 @@ impl AttributionState {
 /// route grammar and its own marker header name by this point, and passing the
 /// whole request would invite the pipeline to start reading Paper-specific
 /// headers itself.
+///
+/// Evidence for harness N+1 gets added here, so construct one with
+/// `..Default::default()` rather than an exhaustive literal: every field means
+/// "no evidence" when defaulted, and a consumer that supplies none of a new
+/// harness's evidence keeps compiling and keeps its old behavior. `Default` is
+/// derived for exactly this. (`#[non_exhaustive]` would force the same
+/// discipline, but it forbids struct literals outright, leaving consumers to
+/// build the value by field reassignment — which Clippy rejects under
+/// `-D warnings`.)
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RequestFacts<'a> {
     /// Peer address of the accepted loopback connection. The Claude lane maps
@@ -367,6 +376,11 @@ pub struct RequestFacts<'a> {
 }
 
 /// The outcome of attributing one request.
+///
+/// Deliberately exhaustive, unlike [`RequestFacts`]. A consumer that has not
+/// been taught a newly added outcome should fail to build rather than fall
+/// through a catch-all arm and file the turn as if nothing had happened —
+/// silent unattribution is the failure mode this lane exists to prevent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Attributed {
     /// Claude traffic resolved to a session file, with any recovered lineage.
