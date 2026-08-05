@@ -127,8 +127,11 @@ pub enum CodexSelection {
 }
 
 /// The candidate sets each rung considered, and the rung that answered.
+///
+/// Deliberately not `#[non_exhaustive]`: a consumer's own tests need to build
+/// one to exercise how it journals a decision, and the field set here IS the
+/// contract. Growth happens in [`CodexSelection`], which is non-exhaustive.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[non_exhaustive]
 pub struct CodexSelectionEvidence {
     /// Live rollouts declaring themselves the sub-thread the request claims.
     pub child_candidates: Vec<CodexSessionFile>,
@@ -146,7 +149,6 @@ pub struct CodexSelectionEvidence {
 
 /// One request's selection outcome.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[non_exhaustive]
 pub struct CodexSelectionResult {
     /// The rollout the ladder chose, if any.
     pub session: Option<CodexSessionFile>,
@@ -269,14 +271,15 @@ fn select_once(
         .collect();
     let rollout_id = rollout_evidence(facts, identity);
     let recent_candidates: Vec<CodexSessionFile> = recent.iter().copied().cloned().collect();
-    let recent_fallback =
-        narrow_by_rollout_id(rollout_id, recent_candidates.clone()).and_then(|candidates| {
+    let recent_fallback = narrow_by_rollout_id(rollout_id, recent_candidates.clone())
+        .and_then(|candidates| {
             one_live_session_or_refuse(
                 "recent-session",
                 "multiple recent sessions and the request named no rollout",
                 candidates,
             )
-        });
+        })
+        .map(|resolved| resolved.session);
 
     let child_matches: Vec<&CodexSessionFile> = if identity.is_child_shaped() {
         recent
@@ -362,20 +365,16 @@ fn select_once(
             .cloned()
             .collect();
         evidence.marker_candidates = matches.clone();
-        let match_count = matches.len();
-        if let Some(session) = marker_match(rollout_id, matches) {
-            evidence.selection = if match_count == 1 {
-                CodexSelection::MarkerUnique {
-                    session_id: session.session_id.clone(),
-                }
+        if let Some(resolved) = marker_match(rollout_id, matches) {
+            let session_id = resolved.session.session_id.clone();
+            evidence.selection = if resolved.from_unique_candidate {
+                CodexSelection::MarkerUnique { session_id }
             } else {
-                CodexSelection::MarkerNewest {
-                    session_id: session.session_id.clone(),
-                }
+                CodexSelection::MarkerNewest { session_id }
             };
             return Attempt {
                 result: CodexSelectionResult {
-                    session: Some(session),
+                    session: Some(resolved.session),
                     evidence,
                 },
                 recent_fallback,
@@ -399,21 +398,22 @@ fn select_once(
         .filter(|session| is_live_candidate(session, config, cutoff))
         .collect();
     evidence.peer_candidates = matches.clone();
-    let match_count = matches.len();
-    let session = peer_match(rollout_id, matches);
-    evidence.selection = session.as_ref().map_or(CodexSelection::NoMatch, |session| {
-        if match_count == 1 {
-            CodexSelection::PeerPidUnique {
-                session_id: session.session_id.clone(),
+    let resolved = peer_match(rollout_id, matches);
+    evidence.selection = resolved
+        .as_ref()
+        .map_or(CodexSelection::NoMatch, |resolved| {
+            let session_id = resolved.session.session_id.clone();
+            if resolved.from_unique_candidate {
+                CodexSelection::PeerPidUnique { session_id }
+            } else {
+                CodexSelection::PeerPidNewest { session_id }
             }
-        } else {
-            CodexSelection::PeerPidNewest {
-                session_id: session.session_id.clone(),
-            }
-        }
-    });
+        });
     Attempt {
-        result: CodexSelectionResult { session, evidence },
+        result: CodexSelectionResult {
+            session: resolved.map(|resolved| resolved.session),
+            evidence,
+        },
         recent_fallback,
     }
 }
@@ -471,6 +471,20 @@ pub(crate) fn narrow_by_rollout_id(
     Some(selected)
 }
 
+/// One rung's answer, plus whether the evidence that produced it left exactly
+/// one candidate standing.
+///
+/// The flag is what separates "this rung identified a session" from "this rung
+/// found several files and collapsed them", which is a distinction a journal
+/// reading back an attribution decision needs. It reflects the set the rung
+/// actually chose from — after any narrowing — because that is the set the
+/// decision was made over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Resolved {
+    pub(crate) session: CodexSessionFile,
+    pub(crate) from_unique_candidate: bool,
+}
+
 /// Resolve a candidate set down to one session, refusing on ambiguity.
 ///
 /// Several files sharing ONE session id are rollout rotation — newest wins,
@@ -483,7 +497,8 @@ pub(crate) fn one_live_session_or_refuse(
     reason: &str,
     detail: &str,
     candidates: Vec<CodexSessionFile>,
-) -> Option<CodexSessionFile> {
+) -> Option<Resolved> {
+    let from_unique_candidate = candidates.len() == 1;
     let mut ids: Vec<&str> = candidates
         .iter()
         .map(|session| session.session_id.as_str())
@@ -500,7 +515,10 @@ pub(crate) fn one_live_session_or_refuse(
         );
         return None;
     }
-    unique_or_newest(reason, candidates)
+    unique_or_newest(reason, candidates).map(|session| Resolved {
+        session,
+        from_unique_candidate,
+    })
 }
 
 /// Resolve marker matches. The marker is fresh per launch BY CONTRACT, so
@@ -514,7 +532,7 @@ pub(crate) fn one_live_session_or_refuse(
 pub(crate) fn marker_match(
     rollout_id: Option<&str>,
     candidates: Vec<CodexSessionFile>,
-) -> Option<CodexSessionFile> {
+) -> Option<Resolved> {
     let candidates = narrow_by_rollout_id(rollout_id, candidates)?;
     one_live_session_or_refuse(
         "marker",
@@ -534,7 +552,7 @@ pub(crate) fn marker_match(
 pub(crate) fn peer_match(
     rollout_id: Option<&str>,
     candidates: Vec<CodexSessionFile>,
-) -> Option<CodexSessionFile> {
+) -> Option<Resolved> {
     let candidates = narrow_by_rollout_id(rollout_id, candidates)?;
     one_live_session_or_refuse(
         "peer-open-file",
@@ -1243,7 +1261,8 @@ mod tests {
     fn peer_lane_selects_the_thread_the_request_names_not_the_newest() {
         let got = peer_match(Some("sid-parent"), subagent_family())
             .expect("the named rollout is right there among the candidates");
-        assert_eq!(got.session_id, "sid-parent");
+        assert_eq!(got.session.session_id, "sid-parent");
+        assert!(got.from_unique_candidate, "narrowing left exactly one");
     }
 
     #[test]
@@ -1260,7 +1279,7 @@ mod tests {
     fn a_lone_rollout_still_attributes_without_thread_evidence() {
         let sole = vec![session("sid-sole", time::OffsetDateTime::now_utc())];
         let got = peer_match(None, sole).expect("one live rollout is unambiguous");
-        assert_eq!(got.session_id, "sid-sole");
+        assert_eq!(got.session.session_id, "sid-sole");
     }
 
     #[test]
@@ -1275,7 +1294,11 @@ mod tests {
             ],
         )
         .expect("rotation of the named session resolves");
-        assert_eq!(got.session_id, "sid-child-a");
+        assert_eq!(got.session.session_id, "sid-child-a");
+        assert!(
+            !got.from_unique_candidate,
+            "two files of one session is a collapse, not an identification",
+        );
     }
 
     #[test]
@@ -1288,7 +1311,7 @@ mod tests {
     fn the_marker_lane_is_thread_aware_too() {
         let got = marker_match(Some("sid-child-b"), subagent_family())
             .expect("thread evidence resolves what the marker cannot");
-        assert_eq!(got.session_id, "sid-child-b");
+        assert_eq!(got.session.session_id, "sid-child-b");
     }
 
     #[test]
