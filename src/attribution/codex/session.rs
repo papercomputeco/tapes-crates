@@ -56,6 +56,24 @@ pub fn rollout_id(headers: &HeaderMap) -> Option<&str> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexSessionFile {
     pub session_id: String,
+    /// Root Codex session that owns this thread, when the rollout names one.
+    ///
+    /// A subagent rollout records the ROOT session in
+    /// `session_meta.payload.session_id` while its own thread id stays in
+    /// `payload.id` (which is what [`Self::session_id`] carries). Every
+    /// descendant retains the same root even when its direct parent is another
+    /// subagent, so this is the id to key a captured session on. A root rollout
+    /// names no root of its own and leaves this `None`.
+    pub root_session_id: Option<String>,
+    /// Direct parent thread reported by Codex for a subagent transcript.
+    ///
+    /// One hop, unlike [`Self::root_session_id`]: for a depth-2 subagent this
+    /// is the depth-1 thread, not the root.
+    pub parent_thread_id: Option<String>,
+    /// What kind of subagent this rollout is, recovered from
+    /// `payload.source.subagent`. `None` for a root rollout, and also for a
+    /// subagent whose source names no kind in a shape we recognise.
+    pub subagent_kind: Option<String>,
     pub timestamp: OffsetDateTime,
     pub modified_at: Option<OffsetDateTime>,
     pub cwd: Option<String>,
@@ -90,6 +108,10 @@ struct JsonlRow {
 #[derive(Deserialize)]
 struct SessionMetaPayload {
     id: String,
+    /// The ROOT session id, not this thread's — `id` above is the thread's own
+    /// and is what becomes `session_id`. Named by Codex, not by us.
+    session_id: Option<String>,
+    parent_thread_id: Option<String>,
     timestamp: String,
     cwd: Option<String>,
     originator: Option<String>,
@@ -136,8 +158,15 @@ pub fn read(path: &Path) -> Option<CodexSessionFile> {
                 return None;
             }
         };
+        // Read before `source` is consumed into its string form below: the
+        // kind is recovered from the structured value, not from the flattened
+        // text the field ends up holding.
+        let subagent_kind = payload.source.as_ref().and_then(subagent_kind_from_source);
         return Some(CodexSessionFile {
             session_id: payload.id,
+            root_session_id: payload.session_id,
+            parent_thread_id: payload.parent_thread_id,
+            subagent_kind,
             timestamp,
             modified_at: modified_at(path),
             cwd: payload.cwd,
@@ -150,6 +179,40 @@ pub fn read(path: &Path) -> Option<CodexSessionFile> {
         });
     }
     None
+}
+
+/// Recover the subagent kind from a `session_meta` payload's `source` value.
+///
+/// Codex has spelled this three ways, and a rollout written by any Codex build
+/// still on disk may use any of them, so all three are probed:
+///
+/// * `source.subagent` as a bare string — the kind itself;
+/// * `source.subagent.thread_spawn` as an object — a spawn whose kind is the
+///   spawn mechanism, reported as `"thread_spawn"`;
+/// * otherwise the first of `other` / `agent_type` / `agent_role` / `type` that
+///   holds a string.
+///
+/// That last probe order is carried over **as observed** from the capture-side
+/// implementation this was lifted from, not designed here. It matters only when
+/// one `subagent` object carries more than one of those keys with different
+/// values, which no captured rollout has been seen to do; if Codex ever emits
+/// such a shape, the order is the open question to settle rather than a rule to
+/// preserve.
+fn subagent_kind_from_source(source: &serde_json::Value) -> Option<String> {
+    let subagent = source.get("subagent")?;
+    if let Some(kind) = subagent.as_str() {
+        return Some(kind.to_owned());
+    }
+    if subagent
+        .get("thread_spawn")
+        .is_some_and(serde_json::Value::is_object)
+    {
+        return Some("thread_spawn".to_owned());
+    }
+    ["other", "agent_type", "agent_role", "type"]
+        .into_iter()
+        .find_map(|key| subagent.get(key).and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
 }
 
 fn modified_at(path: &Path) -> Option<OffsetDateTime> {
@@ -215,6 +278,97 @@ mod tests {
         assert_eq!(
             got.source.as_deref(),
             Some(r#"{"subagent":{"agent_nickname":"Kant"}}"#)
+        );
+    }
+
+    /// A subagent rollout names its root and its direct parent, and the kind
+    /// comes off the structured `source` — all three from the one read, not a
+    /// second pass over the file.
+    #[test]
+    fn read_recovers_subagent_lineage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout-test.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"timestamp":"2026-06-15T23:11:58.261Z","type":"session_meta","payload":{"id":"019ecd8e-4281-7353-8a00-09df678443b1","session_id":"root-session","parent_thread_id":"parent-thread","timestamp":"2026-06-15T23:11:52.984Z","cwd":"/tmp/work","source":{"subagent":{"other":"guardian","agent_nickname":"Kant"}},"thread_source":"subagent","model_provider":"paper-openai"}}"#,
+        )
+        .unwrap();
+
+        let got = read(&path).unwrap();
+
+        // `session_id` stays the thread's own id, from `payload.id`...
+        assert_eq!(got.session_id, "019ecd8e-4281-7353-8a00-09df678443b1");
+        assert_eq!(got.cwd.as_deref(), Some("/tmp/work"));
+        // ...and the lineage fields come from the same row.
+        assert_eq!(got.root_session_id.as_deref(), Some("root-session"));
+        assert_eq!(got.parent_thread_id.as_deref(), Some("parent-thread"));
+        assert_eq!(got.subagent_kind.as_deref(), Some("guardian"));
+        // The flattened `source` text is unaffected by the kind probe.
+        assert_eq!(
+            got.source.as_deref(),
+            Some(r#"{"subagent":{"agent_nickname":"Kant","other":"guardian"}}"#)
+        );
+    }
+
+    /// The nested spawn shape: the kind is the spawn mechanism itself.
+    #[test]
+    fn read_accepts_thread_spawn_source_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout-test.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"timestamp":"2026-07-22T23:11:58.261Z","type":"session_meta","payload":{"id":"child-thread","session_id":"root-session","parent_thread_id":"parent-thread","timestamp":"2026-07-22T23:11:52.984Z","cwd":"/tmp/work","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-thread","depth":2,"agent_path":"/root/child/grandchild","agent_nickname":"Euler","agent_role":null}}},"thread_source":"subagent","model_provider":"paper-openai"}}"#,
+        )
+        .unwrap();
+
+        let got = read(&path).unwrap();
+
+        assert_eq!(got.subagent_kind.as_deref(), Some("thread_spawn"));
+        assert_eq!(got.root_session_id.as_deref(), Some("root-session"));
+        assert_eq!(got.parent_thread_id.as_deref(), Some("parent-thread"));
+    }
+
+    /// A root rollout carries no lineage at all. This is the common case and
+    /// the one that must not invent a self-referential root: `session_id` is
+    /// the thread's own id, and `root_session_id` stays `None` so a consumer
+    /// can tell "I am the root" from "my root is elsewhere".
+    #[test]
+    fn read_leaves_lineage_empty_for_root_rollouts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout-root.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"timestamp":"2026-06-15T23:11:58.261Z","type":"session_meta","payload":{"id":"root-thread","timestamp":"2026-06-15T23:11:52.984Z","cwd":"/tmp/work","thread_source":"user","model_provider":"paper-openai"}}"#,
+        )
+        .unwrap();
+
+        let got = read(&path).unwrap();
+
+        assert_eq!(got.session_id, "root-thread");
+        assert!(got.root_session_id.is_none());
+        assert!(got.parent_thread_id.is_none());
+        assert!(got.subagent_kind.is_none());
+    }
+
+    /// A `source` that is a bare string (`"cli"`, the ordinary root spelling)
+    /// has no `subagent` key to probe, and a subagent object naming none of the
+    /// recognised keys yields nothing rather than guessing.
+    #[test]
+    fn subagent_kind_is_absent_when_the_source_names_none() {
+        assert_eq!(
+            subagent_kind_from_source(&serde_json::json!("cli")),
+            None,
+            "a bare-string source has no subagent object"
+        );
+        assert_eq!(
+            subagent_kind_from_source(&serde_json::json!({"subagent": {"agent_nickname": "Kant"}})),
+            None,
+            "no recognised kind key means no kind, not a guess",
+        );
+        assert_eq!(
+            subagent_kind_from_source(&serde_json::json!({"subagent": "guardian"})),
+            Some("guardian".to_owned()),
+            "a bare-string subagent is the kind itself",
         );
     }
 
