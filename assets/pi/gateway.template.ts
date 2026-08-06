@@ -26,20 +26,20 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // could be right anyway. A consumer that fills this slot is stating that it
 // runs a long-lived proxy at a known address and wants uncaptured sessions
 // routed through it too, and it owns that consequence.
-const DEFAULT_GATEWAY_URL = "";
+const DEFAULT_GATEWAY_URL = "__TAPES_DEFAULT_GATEWAY_URL__";
 
 // The key this extension's status entry is registered under, and the prefix of
 // the label shown in it. A short product word.
-const STATUS_KEY = "tapes";
+const STATUS_KEY = "__TAPES_STATUS_KEY__";
 
 // Appended to the status label after the active schema. Normally empty.
-const STATUS_SUFFIX = "";
+const STATUS_SUFFIX = "__TAPES_STATUS_SUFFIX__";
 
 // The sentence appended to the schema-mismatch warning, telling the user how to
 // resolve it with the installing product's own tools. The diagnosis before it
 // is this file's; only the remedy is the consumer's, because only the consumer
 // knows what command switches its proxy.
-const SCHEMA_MISMATCH_REMEDY = "Point TAPES_GATEWAY_URL at a proxy serving that provider, or switch that proxy's active schema, if requests fail.";
+const SCHEMA_MISMATCH_REMEDY = "__TAPES_SCHEMA_MISMATCH_REMEDY__";
 
 // ---------------------------------------------------------------------------
 // Below this line nothing is a slot.

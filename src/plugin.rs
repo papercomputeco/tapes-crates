@@ -32,6 +32,21 @@
 //! cannot be de-branded keeps that plugin in its own repository; it does not get
 //! a variant of [`crate::harness::PluginDelivery`] here.
 //!
+//! # …and what a consumer may still choose
+//!
+//! De-branding is not the same as having nothing to say. A consumer's status
+//! label, the command it tells a user to run, and — where it runs a proxy at a
+//! fixed address — where to point when nobody configured one, are legitimately
+//! its own, and a consumer that had to fork a whole asset to express them would
+//! be back where this module started. [`pi`] resolves that: the extension's
+//! logic is a crate-owned template and those strings are slots a consumer
+//! renders into. [`PI_GATEWAY_EXTENSION`] below is simply that template rendered
+//! with the crate's own vendor-neutral branding, checked in so a consumer that
+//! wants no branding of its own still just copies bytes.
+//!
+//! [`codex_app`] does the same for a Codex hook plugin, from the opposite
+//! direction — there the consumer's part could not be removed at all.
+//!
 //! # The environment contract
 //!
 //! An installed artifact is inert until the launching consumer sets
@@ -44,6 +59,8 @@
 use std::path::{Path, PathBuf};
 
 pub mod codex_app;
+pub mod pi;
+mod slots;
 
 /// Environment variable naming the capture-proxy base URL an installed plugin
 /// should send the harness's LLM traffic to.
@@ -186,6 +203,12 @@ impl PluginArtifact {
 ///
 /// pi auto-discovers global extensions from `~/.pi/agent/extensions/*.ts`, so
 /// installing the file is the whole installation.
+///
+/// The contents are generated, not authored: `assets/pi/tapes-gateway.ts` is
+/// [`pi::EXTENSION_TEMPLATE`] rendered with [`pi::NEUTRAL_BRANDING`], and the
+/// crate's tests compare the two byte for byte. It stays checked in so this
+/// constant can remain a compile-time `&'static str` — a consumer with no
+/// branding of its own installs these bytes and needs no renderer.
 pub const PI_GATEWAY_EXTENSION: PluginArtifact = PluginArtifact {
     file_name: "tapes-gateway.ts",
     install_dir: &[".pi", "agent", "extensions"],
