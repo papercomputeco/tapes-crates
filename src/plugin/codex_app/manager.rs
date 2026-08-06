@@ -42,7 +42,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::render_slots;
+use super::{render_slots, shell_quote};
 
 /// Slot in [`MARKETPLACE_MANIFEST_TEMPLATE`] for the marketplace name — the
 /// name `codex plugin marketplace remove` takes and the right-hand side of a
@@ -292,10 +292,6 @@ pub enum InstallOutcome {
     },
     /// The step never ran because the marketplace step failed.
     Skipped,
-    /// The plugin is disabled in Codex's config and the caller said so.
-    /// `codex plugin add` sets `enabled = true`, so installing would override
-    /// a choice the user made in the app.
-    SkippedDisabled,
 }
 
 impl InstallOutcome {
@@ -310,10 +306,6 @@ impl InstallOutcome {
                 format!("failed: {detail}")
             }
             Self::Skipped => "skipped (marketplace registration failed)".to_owned(),
-            Self::SkippedDisabled => "skipped: the plugin is disabled in Codex config; \
-                                      enable it in the app, then install again (installing \
-                                      now would force-re-enable it)"
-                .to_owned(),
         }
     }
 
@@ -340,16 +332,30 @@ impl InstallOutcome {
 /// CLI here at all" from per-step outcomes so a summary never fakes success.
 ///
 /// Deliberately *not* `#[non_exhaustive]`, unlike the outcome enums it holds:
-/// this is a closed dichotomy — either the CLI ran or there was none — and
-/// every consumer must branch on it. Forcing a wildcard arm here would only
-/// invite one that silently swallowed a third case that will never exist. The
-/// outcomes inside stay open, because Codex can always give a new answer.
+/// the variants here are the closed set of reasons a run ends, and every
+/// consumer must branch on all of them. Forcing a wildcard arm would only
+/// invite one that silently swallowed a case with real consequences — adding
+/// [`Self::SkippedDisabled`] here deliberately broke both consumers rather
+/// than letting them keep reporting an install that no longer happens. The
+/// outcomes inside [`Self::Steps`] stay open, because Codex can always give a
+/// new answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManagerRun {
     /// The `codex` program does not exist. Nothing ran and nothing is known;
     /// a consumer prints [`PluginManager::manual_commands`] and leaves its
     /// own delivery bookkeeping untouched.
     CliAbsent,
+    /// The caller reported the plugin disabled in Codex's config, so nothing
+    /// ran at all — see [`SKIPPED_DISABLED_REASON`].
+    ///
+    /// A sibling of [`Self::CliAbsent`] rather than an install outcome,
+    /// because "disabled" is not a fact about the install step. Registering
+    /// the marketplace can *replace* a same-named source belonging to someone
+    /// else, and doing that to serve an install that is then not performed is
+    /// a destructive act taken behind the back of a user who already said no.
+    /// Nothing runs, so nothing — not even the existence of the CLI — is
+    /// learned.
+    SkippedDisabled,
     /// The CLI ran. Each step reports its own outcome.
     Steps {
         /// Registering the marketplace source.
@@ -358,6 +364,14 @@ pub enum ManagerRun {
         install: InstallOutcome,
     },
 }
+
+/// Why [`ManagerRun::SkippedDisabled`] happened, in words a consumer can print.
+///
+/// Shared so both clients say the same thing about the same Codex behaviour:
+/// `codex plugin add` sets `enabled = true`, so installing over a disabled
+/// plugin would silently reverse a choice the user made in the app.
+pub const SKIPPED_DISABLED_REASON: &str = "the plugin is disabled in Codex config; enable it in the app, then install again \
+     (installing now would force-re-enable it)";
 
 /// One packaged plugin, and the `codex` binary that manages it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -408,37 +422,48 @@ impl PluginManager {
     /// The two commands, in order, that [`Self::register`] runs — the exact
     /// text to print when there is no CLI to run them with, or when a step
     /// failed and the user must retry by hand.
+    /// Every argument is shell-quoted, because this text exists to be pasted
+    /// into a shell: a marketplace root under a home directory with a space in
+    /// it would otherwise register a different — probably nonexistent —
+    /// directory, without saying so.
     #[must_use]
     pub fn manual_commands(&self) -> [String; 2] {
         [
             format!(
                 "codex plugin marketplace add {}",
-                self.marketplace_root.display()
+                shell_quote(&self.marketplace_root.to_string_lossy())
             ),
             self.install_command(),
         ]
     }
 
     /// Just the install command — what a consumer prints to recover from
-    /// [`InstallOutcome::RemovedNotReinstalled`].
+    /// [`InstallOutcome::RemovedNotReinstalled`]. Shell-quoted for the reason
+    /// [`Self::manual_commands`] gives.
     #[must_use]
     pub fn install_command(&self) -> String {
-        format!("codex plugin add {}", self.plugin_spec())
+        format!("codex plugin add {}", shell_quote(&self.plugin_spec()))
     }
 
     /// Register the marketplace and install (or refresh) the plugin.
     ///
     /// `plugin_disabled` is the caller's answer from
     /// [`plugin_disabled_in_config`], passed in rather than read here because
-    /// locating `config.toml` is deployment.
+    /// locating `config.toml` is deployment. It gates the **whole** run: a
+    /// disabled plugin means no `codex` command is issued, not merely that the
+    /// install step is skipped. Registering the marketplace is not a read —
+    /// against a same-named source pointing elsewhere it removes that
+    /// registration and redirects the name here, which is not something to do
+    /// on behalf of an install that will not happen.
     #[must_use]
     pub fn register(&self, goal: InstallGoal, plugin_disabled: bool) -> ManagerRun {
+        if plugin_disabled {
+            return ManagerRun::SkippedDisabled;
+        }
         let Some(marketplace) = self.register_marketplace() else {
             return ManagerRun::CliAbsent;
         };
-        let install = if plugin_disabled {
-            InstallOutcome::SkippedDisabled
-        } else if marketplace.failed() {
+        let install = if marketplace.failed() {
             InstallOutcome::Skipped
         } else {
             self.install(goal)
@@ -1215,27 +1240,91 @@ mod tests {
         assert_eq!(install, InstallOutcome::Skipped);
     }
 
+    /// A disabled plugin must leave the machine exactly as it found it — and
+    /// the sharpest case is a same-named marketplace registered from someone
+    /// else's source. Replacing that is destructive, it is done to serve an
+    /// install that is then not performed, and it happens behind the back of a
+    /// user who already said no.
+    ///
+    /// Asserting the invocation log is EMPTY rather than "no plugin add" is
+    /// the point: the earlier spelling of this test watched only the install
+    /// step and so could not see the marketplace being rewritten underneath.
     #[cfg(unix)]
     #[test]
-    fn a_disabled_plugin_is_never_installed_over() {
+    fn a_disabled_plugin_leaves_someone_elses_marketplace_alone() {
         let root = tempfile::tempdir().unwrap();
-        let manager = manager(write_codex_shim(root.path(), "exit 0"), root.path());
+        let manager = manager(
+            write_codex_shim(
+                root.path(),
+                &format!(
+                    "case \"$*\" in\n  \
+                     *'plugin marketplace remove'*) touch \"{removed}\"; exit 0 ;;\n  \
+                     *'plugin marketplace add'*) if [ -f \"{removed}\" ]; then exit 0; \
+                     else echo \"Error: marketplace 'acme' is already added from a different \
+                     source; remove it before adding this source\" >&2; exit 1; fi ;;\n  \
+                     *) exit 0 ;;\nesac",
+                    removed = root.path().join("mkt-removed.sentinel").display()
+                ),
+            ),
+            root.path(),
+        );
 
         let run = manager.register(InstallGoal::Install, true);
 
-        assert_eq!(
-            run,
-            ManagerRun::Steps {
-                marketplace: MarketplaceOutcome::Added,
-                install: InstallOutcome::SkippedDisabled,
-            }
-        );
+        assert_eq!(run, ManagerRun::SkippedDisabled);
         assert!(
-            !shim_log(root.path())
-                .iter()
-                .any(|line| line.starts_with("plugin add")),
-            "`codex plugin add` would force-re-enable the plugin"
+            shim_log(root.path()).is_empty(),
+            "a disabled plugin must run no codex command at all, got {:?}",
+            shim_log(root.path())
         );
+    }
+
+    /// Every printed command is copy-paste text, so each of its arguments must
+    /// survive `/bin/sh` word splitting as exactly one word. A marketplace root
+    /// under a home directory with a space in it is ordinary, not exotic.
+    ///
+    /// The round trip is real: the command is handed to `sh` via `set --`,
+    /// which performs the same splitting a user's paste would, and each
+    /// resulting word is printed on its own line.
+    #[cfg(unix)]
+    #[test]
+    fn a_printed_command_survives_shell_word_splitting() {
+        let awkward = std::path::PathBuf::from("/tmp/two words/it's here/$HOME`x`;rm -rf/plugin");
+        let manager = PluginManager::new("codex", &awkward, "acme", "acme-codex");
+
+        let words = shell_words(&manager.manual_commands()[0]);
+
+        assert_eq!(
+            words,
+            vec![
+                "codex".to_owned(),
+                "plugin".to_owned(),
+                "marketplace".to_owned(),
+                "add".to_owned(),
+                awkward.display().to_string(),
+            ],
+            "the marketplace path did not survive as one word"
+        );
+    }
+
+    /// Split a command string the way a shell would, by letting a shell do it.
+    #[cfg(unix)]
+    fn shell_words(command: &str) -> Vec<String> {
+        let output = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("set -- {command}\nprintf '%s\\n' \"$@\""))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "the printed command is not even parseable by /bin/sh: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     /// A CLI that fails with no output at all still produces a detail a user
@@ -1286,6 +1375,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let manager = manager(missing_codex(root.path()), root.path());
 
+        // An ordinary path and an ordinary spec print bare: quoting is applied
+        // where it is needed, not everywhere, so the common case stays
+        // readable.
         assert_eq!(
             manager.manual_commands(),
             [
@@ -1352,7 +1444,6 @@ mod tests {
                 detail: "boom".to_owned(),
             },
             InstallOutcome::Skipped,
-            InstallOutcome::SkippedDisabled,
         ] {
             let described = outcome.describe();
             assert!(!described.is_empty());
@@ -1376,7 +1467,6 @@ mod tests {
                 detail: String::new(),
             },
             InstallOutcome::Skipped,
-            InstallOutcome::SkippedDisabled,
         ] {
             assert!(!outcome.confirmed_delivery(), "{outcome:?}");
         }
