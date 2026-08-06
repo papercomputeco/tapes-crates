@@ -101,6 +101,17 @@ change sessions nobody is capturing; and if it stamps an envelope itself, the
 header names must match `src/envelope.rs`, since a rename there would otherwise
 silently re-file the agent's sessions as `unknown`.
 
+Where an agent auto-loads *every* file in a global directory — pi does — a
+third property follows: **one artifact, one path, identical bytes from every
+client**. Two files there are two readers in one process, contending over the
+launch nonce and over the same provider registrations, and the loser registers
+anyway with no nonce echo, so both clients' sessions file as `unknown` with no
+error. Anything a client needs to say differently is read from the environment
+of the launch it owns, never shipped as different bytes; and because an earlier
+release may have installed a differently-named copy, `PluginArtifact` carries
+the names it supersedes and `PluginArtifact::install` removes them. See
+`src/plugin/pi.rs`.
+
 An agent whose plugin is installed by the agent's *own* plugin manager, and
 whose hook command or identity strings are irreducibly the consumer's, cannot
 ship as fixed artifacts. It ships as **templates** instead —

@@ -4,8 +4,10 @@
 //! Most harnesses need nothing here: capture works by pointing the harness's
 //! base-URL knob at a proxy, which [`crate::launch`] plans. A harness with no
 //! such knob needs code running inside it instead, and that code is an asset
-//! somebody has to write to disk. This module owns those assets; a consumer is
-//! only the installer.
+//! somebody has to write to disk. This module owns those assets, and — because
+//! *how many* copies of an asset end up in a harness's auto-discovery directory
+//! is a correctness property, not a packaging detail — it owns the install too,
+//! through [`PluginArtifact::install`].
 //!
 //! # Why the assets live here
 //!
@@ -35,17 +37,24 @@
 //! # …and what a consumer may still choose
 //!
 //! De-branding is not the same as having nothing to say. A consumer's status
-//! label, the command it tells a user to run, and — where it runs a proxy at a
-//! fixed address — where to point when nobody configured one, are legitimately
-//! its own, and a consumer that had to fork a whole asset to express them would
-//! be back where this module started. [`pi`] resolves that: the extension's
-//! logic is a crate-owned template and those strings are slots a consumer
-//! renders into. [`PI_GATEWAY_EXTENSION`] below is simply that template rendered
-//! with the crate's own vendor-neutral branding, checked in so a consumer that
-//! wants no branding of its own still just copies bytes.
+//! label and the command it tells a user to run are legitimately its own, and a
+//! consumer that had to fork a whole asset to express them would be back where
+//! this module started.
 //!
-//! [`codex_app`] does the same for a Codex hook plugin, from the opposite
-//! direction — there the consumer's part could not be removed at all.
+//! An asset resolves that at **runtime**, not by being rendered: the launching
+//! consumer sets those strings in the environment of the launch it owns, and
+//! the asset reads them (see [`pi`] for pi's three). Rendering per consumer is
+//! the thing this module now refuses for a file-copy artifact, and for a
+//! structural reason — a rendered asset is one *file per product*, and a
+//! harness that auto-loads every file in a directory then loads two of them
+//! into one process, where they contend over the launch nonce and over the
+//! provider registrations and silently unattribute both products' sessions.
+//! One artifact, one path, identical bytes is what makes that second reader
+//! impossible rather than merely coordinated.
+//!
+//! [`codex_app`] is still rendered, and can be: its manifests are installed by
+//! the harness's own plugin manager into a per-consumer plugin, not copied into
+//! a directory something globs.
 //!
 //! # The environment contract
 //!
@@ -55,6 +64,12 @@
 //! machine — including sessions nobody is capturing. Making the redirect
 //! conditional on the environment is what keeps an install from changing the
 //! behaviour of sessions the user did not launch under capture.
+//!
+//! The names are shared across consumers, and that is safe for exactly the
+//! reason above: one installed artifact means one reader per harness, so there
+//! is nothing to collide with. Per-consumer variable names buy nothing once the
+//! second copy is gone, and cost a launcher that can set a variable its
+//! installed asset does not read.
 
 use std::path::{Path, PathBuf};
 
@@ -152,6 +167,7 @@ pub fn nonce_matches(expected: &str, presented: &str) -> bool {
 pub struct PluginArtifact {
     file_name: &'static str,
     install_dir: &'static [&'static str],
+    superseded_file_names: &'static [&'static str],
     contents: &'static str,
 }
 
@@ -190,6 +206,76 @@ impl PluginArtifact {
     pub fn install_path(&self, home: &Path) -> PathBuf {
         self.install_dir(home).join(self.file_name)
     }
+
+    /// File names in this artifact's own install directory that a previous
+    /// release of *some* client wrote, and that installing this artifact must
+    /// remove.
+    ///
+    /// Only meaningful for a harness that loads a directory rather than a file:
+    /// there a superseded copy is not merely stale, it is a second reader, and
+    /// it keeps running the behaviour this artifact replaced. pi is that
+    /// harness, and its list names a file another client shipped — which is the
+    /// whole reason the list is crate-owned. A client can be expected to know
+    /// what *it* used to install; it cannot be expected to know what its
+    /// competitor did, and removing only one's own leaves the collision intact
+    /// from the other direction.
+    ///
+    /// This is the one place a vendor's name may appear in this module. It is
+    /// not carried into anything installed — it names bytes being deleted, not
+    /// bytes being written — and the vendor-neutrality bar on
+    /// [`PluginArtifact::contents`] is unaffected.
+    #[must_use]
+    pub const fn superseded_file_names(&self) -> &'static [&'static str] {
+        self.superseded_file_names
+    }
+
+    /// The paths [`Self::install`] removes, beneath `home`.
+    ///
+    /// Exposed for a consumer that owns its own write path — a content-keyed
+    /// refresh, say — and needs the removal without the write.
+    #[must_use]
+    pub fn superseded_paths(&self, home: &Path) -> Vec<PathBuf> {
+        let dir = self.install_dir(home);
+        self.superseded_file_names
+            .iter()
+            .map(|name| dir.join(name))
+            .collect()
+    }
+
+    /// Write this artifact beneath `home`, creating its directory and removing
+    /// every superseded sibling. Returns the path written.
+    ///
+    /// The removal is not tidiness. A harness that auto-discovers a whole
+    /// directory loads a superseded copy alongside this one, and two copies of
+    /// a capture extension in one process destroy each other's attribution —
+    /// which means an install that only *wrote* would leave an upgrading user
+    /// exactly as broken as before, with the new bytes on disk to prove the fix
+    /// had shipped. Writing and removing therefore belong to one operation, not
+    /// to each consumer's good intentions.
+    ///
+    /// A superseded file that is absent is not an error. One that exists and
+    /// cannot be removed is: the caller has to know that the harness will still
+    /// load it, and is better placed than this crate to decide whether that
+    /// fails the launch or warns.
+    ///
+    /// # Errors
+    ///
+    /// Any I/O failure creating the directory, writing the artifact, or
+    /// removing a superseded sibling that exists.
+    pub fn install(&self, home: &Path) -> std::io::Result<PathBuf> {
+        let dir = self.install_dir(home);
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(self.file_name);
+        std::fs::write(&path, self.contents)?;
+        for superseded in self.superseded_paths(home) {
+            match std::fs::remove_file(&superseded) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(path)
+    }
 }
 
 /// pi's capture extension.
@@ -201,17 +287,24 @@ impl PluginArtifact {
 /// `X-Tapes-*` headers it attaches are the only attribution pi's turns get,
 /// because no PID-indexed session file exists for a client to read.
 ///
-/// pi auto-discovers global extensions from `~/.pi/agent/extensions/*.ts`, so
-/// installing the file is the whole installation.
+/// pi auto-discovers global extensions from `~/.pi/agent/extensions/*.ts` — it
+/// loads *every* file there, into one process — so installing the file is the
+/// whole installation, and the number of files is part of the contract.
 ///
-/// The contents are generated, not authored: `assets/pi/tapes-gateway.ts` is
-/// [`pi::EXTENSION_TEMPLATE`] rendered with [`pi::NEUTRAL_BRANDING`], and the
-/// crate's tests compare the two byte for byte. It stays checked in so this
-/// constant can remain a compile-time `&'static str` — a consumer with no
-/// branding of its own installs these bytes and needs no renderer.
+/// These bytes are what every client installs, to this one path. They used to
+/// be one rendering of a per-consumer template, which put two files in that
+/// directory on any machine with two clients: both registered the same
+/// providers, the second to load found the launch nonce already consumed and
+/// registered without the echo, and both products' sessions filed as `unknown`.
+/// What a product says differently it now says through the environment of its
+/// own launch — see [`pi`].
+///
+/// [`Self::superseded_file_names`] carries the branded name that model left on
+/// disk, because an upgrading user has one and pi would go on loading it.
 pub const PI_GATEWAY_EXTENSION: PluginArtifact = PluginArtifact {
     file_name: "tapes-gateway.ts",
     install_dir: &[".pi", "agent", "extensions"],
+    superseded_file_names: &["paper-gateway.ts"],
     contents: include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/assets/pi/tapes-gateway.ts"
@@ -245,6 +338,10 @@ pub(crate) const PI_ARTIFACTS: &[PluginArtifact] = &[PI_GATEWAY_EXTENSION];
 pub const OPENCODE_GATEWAY_EXTENSION: PluginArtifact = PluginArtifact {
     file_name: "tapes-gateway.ts",
     install_dir: &[".config", "opencode", "plugins"],
+    // Never rendered per consumer, so no client ever wrote a differently-named
+    // copy of it and there is nothing to supersede. This is the shape pi has
+    // now been given.
+    superseded_file_names: &[],
     contents: include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/assets/opencode/tapes-gateway.ts"
@@ -290,6 +387,10 @@ mod tests {
     /// leave the home directory — the installer canonicalises and contains, but
     /// the crate must not hand it something designed to escape in the first
     /// place.
+    ///
+    /// Superseded names are held to the same bar, and more urgently: they are
+    /// joined the same way and then handed to `remove_file`, so a traversing
+    /// component there deletes something outside the harness's own directory.
     #[test]
     fn no_artifact_path_component_can_leave_the_home_directory() {
         for artifact in all_artifacts() {
@@ -297,6 +398,7 @@ mod tests {
                 .install_dir_components()
                 .iter()
                 .chain(std::iter::once(&artifact.file_name()))
+                .chain(artifact.superseded_file_names())
                 .copied()
                 .collect::<Vec<_>>();
             for component in components {
@@ -332,6 +434,119 @@ mod tests {
         );
     }
 
+    /// **The PCC-1125 property.** pi loads every file in its extension
+    /// directory into one process, so two clients installing "their" copy is
+    /// two readers contending over one launch's nonce and over the same
+    /// provider registrations — and the loser registers anyway, unattributed.
+    /// The fix is that there is nothing per-client to install: whoever installs
+    /// writes these bytes, to this path.
+    ///
+    /// Two homes stand in for two clients. The relative destination and the
+    /// written bytes must match, because a difference in either is a second
+    /// file in that directory.
+    #[test]
+    fn every_client_installs_identical_bytes_to_one_path() {
+        let (first, second) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let one = PI_GATEWAY_EXTENSION.install(first.path()).unwrap();
+        let two = PI_GATEWAY_EXTENSION.install(second.path()).unwrap();
+
+        assert_eq!(
+            one.strip_prefix(first.path()),
+            two.strip_prefix(second.path()),
+            "two installs disagree about where the pi extension goes"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&one).unwrap(),
+            std::fs::read_to_string(&two).unwrap(),
+            "two installs wrote different bytes; a second reader can exist again"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&one).unwrap(),
+            PI_GATEWAY_EXTENSION.contents(),
+        );
+    }
+
+    /// **The migration, and the half without which the fix reaches nobody.**
+    /// Every user who ran an older `paper` has `paper-gateway.ts` sitting in
+    /// pi's extension directory. Writing the new file next to it leaves two
+    /// extensions loaded and the bug exactly as it was — with the fix installed,
+    /// which is worse than not shipping it. So installing removes it.
+    #[test]
+    fn installing_the_pi_extension_removes_a_superseded_branded_copy() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = PI_GATEWAY_EXTENSION.install_dir(home.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        let superseded = dir.join("paper-gateway.ts");
+        std::fs::write(&superseded, "// an older client's rendering\n").unwrap();
+
+        let installed = PI_GATEWAY_EXTENSION.install(home.path()).unwrap();
+
+        assert!(
+            !superseded.exists(),
+            "the superseded extension survived the install; pi would load both"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&installed).unwrap(),
+            PI_GATEWAY_EXTENSION.contents(),
+        );
+        // …and nothing else in the directory was touched: the removal is a
+        // named list, not a sweep of a directory the user also puts their own
+        // extensions in.
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "installing removed or added something it was not asked to"
+        );
+    }
+
+    /// The list is named, so it has to actually name the file the bug is about.
+    /// The test above would pass just as happily against an empty list if it
+    /// created no superseded file.
+    #[test]
+    fn the_pi_artifact_names_the_branded_copy_an_upgrading_user_has() {
+        assert!(
+            PI_GATEWAY_EXTENSION
+                .superseded_file_names()
+                .contains(&"paper-gateway.ts"),
+            "nothing removes the file an older paper installed"
+        );
+        assert_eq!(
+            PI_GATEWAY_EXTENSION.superseded_paths(Path::new("/home/u")),
+            vec![PathBuf::from(
+                "/home/u/.pi/agent/extensions/paper-gateway.ts"
+            )],
+        );
+    }
+
+    /// A first install, onto a machine that has neither the directory nor a
+    /// superseded copy, is the ordinary case and must not error on the absent
+    /// file it was told to remove.
+    #[test]
+    fn installing_creates_the_directory_and_tolerates_nothing_to_supersede() {
+        let home = tempfile::tempdir().unwrap();
+        let installed = PI_GATEWAY_EXTENSION.install(home.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&installed).unwrap(),
+            PI_GATEWAY_EXTENSION.contents(),
+        );
+    }
+
+    /// An artifact that superseded its own file name would delete what it had
+    /// just written, leaving the harness with no extension at all — and the
+    /// symptom (nothing captured) looks nothing like the cause.
+    #[test]
+    fn no_artifact_supersedes_the_file_it_installs() {
+        for artifact in all_artifacts() {
+            assert!(
+                !artifact
+                    .superseded_file_names()
+                    .contains(&artifact.file_name()),
+                "{} would delete itself on install",
+                artifact.file_name(),
+            );
+        }
+    }
+
     #[test]
     fn every_artifact_carries_its_bytes() {
         for artifact in all_artifacts() {
@@ -365,15 +580,23 @@ mod tests {
     /// literal in the asset are two spellings of one contract. Renaming the
     /// constant alone would leave an installed plugin waiting for a variable
     /// nobody sets — a silently uncaptured session, not a build failure.
+    ///
+    /// Pinned as the whole `const … = "…";` declaration rather than as a
+    /// substring. A per-product namespacing of these names was the shape of an
+    /// earlier attempt at PCC-1125, and a `contains` accepts an asset that
+    /// keeps such a name *alongside* the shared one — which is a launcher and
+    /// an extension agreeing on a variable nobody else sets.
     #[test]
     fn the_pi_extension_reads_the_gateway_environment_contract() {
         let contents = PI_GATEWAY_EXTENSION.contents();
         assert!(
-            contents.contains(GATEWAY_URL_ENV),
+            contents.contains(&format!("const GATEWAY_URL_ENV = \"{GATEWAY_URL_ENV}\";")),
             "the asset does not read {GATEWAY_URL_ENV}"
         );
         assert!(
-            contents.contains(GATEWAY_SCHEMA_ENV),
+            contents.contains(&format!(
+                "const GATEWAY_SCHEMA_ENV = \"{GATEWAY_SCHEMA_ENV}\";"
+            )),
             "the asset does not read {GATEWAY_SCHEMA_ENV}"
         );
     }
@@ -388,7 +611,9 @@ mod tests {
     fn the_pi_extension_echoes_the_capture_nonce_contract() {
         let contents = PI_GATEWAY_EXTENSION.contents();
         assert!(
-            contents.contains(GATEWAY_NONCE_ENV),
+            contents.contains(&format!(
+                "const GATEWAY_NONCE_ENV = \"{GATEWAY_NONCE_ENV}\";"
+            )),
             "the asset does not read {GATEWAY_NONCE_ENV}"
         );
         assert!(

@@ -1,48 +1,24 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
-// Consumer slots.
+// One file, whoever installed it.
 //
-// Every slot below is the *entire* string literal of a `const` declaration in
-// this block, and nothing in the body of the extension reads a slot any other
-// way. That is the whole safety property of this template: a rendered value can
-// change where the extension points when nothing configured it, and what it
-// says to the user — and nothing else. The capture-nonce handling further down
-// is out of every consumer's reach by construction, not by convention.
+// pi auto-loads *every* file in `~/.pi/agent/extensions/`, into one process.
+// Two products that each install their own copy of this extension therefore get
+// two copies loaded, and the two contend over every resource the file touches:
+// the launch nonce (read once and deleted, so the second reader finds nothing)
+// and, more decisively, the provider registrations — both copies call
+// `registerProvider` for the same three providers, and the last write wins. The
+// copy that lost the nonce still registers, without the echo, and the proxy
+// then cannot tell a real launch from a forged envelope: both products' pi
+// sessions file as `unknown`, with no error anywhere.
 //
-// Adding a slot outside this block, or interpolating one into a template
-// literal rather than declaring it here, breaks that property. If a slot would
-// change what the extension *does*, it does not belong here at all: this file
-// is one implementation with two brandings, not a fork with a shared prefix.
-// ---------------------------------------------------------------------------
-
-// Where to send captured traffic when GATEWAY_URL_ENV names nothing.
-//
-// Empty — the normal value — means "nowhere": the extension leaves every
-// provider on pi's own endpoint and does nothing at all. That default is not
-// timidity. This file installs into pi's *global* auto-discovery directory, so
-// it loads for every pi session on the machine, including the ones nobody is
-// capturing; and a capture proxy picks its port per launch, so no fixed address
-// could be right anyway. A consumer that fills this slot is stating that it
-// runs a long-lived proxy at a known address and wants uncaptured sessions
-// routed through it too, and it owns that consequence.
-const DEFAULT_GATEWAY_URL = "";
-
-// The key this extension's status entry is registered under, and the prefix of
-// the label shown in it. A short product word.
-const STATUS_KEY = "tapes";
-
-// Appended to the status label after the active schema. Normally empty.
-const STATUS_SUFFIX = "";
-
-// The sentence appended to the schema-mismatch warning, telling the user how to
-// resolve it with the installing product's own tools. The diagnosis before it
-// is this file's; only the remedy is the consumer's, because only the consumer
-// knows what command switches its proxy.
-const SCHEMA_MISMATCH_REMEDY = "Point TAPES_GATEWAY_URL at a proxy serving that provider, or switch that proxy's active schema, if requests fail.";
-
-// ---------------------------------------------------------------------------
-// Below this line nothing is a slot.
+// So this file is not per-product. Every client installs *these* bytes to
+// *this* path, which is what makes a second reader impossible rather than
+// merely coordinated. What a product legitimately says differently — what its
+// status entry is called, what it tells a user to run — it says at runtime,
+// through the environment of the launch it owns, and never by shipping
+// different bytes.
 // ---------------------------------------------------------------------------
 
 // The providers whose traffic a capture proxy can carry. pi's other providers
@@ -58,9 +34,31 @@ const SCHEMA_PROVIDERS = ["anthropic", "openai"] as const;
 // Names the host capture client sets before launching pi. They are the whole
 // contract between this asset and whoever installed it — see the Rust
 // constants in `crate::plugin`, which the crate's tests pin against this file.
+//
+// Shared spellings, deliberately. A per-product name would only be needed if a
+// second installed copy could read them, and installing one file to one path is
+// what removes that copy.
 const GATEWAY_URL_ENV = "TAPES_GATEWAY_URL";
 const GATEWAY_SCHEMA_ENV = "TAPES_GATEWAY_SCHEMA";
 const GATEWAY_NONCE_ENV = "TAPES_GATEWAY_NONCE";
+
+// The launching product's own presentation, carried the same way — set by the
+// client that launched this session, for the length of that session.
+//
+// Everything read from these three is display text. It reaches `setStatus` and
+// `notify` and nothing else: not the nonce, not the envelope, not the provider
+// registration. That is the same containment a rendered slot used to buy, at
+// runtime and without a second file to render.
+const GATEWAY_LABEL_ENV = "TAPES_GATEWAY_LABEL";
+const GATEWAY_LABEL_SUFFIX_ENV = "TAPES_GATEWAY_LABEL_SUFFIX";
+const GATEWAY_REMEDY_ENV = "TAPES_GATEWAY_REMEDY";
+
+// What to present when the launcher named nothing. Vendor-neutral by
+// obligation: these bytes install into every client, so the fallback phrases
+// itself in terms of the environment contract rather than any product's CLI.
+const DEFAULT_LABEL = "tapes";
+const DEFAULT_REMEDY =
+  "Point TAPES_GATEWAY_URL at a proxy serving that provider, or switch that proxy's active schema, if requests fail.";
 
 // The header the nonce is echoed back in. A per-launch secret the capture
 // client generated: the proxy's peer-PID ancestry check cannot tell this
@@ -87,22 +85,34 @@ export default function (pi: ExtensionAPI) {
   // nonce once and deleting the variable here means those children never
   // receive it, and the value survives only in this closure. Deleted even when
   // no gateway URL is set: an inert extension must not leave the secret lying
-  // in the environment either. The URL and schema variables stay — they are
-  // addresses, not secrets, and other tooling may legitimately read them.
+  // in the environment either. The URL, schema, and presentation variables
+  // stay — they are addresses and display text, not secrets, and other tooling
+  // may legitimately read them.
   const nonce = process.env[GATEWAY_NONCE_ENV];
   delete process.env[GATEWAY_NONCE_ENV];
 
-  const rawBaseUrl = process.env[GATEWAY_URL_ENV] ?? DEFAULT_GATEWAY_URL;
+  const rawBaseUrl = process.env[GATEWAY_URL_ENV];
 
   // Nothing to route through: this session is not being captured, so leave
-  // every provider on pi's own endpoint and return. Reached whenever the
-  // launcher set no gateway and the rendering carries no default — see
-  // DEFAULT_GATEWAY_URL above for why that is the ordinary case.
+  // every provider on pi's own endpoint and return. This file installs into
+  // pi's *global* auto-discovery directory, so it loads for every pi session on
+  // the machine — including every session nobody launched under capture — and
+  // staying inert for those is the whole reason the redirect is conditional on
+  // the environment. There is no built-in fallback address on purpose: a fixed
+  // one would belong to whichever product wrote it, and these bytes belong to
+  // every product that installs them.
   if (!rawBaseUrl) {
     return;
   }
 
   const baseUrl = normalizeBaseUrl(rawBaseUrl);
+
+  // Presentation, resolved once per session from the launch's environment.
+  // Empty is treated as unset for the two that have meaningful defaults; an
+  // explicitly empty suffix is a real value and stays empty.
+  const statusLabel = process.env[GATEWAY_LABEL_ENV] || DEFAULT_LABEL;
+  const statusSuffix = process.env[GATEWAY_LABEL_SUFFIX_ENV] ?? "";
+  const schemaRemedy = process.env[GATEWAY_REMEDY_ENV] || DEFAULT_REMEDY;
 
   const registerCapturedProviders = (harnessSessionId?: string) => {
     // The envelope pi stamps on its own behalf. pi is the self-attributing
@@ -138,7 +148,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     registerCapturedProviders(ctx.sessionManager.getSessionId());
-    ctx.ui.setStatus(STATUS_KEY, `${STATUS_KEY}:${activeSchema}${STATUS_SUFFIX}`);
+    ctx.ui.setStatus(statusLabel, `${statusLabel}:${activeSchema}${statusSuffix}`);
   });
 
   pi.on("model_select", (event, ctx) => {
@@ -151,7 +161,7 @@ export default function (pi: ExtensionAPI) {
     if (schemaProvider && isSchemaProvider(selectedProvider) && selectedProvider !== schemaProvider) {
       ctx.ui.notify(
         `The capture proxy is routing the ${schemaProvider} schema; the selected model's provider is ` +
-          `${selectedProvider}. ${SCHEMA_MISMATCH_REMEDY}`,
+          `${selectedProvider}. ${schemaRemedy}`,
         "warning",
       );
       return;
