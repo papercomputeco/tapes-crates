@@ -27,6 +27,12 @@
 //! inert until the *rendered command* does something, so the inertness
 //! obligation [`crate::plugin::GATEWAY_URL_ENV`] discharges for pi rests here
 //! on the consumer's command instead.
+//!
+//! Rendered manifests are still not an *installed* plugin. [`manager`] owns
+//! the rest: the marketplace wrapper that makes them installable, and the
+//! `codex` CLI invocation that installs them.
+
+pub mod manager;
 
 /// Slot in [`HOOKS_MANIFEST_TEMPLATE`] that a consumer's hook command line
 /// replaces. The slot is the entire JSON string value, so substitution is
@@ -245,6 +251,33 @@ fn render_slots(template: &str, slots: &[(&str, &str)]) -> String {
         rendered.push_str(&json_string_literal(value));
         rest = &rest[at + slot_len..];
     }
+}
+
+/// `value` as a single POSIX shell word.
+///
+/// Two places need this and they must not answer it differently: the hook
+/// command a consumer renders into [`HOOKS_MANIFEST_TEMPLATE`] is executed by
+/// a shell, and the recovery commands [`manager::PluginManager::manual_commands`]
+/// prints are copied into one. A home directory containing a space is
+/// ordinary, and either use getting it wrong silently changes the arguments —
+/// the executed hook runs against the wrong path, the pasted command registers
+/// the wrong directory.
+///
+/// Quoting is applied only when the value needs it, so ordinary paths and
+/// plugin specs print bare. The safe set is a deliberately short allowlist —
+/// ASCII alphanumerics plus `._-/@:+,=` — every member of which a POSIX shell
+/// leaves alone in a non-leading word. Everything else, including the empty
+/// string, is wrapped in single quotes, which suppress every expansion the
+/// shell performs; the only character then needing care is the closing quote
+/// itself, spliced out, escaped, and spliced back in.
+#[must_use]
+pub fn shell_quote(value: &str) -> String {
+    let safe =
+        |character: char| character.is_ascii_alphanumeric() || "._-/@:+,=".contains(character);
+    if !value.is_empty() && value.chars().all(safe) {
+        return value.to_owned();
+    }
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 /// `value` as a complete JSON string literal, quotes included.
@@ -523,6 +556,64 @@ mod tests {
                 assert_eq!(*templates, CODEX_APP_TEMPLATES);
             }
             other => panic!("codex-app declares {other:?}, not hook manifest templates"),
+        }
+    }
+
+    /// The quoter's contract, stated against a real shell rather than against
+    /// an expected string: whatever it returns must come back out of `/bin/sh`
+    /// as exactly one word equal to the input. Hard-coding the expected
+    /// quoting would pass even if both the quoter and the expectation were
+    /// wrong in the same way.
+    #[cfg(unix)]
+    #[test]
+    fn a_quoted_value_returns_from_the_shell_as_one_unchanged_word() {
+        for value in [
+            "/tmp/plain/path",
+            "acme-codex@acme",
+            "",
+            "/tmp/two words/plugin",
+            "/tmp/it's here/plugin",
+            "/tmp/$HOME/plugin",
+            "/tmp/`whoami`/plugin",
+            "/tmp/a;rm -rf b/plugin",
+            "/tmp/new\nline/plugin",
+            "/tmp/glob*?[x]/plugin",
+            "~/not-expanded",
+            "/tmp/\u{e9}t\u{e9}/plugin",
+        ] {
+            let output = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("printf '%s' {}", shell_quote(value)))
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{value:?} produced unparseable shell text: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                value,
+                "{value:?} did not survive the shell"
+            );
+        }
+    }
+
+    /// Values that need nothing are left alone, so ordinary printed commands
+    /// stay readable. The allowlist is the whole reason this is safe, so it is
+    /// pinned rather than left to inspection.
+    #[test]
+    fn only_values_needing_quotes_get_them() {
+        for bare in ["plugin", "acme-codex@acme", "/a/b_c.d-e", "K=V", "a:b+c,d"] {
+            assert_eq!(shell_quote(bare), bare);
+        }
+        for quoted in [
+            "", " ", "a b", "a~b", "a*b", "a$b", "a'b", "a\\b", "a#b", "a%b",
+        ] {
+            assert!(
+                shell_quote(quoted).starts_with('\''),
+                "{quoted:?} was left unquoted"
+            );
         }
     }
 }

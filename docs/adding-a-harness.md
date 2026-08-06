@@ -109,6 +109,15 @@ structure and event set and the consumer renders its command and identity into
 slots (see `src/plugin/codex_app.rs`). The vendor-neutrality bar is the same;
 only the branding *slots* are consumer-filled.
 
+Rendered manifests are still not an installed plugin: the harness's plugin
+manager wants a packaged source directory and is driven by the harness's own
+CLI. Both belong to the harness, so both live here too —
+`src/plugin/codex_app/manager.rs` renders the marketplace wrapper, names the
+paths inside it, and runs the registration, including the CLI quirks (stderr
+phrasings that mean "already done", a same-named source pointing elsewhere)
+that decide whether an install completes. A consumer writes bytes and prints
+words; it does not learn the plugin manager.
+
 ## Step 3 — an attribution strategy
 
 Attribution is how a captured session gets a real identity instead of a
@@ -320,7 +329,8 @@ take the slice, write each artifact beneath the user's home.
 `HookManifestTemplates` deliberately flattens to the empty slice — templates
 carry un-rendered slots, so a file-copy installer must see nothing to copy;
 an installer for that shape renders through `src/plugin/codex_app.rs` and
-packages the result for the harness's own plugin manager instead.
+packages the result with `src/plugin/codex_app/manager.rs`, which also drives
+the harness's own plugin manager over the packaged tree.
 
 The empty slice is the ordinary case and is not an error. An installer must be
 able to tell "nothing to do" from "no such harness" — `tapesctl plugin install

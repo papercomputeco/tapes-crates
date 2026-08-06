@@ -70,7 +70,15 @@ pub const LIFECYCLE_EVENTS: &[&str] = &[
 /// The common fields describe the *root* session the boundary belongs to;
 /// [`Self::event`] carries the boundary-specific identity. Everything is kept
 /// as the exact opaque string Codex supplied.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// `Deserialize` as well as `Serialize`, because an observation is parsed in
+/// one process and acted on in another: the hook Codex runs is a short-lived
+/// child, and the capture that needs the boundary is the long-lived proxy. A
+/// consumer that could only serialize had to declare a mirror of this type on
+/// the receiving end and hand-maintain the translation, which is one
+/// vocabulary in two spellings — exactly what this crate exists to prevent.
+/// The round trip is part of the contract; the tests pin it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct LifecycleObservation {
     /// The root Codex session id. Opaque; equality-matched against rollout
@@ -496,5 +504,39 @@ mod tests {
             );
         }
         assert_eq!(LIFECYCLE_EVENTS.len(), 5);
+    }
+
+    /// Every boundary survives a serialize/deserialize round trip unchanged.
+    ///
+    /// The observation is produced by a short-lived hook process and consumed
+    /// by a long-lived capture, so the transport is not optional — and a
+    /// consumer that has to restate the vocabulary to cross that gap has a
+    /// second place for it to drift. Asserting equality over the whole
+    /// enum rather than field-by-field is what makes a newly added variant or
+    /// field fail here instead of silently dropping in transit.
+    #[test]
+    fn an_observation_survives_a_round_trip_through_json() {
+        for event in LIFECYCLE_EVENTS {
+            let mut payload = serde_json::json!({
+                "hook_event_name": event,
+                "session_id": "s",
+                "transcript_path": "/tmp/rollout.jsonl",
+                "cwd": "/tmp",
+                "model": "gpt-5",
+                "turn_id": "t",
+                "agent_id": "a",
+                "agent_type": "kind",
+                "agent_transcript_path": "/tmp/child.jsonl",
+            });
+            if *event == "SessionStart" {
+                payload["source"] = serde_json::json!("compact");
+            }
+            let observation = parse_observation(payload.to_string().as_bytes()).unwrap();
+
+            let wire = serde_json::to_string(&observation).unwrap();
+            let returned: LifecycleObservation = serde_json::from_str(&wire).unwrap();
+
+            assert_eq!(returned, observation, "{event} did not survive the trip");
+        }
     }
 }
