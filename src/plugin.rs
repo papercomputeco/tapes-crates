@@ -103,6 +103,29 @@ pub const GATEWAY_SCHEMA_ENV: &str = "TAPES_GATEWAY_SCHEMA";
 ///
 /// Unset means the launching client predates the nonce contract; an installed
 /// plugin must then simply not send the header rather than fail.
+///
+/// # This name belongs to the artifact, not to the contract
+///
+/// Unlike [`GATEWAY_URL_ENV`] and [`GATEWAY_SCHEMA_ENV`], which are addresses
+/// any number of readers may share, the nonce variable is *consumed*: the read
+/// above is a read-and-delete. pi auto-loads **every** file in its global
+/// extension directory, so a machine with two products installed loads two
+/// extensions into one process — and under a shared name whichever loads second
+/// finds the variable already deleted, registers pi's providers with no echo,
+/// and wins the registration race. Both products' sessions then fail the
+/// envelope check and file as `unknown`, with no error and nothing in either
+/// product's own tests able to see it.
+///
+/// So this constant is the name of *this crate's own* artifacts — the pi
+/// extension [`PI_GATEWAY_EXTENSION`] carries and the opencode plugin — and not
+/// a name every consumer sets. A consumer rendering its own pi extension
+/// chooses a distinct one through [`pi::ExtensionBranding::nonce_env`], and
+/// sets that variable when it launches.
+///
+/// [`GATEWAY_NONCE_HEADER`] is deliberately *not* namespaced this way. It
+/// travels from one extension to the proxy that launched it, over a connection
+/// that proxy owns, and is checked against the secret that proxy generated —
+/// there is no second reader to collide with.
 pub const GATEWAY_NONCE_ENV: &str = "TAPES_GATEWAY_NONCE";
 
 /// Request header in which an installed plugin echoes the capture nonce back
@@ -384,15 +407,25 @@ mod tests {
     /// constants a consumer generates and validates against. A drift in either
     /// direction is a silent hole — the extension echoing a header nobody
     /// checks, or the proxy demanding an echo nobody sends.
+    ///
+    /// Both are pinned as whole `const` declarations rather than as substrings,
+    /// because the variable's name is now [`pi::ExtensionBranding::nonce_env`]
+    /// — a rendered slot. This asset is the crate's *own* rendering, so it must
+    /// carry the crate's own name, and a rendering that quietly kept some other
+    /// consumer's would not be caught by a `contains`.
     #[test]
     fn the_pi_extension_echoes_the_capture_nonce_contract() {
         let contents = PI_GATEWAY_EXTENSION.contents();
         assert!(
-            contents.contains(GATEWAY_NONCE_ENV),
+            contents.contains(&format!(
+                "const GATEWAY_NONCE_ENV = \"{GATEWAY_NONCE_ENV}\";"
+            )),
             "the asset does not read {GATEWAY_NONCE_ENV}"
         );
         assert!(
-            contents.contains(GATEWAY_NONCE_HEADER),
+            contents.contains(&format!(
+                "const GATEWAY_NONCE_HEADER = \"{GATEWAY_NONCE_HEADER}\";"
+            )),
             "the asset does not echo the nonce in {GATEWAY_NONCE_HEADER}"
         );
         // And the echo is a real read-then-send, not just the names appearing:
@@ -520,6 +553,14 @@ mod tests {
 
     /// The nonce contract, asset-side: read from the environment, echoed in
     /// the header, both under the crate's spellings.
+    ///
+    /// Under the crate's spelling of the *variable* too, unlike pi's — and for
+    /// a structural reason, not an oversight. opencode's plugin is not
+    /// rendered per consumer: every installer writes these same bytes to the
+    /// same path, so however many products are installed there is exactly one
+    /// copy loaded and no second reader to race with. pi's collision comes
+    /// from two differently-named files in one auto-discovery directory, which
+    /// this asset has no way to produce.
     #[test]
     fn the_opencode_plugin_echoes_the_capture_nonce_contract() {
         let contents = OPENCODE_GATEWAY_EXTENSION.contents();

@@ -14,7 +14,8 @@
 //! status entry is called, what it tells a user to run when the proxy is
 //! fronting the wrong schema, and — for a product that runs one long-lived
 //! proxy at a known address — where to point when nothing set
-//! [`super::GATEWAY_URL_ENV`]. Before this module those differences were a
+//! [`super::GATEWAY_URL_ENV`]; and in one way that is not presentational at all,
+//! [`ExtensionBranding::nonce_env`]. Before this module those differences were a
 //! forked copy of the whole extension in a consumer's repository, and the fork
 //! bit exactly as forks do: the nonce echo-and-delete hardening had to be
 //! hand-mirrored into it, and its assertions hand-mirrored alongside.
@@ -28,20 +29,29 @@
 //!
 //! # What a slot may be
 //!
-//! Branding and defaults. Never behaviour.
+//! Branding, defaults, and names. Never behaviour.
 //!
-//! The template declares every slot as the entire string literal of a `const`
-//! at the top of the file, and reads slots nowhere else. A rendered value is
-//! therefore data in a string, and cannot reach the capture-nonce handling — or
-//! anything else — however it is spelled. That is a structural property, and
-//! the test `a_slot_reaches_nothing_but_its_own_declaration` pins it by
-//! rendering deliberately hostile values and checking that only the slot
-//! declarations moved.
+//! The template declares every slot as the entire string literal of a `const`,
+//! and reads slots nowhere else. A rendered value is therefore data in a
+//! string, and cannot reach the capture-nonce handling — or anything else —
+//! however it is spelled. That is a structural property, and the test
+//! `a_slot_reaches_nothing_but_its_own_declaration` pins it by rendering
+//! deliberately hostile values and checking that only the slot declarations
+//! moved.
 //!
-//! The env, nonce, and schema contract stays crate-owned in full. A consumer
-//! that wanted the extension to read a different variable, or to trust an
-//! envelope on different terms, is not asking for a slot — it is asking for a
-//! fork, and the answer is no.
+//! The URL and schema variables stay crate-owned in full: they are one address
+//! two products can safely agree on, and a consumer that wanted the extension
+//! to read a different one, or to trust an envelope on different terms, is not
+//! asking for a slot — it is asking for a fork, and the answer is no.
+//!
+//! [`ExtensionBranding::nonce_env`] is the exception, and it is an exception on
+//! purpose rather than by erosion: the nonce variable is *consumed*, and pi
+//! loads every installed extension into one process. Two renderings sharing
+//! that name is two readers racing over one secret, and the loser registers
+//! pi's providers with no echo — so the name has to belong to the artifact, not
+//! to the crate. What stays crate-owned is everything the name is used *for*:
+//! the read, the delete-at-load, the header the value is echoed in, and the
+//! order of the three.
 
 use super::slots::render_slots;
 
@@ -66,6 +76,9 @@ pub const STATUS_SUFFIX_SLOT: &str = "__TAPES_STATUS_SUFFIX__";
 /// Slot for [`ExtensionBranding::schema_mismatch_remedy`].
 pub const SCHEMA_MISMATCH_REMEDY_SLOT: &str = "__TAPES_SCHEMA_MISMATCH_REMEDY__";
 
+/// Slot for [`ExtensionBranding::nonce_env`].
+pub const NONCE_ENV_SLOT: &str = "__TAPES_GATEWAY_NONCE_ENV__";
+
 /// Every slot the template declares, for consumers that want to check their own
 /// rendering left none behind.
 pub const SLOTS: &[&str] = &[
@@ -73,6 +86,7 @@ pub const SLOTS: &[&str] = &[
     STATUS_KEY_SLOT,
     STATUS_SUFFIX_SLOT,
     SCHEMA_MISMATCH_REMEDY_SLOT,
+    NONCE_ENV_SLOT,
 ];
 
 /// The consumer-supplied strings a rendered pi extension presents.
@@ -92,8 +106,12 @@ pub const SLOTS: &[&str] = &[
 /// ```
 /// use tapes_harnesses::plugin::pi::{ExtensionBranding, render_extension};
 ///
-/// let branding = ExtensionBranding::new("acme", "Run `acme proxy use …` if requests fail.")
-///     .with_default_gateway_url("127.0.0.1:4000");
+/// let branding = ExtensionBranding::new(
+///     "acme",
+///     "ACME_GATEWAY_NONCE",
+///     "Run `acme proxy use …` if requests fail.",
+/// )
+/// .with_default_gateway_url("127.0.0.1:4000");
 /// let extension = render_extension(&branding);
 /// assert!(!extension.contains("__TAPES_"));
 /// ```
@@ -115,19 +133,47 @@ pub struct ExtensionBranding<'a> {
     /// command *this* product switches its proxy with. The diagnosis it
     /// follows is the template's.
     pub schema_mismatch_remedy: &'a str,
+    /// The environment variable this rendering takes its per-launch capture
+    /// nonce from — and the one the consumer's launcher must set.
+    ///
+    /// **It must not be a name any other installed pi extension reads**, which
+    /// in practice means it must not be [`super::GATEWAY_NONCE_ENV`] unless
+    /// this rendering *is* the crate's own. pi loads every file in its global
+    /// extension directory into one process, and the read is destructive: two
+    /// renderings under one name means the second to load finds nothing,
+    /// registers pi's providers with no nonce echo, and both products' sessions
+    /// file as `unknown` with no error anywhere. The obvious safe answer is the
+    /// consumer's own prefix — `PAPER_GATEWAY_NONCE` beside the crate's
+    /// `TAPES_GATEWAY_NONCE`.
+    ///
+    /// The value is a name, not a secret, and — like every slot — is rendered
+    /// as an escaped string literal, so it can reach nothing but its own
+    /// declaration. What the extension *does* with the variable is not a slot:
+    /// the read, the delete-at-load, and the echo header are the template's.
+    pub nonce_env: &'a str,
 }
 
 impl<'a> ExtensionBranding<'a> {
-    /// A branding from the two strings every consumer must answer for itself:
-    /// what its status entry is called, and how a user fixes a schema
+    /// A branding from the three strings every consumer must answer for
+    /// itself: what its status entry is called, which environment variable its
+    /// launcher hands the capture nonce in, and how a user fixes a schema
     /// mismatch. The other two slots have meaningful empty defaults.
+    ///
+    /// `nonce_env` is required rather than defaulted precisely because there is
+    /// no safe default — inheriting the crate's own name is the collision this
+    /// argument exists to prevent. See [`ExtensionBranding::nonce_env`].
     #[must_use]
-    pub const fn new(status_key: &'a str, schema_mismatch_remedy: &'a str) -> Self {
+    pub const fn new(
+        status_key: &'a str,
+        nonce_env: &'a str,
+        schema_mismatch_remedy: &'a str,
+    ) -> Self {
         Self {
             default_gateway_url: "",
             status_key,
             status_suffix: "",
             schema_mismatch_remedy,
+            nonce_env,
         }
     }
 
@@ -145,12 +191,13 @@ impl<'a> ExtensionBranding<'a> {
         self
     }
 
-    fn slots(&self) -> [(&str, &str); 4] {
+    fn slots(&self) -> [(&str, &str); 5] {
         [
             (DEFAULT_GATEWAY_URL_SLOT, self.default_gateway_url),
             (STATUS_KEY_SLOT, self.status_key),
             (STATUS_SUFFIX_SLOT, self.status_suffix),
             (SCHEMA_MISMATCH_REMEDY_SLOT, self.schema_mismatch_remedy),
+            (NONCE_ENV_SLOT, self.nonce_env),
         ]
     }
 }
@@ -160,8 +207,12 @@ impl<'a> ExtensionBranding<'a> {
 /// Vendor-neutral by obligation, not by taste: an asset shipped from here loads
 /// in every consumer's install, so it names no product, points nowhere by
 /// default, and phrases its remedy in terms of the environment contract.
+///
+/// Its nonce variable is [`super::GATEWAY_NONCE_ENV`], the crate's own — which
+/// is exactly the name a consumer rendering its own variant must *not* reuse.
 pub const NEUTRAL_BRANDING: ExtensionBranding<'static> = ExtensionBranding::new(
     "tapes",
+    super::GATEWAY_NONCE_ENV,
     "Point TAPES_GATEWAY_URL at a proxy serving that provider, or switch that proxy's active schema, if requests fail.",
 );
 
@@ -177,6 +228,7 @@ pub fn render_extension(branding: &ExtensionBranding) -> String {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use super::super::slots::string_literal;
     use super::super::{
         GATEWAY_NONCE_ENV, GATEWAY_NONCE_HEADER, GATEWAY_SCHEMA_ENV, GATEWAY_URL_ENV,
         PI_GATEWAY_EXTENSION,
@@ -243,10 +295,21 @@ mod tests {
     fn hostile_branding() -> ExtensionBranding<'static> {
         ExtensionBranding::new(
             "\";\ndelete process.env;\nconst STATUS_KEY = \"",
+            "\";\nprocess.env.PATH = \"\";\nconst GATEWAY_NONCE_ENV = \"",
             "*/ `${nonce}` \\ end",
         )
         .with_default_gateway_url("\\\"; process.exit(1); //")
         .with_status_suffix("`+nonce+`")
+    }
+
+    /// A second consumer's branding, spelled the way a real one would be. Used
+    /// wherever the property under test is about *two* renderings coexisting.
+    fn second_consumer_branding() -> ExtensionBranding<'static> {
+        ExtensionBranding::new(
+            "paper",
+            "PAPER_GATEWAY_NONCE",
+            "Run `paper proxy use …` if requests fail.",
+        )
     }
 
     /// **The containment property**, and the reason a slot is safe to hand a
@@ -292,11 +355,26 @@ mod tests {
     /// branding. Pinned here as well as against the shipped asset because the
     /// asset is now derived: a consumer rendering its own variant must get
     /// these bytes too.
+    ///
+    /// The *name* of the variable is the branding's, and so is checked against
+    /// the branding rather than against a crate constant. Everything the name
+    /// is used for — the read, the delete, the echo, and their order — is the
+    /// template's and is checked literally.
     #[test]
     fn every_rendering_carries_the_whole_nonce_contract() {
-        for branding in [NEUTRAL_BRANDING, hostile_branding()] {
+        for branding in [
+            NEUTRAL_BRANDING,
+            second_consumer_branding(),
+            hostile_branding(),
+        ] {
             let rendered = render_extension(&branding);
-            assert!(rendered.contains(GATEWAY_NONCE_ENV));
+            assert!(
+                rendered.contains(&format!(
+                    "const GATEWAY_NONCE_ENV = {};",
+                    string_literal(branding.nonce_env)
+                )),
+                "the rendering does not declare its own branding's nonce variable"
+            );
             assert!(rendered.contains(GATEWAY_NONCE_HEADER));
             assert!(
                 rendered.contains("const nonce = process.env[GATEWAY_NONCE_ENV];"),
@@ -320,9 +398,11 @@ mod tests {
         }
     }
 
-    /// The environment contract is the template's too — a consumer cannot
-    /// render an extension that listens on a different variable, because there
-    /// is no slot that could.
+    /// The *addressing* half of the environment contract is the template's — a
+    /// consumer cannot render an extension that looks for its gateway or its
+    /// schema somewhere else, because there is no slot that could. (The nonce
+    /// variable is the deliberate exception, and has a slot; see
+    /// `two_consumers_renderings_do_not_share_a_nonce_variable`.)
     #[test]
     fn no_branding_can_move_the_environment_contract() {
         let hostile = render_extension(&hostile_branding());
@@ -330,6 +410,60 @@ mod tests {
         assert!(hostile.contains(&format!("= \"{GATEWAY_SCHEMA_ENV}\"")));
         assert!(hostile.contains("process.env[GATEWAY_URL_ENV]"));
         assert!(hostile.contains("process.env[GATEWAY_SCHEMA_ENV]"));
+    }
+
+    /// **The PCC-1125 regression.** Two products' pi extensions install side by
+    /// side in `~/.pi/agent/extensions/` under different file names, and pi
+    /// loads both into one process. The nonce read is a read-*and-delete*, so
+    /// under one variable name the second to load finds nothing, registers
+    /// pi's providers with no echo, and every session on that machine — both
+    /// products' — files as `unknown`.
+    ///
+    /// Asserted against real renderings rather than against the branding
+    /// values, so re-unifying the name inside the template fails here even if
+    /// the Rust still carries two.
+    #[test]
+    fn two_consumers_renderings_do_not_share_a_nonce_variable() {
+        let ours = PI_GATEWAY_EXTENSION.contents();
+        let theirs = render_extension(&second_consumer_branding());
+
+        let declaration =
+            |name: &str| format!("const GATEWAY_NONCE_ENV = {};", string_literal(name));
+        assert!(
+            ours.contains(&declaration(GATEWAY_NONCE_ENV)),
+            "the shipped asset does not take its nonce from {GATEWAY_NONCE_ENV}"
+        );
+        assert!(
+            theirs.contains(&declaration(second_consumer_branding().nonce_env)),
+            "a consumer's rendering does not take its nonce from the variable its branding names"
+        );
+        assert_ne!(
+            GATEWAY_NONCE_ENV,
+            second_consumer_branding().nonce_env,
+            "the test's two brandings must actually differ for it to prove anything"
+        );
+        assert!(
+            !theirs.contains(&declaration(GATEWAY_NONCE_ENV)),
+            "a consumer's rendering still reads the crate's own nonce variable; \
+             two installed extensions would consume one secret and race"
+        );
+
+        // Namespacing is a fix only if it is *only* the variable. The header
+        // travels to one launch's own proxy, which compares it against the
+        // secret it generated — so both renderings must still echo under the
+        // one name, and both must still delete at load.
+        for rendering in [ours, theirs.as_str()] {
+            assert!(
+                rendering.contains(&format!(
+                    "const GATEWAY_NONCE_HEADER = \"{GATEWAY_NONCE_HEADER}\";"
+                )),
+                "a rendering echoes the nonce under some other header"
+            );
+            assert!(
+                rendering.contains("delete process.env[GATEWAY_NONCE_ENV];"),
+                "a rendering no longer deletes the nonce at load"
+            );
+        }
     }
 
     /// The neutral remedy sentence names the variable a user would actually
@@ -351,7 +485,8 @@ mod tests {
     #[test]
     fn the_default_endpoint_slot_renders_a_usable_fallback() {
         let branded = render_extension(
-            &ExtensionBranding::new("acme", "…").with_default_gateway_url("127.0.0.1:51539"),
+            &ExtensionBranding::new("acme", "ACME_GATEWAY_NONCE", "…")
+                .with_default_gateway_url("127.0.0.1:51539"),
         );
         assert!(branded.contains("const DEFAULT_GATEWAY_URL = \"127.0.0.1:51539\";"));
         assert!(

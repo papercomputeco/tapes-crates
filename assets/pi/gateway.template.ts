@@ -3,17 +3,22 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // ---------------------------------------------------------------------------
 // Consumer slots.
 //
-// Every slot below is the *entire* string literal of a `const` declaration in
-// this block, and nothing in the body of the extension reads a slot any other
-// way. That is the whole safety property of this template: a rendered value can
-// change where the extension points when nothing configured it, and what it
-// says to the user — and nothing else. The capture-nonce handling further down
-// is out of every consumer's reach by construction, not by convention.
+// Every slot is the *entire* string literal of a `const` declaration, and
+// nothing in the body of the extension reads a slot any other way. That is the
+// whole safety property of this template: a rendered value can change where the
+// extension points when nothing configured it, what it says to the user, and
+// which variable it takes its nonce from — and nothing else. The capture-nonce
+// *handling* further down is out of every consumer's reach by construction, not
+// by convention; only the name of the variable it reads is rendered, and a name
+// is data.
 //
-// Adding a slot outside this block, or interpolating one into a template
-// literal rather than declaring it here, breaks that property. If a slot would
-// change what the extension *does*, it does not belong here at all: this file
-// is one implementation with two brandings, not a fork with a shared prefix.
+// One slot lives outside this block: GATEWAY_NONCE_ENV is declared with the
+// rest of the environment contract, because that is what it is part of.
+//
+// Interpolating a slot into a template literal rather than declaring it as a
+// whole literal breaks the property. If a slot would change what the extension
+// *does*, it does not belong here at all: this file is one implementation with
+// two brandings, not a fork with a shared prefix.
 // ---------------------------------------------------------------------------
 
 // Where to send captured traffic when GATEWAY_URL_ENV names nothing.
@@ -60,7 +65,19 @@ const SCHEMA_PROVIDERS = ["anthropic", "openai"] as const;
 // constants in `crate::plugin`, which the crate's tests pin against this file.
 const GATEWAY_URL_ENV = "TAPES_GATEWAY_URL";
 const GATEWAY_SCHEMA_ENV = "TAPES_GATEWAY_SCHEMA";
-const GATEWAY_NONCE_ENV = "TAPES_GATEWAY_NONCE";
+
+// The nonce variable is the one name here that is *not* shared, and the slot
+// exists for a reason worth stating. pi auto-loads every file in its global
+// extension directory, so a machine with two products installed loads two
+// renderings of this template in one process — and the read below is
+// destructive by design. Under a shared name whichever rendering loads second
+// finds the variable already deleted, registers pi's providers with no echo,
+// and both products' sessions file as `unknown`. So the name is per rendering:
+// each launcher sets the variable its own installed file reads, and neither
+// consumes the other's secret. The *header* below is deliberately not
+// namespaced — it travels to one launch's own proxy, which checks it against
+// the secret it generated, and nothing else is listening.
+const GATEWAY_NONCE_ENV = "__TAPES_GATEWAY_NONCE_ENV__";
 
 // The header the nonce is echoed back in. A per-launch secret the capture
 // client generated: the proxy's peer-PID ancestry check cannot tell this
