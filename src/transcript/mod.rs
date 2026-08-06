@@ -17,6 +17,10 @@
 //! * [`sweep`] — a startup scan of the transcript tree, which finds sessions that
 //!   ended while the client was not running. New here rather than moved: it closes
 //!   a gap in paperd's registry-driven discovery.
+//! * [`codex_anchors`] — Codex's counterpart for the fork skeleton alone. Codex
+//!   writes no per-session transcript tree; the spawn edge lives in its rollout
+//!   files as `sub_agent_activity` records, and this module derives the anchor
+//!   rows that carry it down the same lane.
 //!
 //! The seed's `Transcript { path, harness }` placeholder is gone;
 //! [`files::TranscriptFile`] is the real shape, and it carries the subagent id and
@@ -43,11 +47,16 @@
 //! transcripts a previous process may already have sent. The transcript files on
 //! disk are the spool; there is no client-side queue to lose.
 
+pub mod codex_anchors;
 pub mod files;
 pub mod payload;
 pub mod sweep;
 pub mod trigger;
 
+pub use codex_anchors::{
+    AnchorKind, CodexAnchorScanner, SubAgentAnchor, anchor_records, build_anchor_payload,
+    parse_subagent_anchors,
+};
 pub use files::{
     FileFingerprint, SubagentMeta, TranscriptFile, fingerprint, jsonl_to_records, session_files,
 };
