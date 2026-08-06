@@ -27,6 +27,12 @@
 //! inert until the *rendered command* does something, so the inertness
 //! obligation [`crate::plugin::GATEWAY_URL_ENV`] discharges for pi rests here
 //! on the consumer's command instead.
+//!
+//! Rendered manifests are still not an *installed* plugin. [`manager`] owns
+//! the rest: the marketplace wrapper that makes them installable, and the
+//! `codex` CLI invocation that installs them.
+
+pub mod manager;
 
 /// Slot in [`HOOKS_MANIFEST_TEMPLATE`] that a consumer's hook command line
 /// replaces. The slot is the entire JSON string value, so substitution is

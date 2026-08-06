@@ -101,3 +101,65 @@ fn an_installer_reaches_the_templates_through_the_registry_and_renders_them() {
     assert!(!render_plugin_manifest(&identity).contains("__TAPES_"));
     assert!(!render_hooks_manifest("/usr/bin/acme-hook").contains("__TAPES_"));
 }
+
+/// The whole packaged tree, from the public API alone: the marketplace wrapper
+/// plus the two manifests, each at the path the manager names.
+///
+/// This is the file list an installer writes. It is asserted from outside the
+/// crate because the point of moving the layout here was that two installers
+/// stop authoring it — if any part of it were unreachable, the second
+/// installer would have to guess again.
+#[test]
+fn a_consumer_can_package_a_complete_marketplace_from_the_public_api() {
+    use tapes_harnesses::plugin::codex_app::manager;
+
+    let plugin_name = "acme-codex";
+    let files: Vec<(std::path::PathBuf, String)> = vec![
+        (
+            std::path::PathBuf::from(manager::MARKETPLACE_MANIFEST_PATH),
+            manager::render_marketplace_manifest(
+                &manager::MarketplaceIdentity::new("acme", plugin_name).with_display_name("Acme"),
+            ),
+        ),
+        (
+            manager::plugin_manifest_path(plugin_name),
+            render_plugin_manifest(&HookPluginIdentity::new(plugin_name, "1.4.2")),
+        ),
+        (
+            manager::hooks_manifest_path(plugin_name),
+            render_hooks_manifest("/usr/bin/acme-hook"),
+        ),
+    ];
+
+    let root = tempfile::tempdir().unwrap();
+    for (relative, contents) in &files {
+        let path = root.path().join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, contents).unwrap();
+        assert!(
+            !contents.contains("__TAPES_"),
+            "{} carries an unfilled slot",
+            relative.display()
+        );
+        serde_json::from_str::<serde_json::Value>(contents)
+            .unwrap_or_else(|e| panic!("{} is not valid JSON: {e}", relative.display()));
+    }
+
+    // The offer resolves: the marketplace's declared source path is a real
+    // directory under the root, and it holds the plugin manifest Codex reads.
+    let marketplace: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
+    let offered = marketplace["plugins"][0]["source"]["path"]
+        .as_str()
+        .unwrap();
+    let offered = root.path().join(offered.trim_start_matches("./"));
+    assert!(offered.is_dir(), "{} is not a directory", offered.display());
+    assert!(offered.join(".codex-plugin").join("plugin.json").is_file());
+
+    // And a manager built over that root issues commands naming it.
+    let manager = manager::PluginManager::new("codex", root.path(), "acme", plugin_name);
+    assert_eq!(manager.plugin_spec(), "acme-codex@acme");
+    assert_eq!(
+        manager.manual_commands()[0],
+        format!("codex plugin marketplace add {}", root.path().display())
+    );
+}

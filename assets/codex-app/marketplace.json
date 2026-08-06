@@ -1,0 +1,20 @@
+{
+  "name": "__TAPES_MARKETPLACE_NAME__",
+  "interface": {
+    "displayName": "__TAPES_MARKETPLACE_DISPLAY_NAME__"
+  },
+  "plugins": [
+    {
+      "name": "__TAPES_PLUGIN_NAME__",
+      "source": {
+        "source": "local",
+        "path": "__TAPES_PLUGIN_SOURCE_PATH__"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
