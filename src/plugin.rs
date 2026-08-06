@@ -242,6 +242,16 @@ impl PluginArtifact {
             .collect()
     }
 
+    /// The path this artifact stages its bytes at, in `dir`, before renaming
+    /// them onto the name the harness loads.
+    ///
+    /// The name is deliberately not one the harness's glob matches, and it is
+    /// deliberately a sibling of the destination — which is what makes the
+    /// final rename a within-filesystem one, and so atomic.
+    fn staged_path(&self, dir: &Path) -> PathBuf {
+        dir.join(format!(".{}.{}.tmp", self.file_name, std::process::id()))
+    }
+
     /// Write this artifact beneath `home`, creating its directory and removing
     /// every superseded sibling. Returns the path written.
     ///
@@ -253,6 +263,28 @@ impl PluginArtifact {
     /// had shipped. Writing and removing therefore belong to one operation, not
     /// to each consumer's good intentions.
     ///
+    /// Belonging to one operation is a claim about the failures too, and it
+    /// constrains the order — because the state that must never be reached is
+    /// *both files present*, and writing first reaches it the moment a removal
+    /// fails. So the bytes are staged first under a name the harness's glob
+    /// cannot match ([`Self::staged_path`]), the superseded siblings are
+    /// removed second, and the staged file is renamed onto its final name last.
+    /// Each way that can fail leaves at most one extension where the harness
+    /// looks:
+    ///
+    /// - staging fails — nothing on disk changed;
+    /// - a superseded sibling exists and cannot be removed — the staged bytes
+    ///   are discarded and the error returned, so the user is left with the old
+    ///   copy still working rather than with a second reader;
+    /// - the rename fails — the superseded copy is gone and the new file never
+    ///   arrived, so capture is off, loudly, instead of on and silently
+    ///   unattributed.
+    ///
+    /// Staging under a non-matching name buys a second thing: a harness reads
+    /// that directory every time it starts a session, not once when an
+    /// installer runs, so a session starting mid-write must not be able to find
+    /// a half-written file spelled like something it loads.
+    ///
     /// A superseded file that is absent is not an error. One that exists and
     /// cannot be removed is: the caller has to know that the harness will still
     /// load it, and is better placed than this crate to decide whether that
@@ -260,19 +292,31 @@ impl PluginArtifact {
     ///
     /// # Errors
     ///
-    /// Any I/O failure creating the directory, writing the artifact, or
-    /// removing a superseded sibling that exists.
+    /// Any I/O failure creating the directory, staging the bytes, removing a
+    /// superseded sibling that exists, or renaming the staged file into place.
+    /// An error after staging takes the staged file with it, so a failed
+    /// install never leaves debris in a directory the harness reads — but a
+    /// rename that failed has already removed the superseded copies, and the
+    /// caller is being told that nothing is installed.
     pub fn install(&self, home: &Path) -> std::io::Result<PathBuf> {
         let dir = self.install_dir(home);
         std::fs::create_dir_all(&dir)?;
-        let path = dir.join(self.file_name);
-        std::fs::write(&path, self.contents)?;
+        let staged = self.staged_path(&dir);
+        std::fs::write(&staged, self.contents)?;
         for superseded in self.superseded_paths(home) {
             match std::fs::remove_file(&superseded) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
+                Err(error) => {
+                    drop(std::fs::remove_file(&staged));
+                    return Err(error);
+                }
             }
+        }
+        let path = dir.join(self.file_name);
+        if let Err(error) = std::fs::rename(&staged, &path) {
+            drop(std::fs::remove_file(&staged));
+            return Err(error);
         }
         Ok(path)
     }
@@ -497,6 +541,87 @@ mod tests {
             1,
             "installing removed or added something it was not asked to"
         );
+    }
+
+    /// **The ordering, in the direction that bites.** Writing the new file
+    /// first and removing second means a removal that fails leaves *both*
+    /// extensions in the directory — the precise state this artifact exists to
+    /// prevent, arrived at by the code meant to prevent it, and with the new
+    /// bytes on disk to argue the fix had shipped. Installing must instead fail
+    /// with the destination still empty, leaving the user the old copy that at
+    /// least works.
+    ///
+    /// The removal is blocked with a rule of the filesystem rather than a
+    /// permission bit: `remove_file` refuses a non-empty directory whoever is
+    /// asking, whereas CI runs as root, where a read-only file proves nothing.
+    #[test]
+    fn a_superseded_copy_that_cannot_be_removed_leaves_nothing_installed() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = PI_GATEWAY_EXTENSION.install_dir(home.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        // A non-empty directory standing where the superseded file goes: not
+        // removable by anyone, root included.
+        let superseded = dir.join("paper-gateway.ts");
+        std::fs::create_dir_all(&superseded).unwrap();
+        std::fs::write(superseded.join("occupant"), "unremovable\n").unwrap();
+
+        let error = PI_GATEWAY_EXTENSION.install(home.path()).unwrap_err();
+        assert_ne!(
+            error.kind(),
+            std::io::ErrorKind::NotFound,
+            "the blocker was not in place; the test proves nothing"
+        );
+
+        assert!(
+            !PI_GATEWAY_EXTENSION.install_path(home.path()).exists(),
+            "the install wrote its extension anyway, so pi would load two"
+        );
+        assert!(
+            superseded.exists(),
+            "the blocker vanished; the removal did not actually fail"
+        );
+        // …and the staged bytes went with the error, rather than sitting in a
+        // directory the harness reads on every session start.
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "a failed install left debris in the extension directory"
+        );
+    }
+
+    /// The staged file exists for as long as the write takes, in a directory
+    /// the harness globs every time it starts a session — so its name must not
+    /// be one of the names that glob picks up. pi loads `*.ts` and opencode
+    /// `*.{ts,js}`; a partially written file spelled either way is an extension
+    /// the harness will happily load half of.
+    ///
+    /// Staging as a sibling is the other half: rename is only atomic within a
+    /// filesystem, and only a sibling is guaranteed to be on the same one.
+    #[test]
+    fn the_staged_name_is_not_one_a_harness_loads() {
+        let dir = Path::new("/home/u/.pi/agent/extensions");
+        for artifact in all_artifacts() {
+            let staged = artifact.staged_path(dir);
+            let name = staged.file_name().unwrap().to_str().unwrap();
+            assert!(
+                !name.ends_with(".ts"),
+                "{name:?} would be auto-loaded as an extension mid-write"
+            );
+            assert!(
+                !name.ends_with(".js"),
+                "{name:?} would be auto-loaded as a plugin mid-write"
+            );
+            assert_ne!(
+                name,
+                artifact.file_name(),
+                "staging onto the destination is not staging at all"
+            );
+            assert_eq!(
+                staged.parent(),
+                Some(dir),
+                "the staged file must be a sibling of its destination"
+            );
+        }
     }
 
     /// The list is named, so it has to actually name the file the bug is about.
