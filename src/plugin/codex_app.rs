@@ -34,6 +34,8 @@
 
 pub mod manager;
 
+use super::slots::render_slots;
+
 /// Slot in [`HOOKS_MANIFEST_TEMPLATE`] that a consumer's hook command line
 /// replaces. The slot is the entire JSON string value, so substitution is
 /// JSON-escaped by [`render_hooks_manifest`]; a consumer never edits the
@@ -218,41 +220,6 @@ pub fn render_plugin_manifest(identity: &HookPluginIdentity) -> String {
     render_slots(PLUGIN_MANIFEST_TEMPLATE, &identity.slots())
 }
 
-/// Replace every quoted slot occurrence with its JSON-escaped value, in one
-/// pass over the template.
-///
-/// Substitution targets `"__SLOT__"` including its quotes and emits a
-/// complete JSON string literal, so escaping cannot be forgotten and a slot
-/// can never be half-replaced inside a larger value. Single-pass is
-/// load-bearing, not a micro-optimisation: only *template* text is ever
-/// scanned for slots, and substituted values go straight to the output. A
-/// sequential per-slot `replace` re-scans earlier insertions, so an identity
-/// value that merely *contains* another slot's placeholder — pathological but
-/// consumer-controlled — would itself get substituted. Here such a value
-/// passes through verbatim (escaped), like every other value byte.
-fn render_slots(template: &str, slots: &[(&str, &str)]) -> String {
-    let mut rendered = String::with_capacity(template.len());
-    let mut rest = template;
-    loop {
-        // The earliest quoted slot in the remaining *template* text wins;
-        // everything before it is emitted untouched.
-        let next = slots
-            .iter()
-            .filter_map(|(slot, value)| {
-                let quoted = format!("\"{slot}\"");
-                rest.find(&quoted).map(|at| (at, quoted.len(), *value))
-            })
-            .min_by_key(|(at, ..)| *at);
-        let Some((at, slot_len, value)) = next else {
-            rendered.push_str(rest);
-            return rendered;
-        };
-        rendered.push_str(&rest[..at]);
-        rendered.push_str(&json_string_literal(value));
-        rest = &rest[at + slot_len..];
-    }
-}
-
 /// `value` as a single POSIX shell word.
 ///
 /// Two places need this and they must not answer it differently: the hook
@@ -278,32 +245,6 @@ pub fn shell_quote(value: &str) -> String {
         return value.to_owned();
     }
     format!("'{}'", value.replace('\'', r"'\''"))
-}
-
-/// `value` as a complete JSON string literal, quotes included.
-///
-/// Hand-rolled rather than `serde_json::to_string` because that API returns a
-/// `Result` this crate would have to pretend can fail; for a `&str` it cannot,
-/// and the escaping rules (RFC 8259 §7: `"` and `\` escaped, control
-/// characters as `\u00XX`) are small enough to state directly.
-fn json_string_literal(value: &str) -> String {
-    let mut literal = String::with_capacity(value.len() + 2);
-    literal.push('"');
-    for character in value.chars() {
-        match character {
-            '"' => literal.push_str("\\\""),
-            '\\' => literal.push_str("\\\\"),
-            '\n' => literal.push_str("\\n"),
-            '\r' => literal.push_str("\\r"),
-            '\t' => literal.push_str("\\t"),
-            control if (control as u32) < 0x20 => {
-                literal.push_str(&format!("\\u{:04x}", control as u32));
-            }
-            other => literal.push(other),
-        }
-    }
-    literal.push('"');
-    literal
 }
 
 #[cfg(test)]
