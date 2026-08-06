@@ -10,6 +10,13 @@
 # has already happened: an audit found paper and tapesctl three commits apart,
 # which had silently given them different attribution behaviour.
 #
+# NOT RUN BY CI as of 2026-08-06. Reading a private consumer's manifest needs a
+# token scoped beyond this repository, and rather than add that machinery the
+# check was taken out of the workflow until someone decides what shape it should
+# have. So the invariant below is real and unenforced: it holds by discipline —
+# consumers re-point together, on one revision — and this script is how you
+# confirm it by hand. `make pin-parity` still runs it with your own gh auth.
+#
 # The check lives here, in the crate, because the invariant is the crate's:
 # "my consumers agree about which me they use" is not a fact either consumer
 # can state alone. Both call this same script rather than each maintaining its
