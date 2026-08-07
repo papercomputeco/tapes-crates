@@ -434,7 +434,7 @@ impl Attributed {
             Self::Claude {
                 session,
                 parent_session_id,
-            } => Some(TapesAttribution::claude(
+            } => Some(TapesAttribution::from_session(
                 session,
                 parent_session_id.as_deref(),
             )),
@@ -472,13 +472,14 @@ impl Attributed {
             // No assertion at all, so nothing is written — see the module docs
             // on the miss cases.
             Self::Undecided => Ok(()),
-            Self::UnknownHarness => crate::envelope::inject_tapes_headers(headers, None, None),
+            Self::UnknownHarness => crate::envelope::inject_unattributed_envelope(headers),
             Self::Claude {
                 session,
                 parent_session_id,
-            } => crate::envelope::inject_tapes_attribution(
+            } => crate::envelope::inject_session_envelope(
                 headers,
-                TapesAttribution::claude(session, parent_session_id.as_deref()),
+                session,
+                parent_session_id.as_deref(),
             ),
             Self::Codex { .. } => match self.envelope() {
                 Some(envelope) => crate::envelope::inject_tapes_attribution(headers, envelope),

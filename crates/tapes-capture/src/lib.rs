@@ -26,14 +26,19 @@
 //! * [`peer_trust`] — the ancestry walk that answers whether the process on the
 //!   other end of a connection is the harness this client launched, or one of
 //!   its descendants.
+//! * [`session`] — [`HarnessSession`], the trait a harness crate implements to
+//!   describe one of its sessions to the envelope producer. It is the shape of
+//!   the boundary rather than a primitive: stating what is needed, so nothing
+//!   here has to import a supplier of it.
 //!
-//! Together the last two are the question every capture client asks before it
+//! Together the middle two are the question every capture client asks before it
 //! believes anything a connection tells it about itself, and neither has ever
 //! needed a harness id to answer it.
 
 pub mod gateway;
 pub mod peer_pid;
 pub mod peer_trust;
+pub mod session;
 
 pub use gateway::{
     GATEWAY_NONCE_ENV, GATEWAY_NONCE_HEADER, GATEWAY_SCHEMA_ENV, GATEWAY_URL_ENV, nonce_matches,
@@ -42,3 +47,4 @@ pub use peer_pid::{PeerPidLookup, lookup as peer_pid_lookup};
 pub use peer_trust::{
     is_launched_or_descendant, peer_is_launched_harness, peer_is_launched_harness_async,
 };
+pub use session::HarnessSession;

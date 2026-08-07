@@ -13,7 +13,10 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use tapes_capture::HarnessSession;
 use tracing::warn;
+
+use crate::envelope::HARNESS_ID_CLAUDE;
 
 /// Decoded `~/.claude/sessions/<pid>.json`. The on-disk keys are
 /// camelCase; `rename_all` handles the conversion so the Rust field
@@ -67,6 +70,67 @@ pub struct ClaudeSessionFile {
     /// instead of being silently dropped.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// How a Claude session file becomes an `X-Tapes-*` envelope.
+///
+/// The projection used to live in the envelope producer, which is what forced
+/// that module to import this one — and, through it, to sit in the crate that
+/// declares harnesses. Implementing the trait here inverts the edge: the
+/// producer states what it needs, and the knowledge of *which* Claude fields
+/// answer it stays beside the struct that parses them. A foreign trait on a
+/// local type, so the direction is the one the compiler permits.
+///
+/// Everything not carried in a dedicated header lands in the metadata blob.
+/// `kind`, `entrypoint`, and `peerProtocol` are the modelled ones, spelled in
+/// the harness's own camelCase; `extra` follows verbatim, so a Claude release
+/// that adds a key travels upstream without a capture-client release. `extra`
+/// is applied last and therefore wins a collision — a harness that starts
+/// writing its own `kind` is describing itself more accurately than our model
+/// of it.
+impl HarnessSession for ClaudeSessionFile {
+    fn harness_id(&self) -> &str {
+        HARNESS_ID_CLAUDE
+    }
+
+    fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    fn version(&self) -> Option<&str> {
+        self.version.as_deref()
+    }
+
+    fn cwd(&self) -> Option<&str> {
+        self.cwd.as_deref()
+    }
+
+    fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    fn metadata(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut metadata = serde_json::Map::new();
+        if let Some(kind) = &self.kind {
+            metadata.insert("kind".to_owned(), serde_json::Value::String(kind.clone()));
+        }
+        if let Some(entrypoint) = &self.entrypoint {
+            metadata.insert(
+                "entrypoint".to_owned(),
+                serde_json::Value::String(entrypoint.clone()),
+            );
+        }
+        if let Some(pp) = self.peer_protocol {
+            metadata.insert(
+                "peerProtocol".to_owned(),
+                serde_json::Value::Number(pp.into()),
+            );
+        }
+        for (k, v) in &self.extra {
+            metadata.insert(k.clone(), v.clone());
+        }
+        metadata
+    }
 }
 
 /// Read and parse `~/.claude/sessions/<pid>.json`. Returns `None` on
@@ -125,6 +189,57 @@ mod tests {
         assert_eq!(s.cwd.as_deref(), Some("/Users/matt"));
         assert_eq!(s.name.as_deref(), Some("woo-names-are-fun"));
         assert!(s.extra.contains_key("futureKnob"));
+    }
+
+    /// The envelope projection, pinned on this side of the boundary. The
+    /// producer is generic over [`HarnessSession`] and so can no longer assert
+    /// which Claude fields reach which header — if that mapping is only
+    /// checked through a test double, a rename here changes the wire silently.
+    #[test]
+    fn the_envelope_projection_reads_the_fields_it_names() {
+        let raw = r#"{
+            "pid": 26716,
+            "sessionId": "sid-1",
+            "cwd": "/Users/matt",
+            "version": "2.1.145",
+            "peerProtocol": 1,
+            "kind": "interactive",
+            "entrypoint": "cli",
+            "name": "woo-names",
+            "futureKnob": "preserved-in-extra"
+        }"#;
+        let session: ClaudeSessionFile = serde_json::from_str(raw).unwrap();
+
+        assert_eq!(session.harness_id(), HARNESS_ID_CLAUDE);
+        assert_eq!(session.session_id(), "sid-1");
+        assert_eq!(session.version(), Some("2.1.145"));
+        assert_eq!(session.cwd(), Some("/Users/matt"));
+        assert_eq!(session.name(), Some("woo-names"));
+
+        let metadata = session.metadata();
+        assert_eq!(metadata["kind"], "interactive");
+        assert_eq!(metadata["entrypoint"], "cli");
+        assert_eq!(metadata["peerProtocol"], 1);
+        // Unmodelled keys travel verbatim, which is what lets a harness
+        // release add one without a capture-client release.
+        assert_eq!(metadata["futureKnob"], "preserved-in-extra");
+        // Fields that have their own header are not duplicated into the blob.
+        assert!(!metadata.contains_key("sessionId"));
+        assert!(!metadata.contains_key("cwd"));
+    }
+
+    /// A session file with only the required keys projects to two required
+    /// fields and nothing else — absence stays absence rather than becoming an
+    /// empty string or a `{}` blob.
+    #[test]
+    fn a_sparse_session_file_projects_no_optional_fields() {
+        let session: ClaudeSessionFile =
+            serde_json::from_str(r#"{"pid": 1, "sessionId": "sid-2"}"#).unwrap();
+        assert_eq!(session.session_id(), "sid-2");
+        assert_eq!(session.version(), None);
+        assert_eq!(session.cwd(), None);
+        assert_eq!(session.name(), None);
+        assert!(session.metadata().is_empty());
     }
 
     #[test]
