@@ -35,17 +35,20 @@ The crate denies `unwrap`, `expect`, and `panic` via `[lints]`; return
 
 ## What lives here — and what must not
 
-This crate holds **client-side harness knowledge only**: launch recipes,
-attribution, transcript discovery/packaging, and the `X-Tapes-*` envelope
-producer. It ships to non-Paper users, so nothing Paper-specific belongs here —
-no Paper auth headers, no Paper endpoints, no Paper branding in behavior.
-Delivery, auth, and retry live in each consumer (`tapesctl`, `paperd`), not
-here.
+The root crate holds **client-side harness knowledge only**: the registry,
+launch recipes, config patch grammars, plugin artifacts, per-harness
+attribution, and transcript discovery/packaging. The half of capture that no
+harness changes — the `X-Tapes-*` envelope producer, the gateway/nonce
+protocol, peer-PID lookup, peer trust — lives in `crates/tapes-capture/`, which
+the root crate depends on and which may never depend back. Anything shipping to
+non-Paper users means nothing Paper-specific belongs in either — no Paper auth
+headers, no Paper endpoints, no Paper branding in behavior. Delivery, auth, and
+retry live in each consumer (`tapesctl`, `paperd`), not here.
 
 The envelope is a cross-language contract with the Go parsers in tapes. Do not
 change producer behavior without updating the shared fixture corpus in the
 tapes repository first, then re-vendoring via
-`scripts/sync-envelope-fixtures.sh`. The oracle in `src/envelope_fixtures.rs`
+`scripts/sync-envelope-fixtures.sh`. The oracle in `crates/tapes-capture/src/envelope_fixtures.rs`
 must stay green against the vendored corpus — if your change makes it fail,
 the contract conversation happens in tapes, not by editing the fixtures here.
 

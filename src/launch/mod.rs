@@ -89,7 +89,7 @@ pub use opencode::{
 pub trait LaunchRecipe {
     /// The harness identifier this recipe handles (e.g. `"claude"`, `"codex"`).
     ///
-    /// These match the `X-Tapes-Harness-Id` values in [`crate::envelope`], so a
+    /// These match the `X-Tapes-Harness-Id` values in [`tapes_capture::envelope`], so a
     /// launched session and its captured traffic agree on the harness's name.
     fn harness(&self) -> &str;
 

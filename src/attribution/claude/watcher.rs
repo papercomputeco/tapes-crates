@@ -5,7 +5,7 @@
 //! path reads it wait-free:
 //!
 //! * `candidate_pids` — the set of PIDs the peer-PID lookup
-//!   ([`crate::attribution::peer_pid::lookup`]) is restricted to. Restricting keeps
+//!   ([`tapes_capture::peer_pid::lookup`]) is restricted to. Restricting keeps
 //!   the lookup bounded regardless of how busy the system is
 //!   (measured macOS p99 78 µs over a 3-candidate set).
 //! * `pid_metadata` — parsed `~/.claude/sessions/<pid>.json` for each

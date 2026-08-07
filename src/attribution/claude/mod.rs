@@ -13,7 +13,7 @@
 //!   discovery is time-budgeted, not free.
 //!
 //! The peer-PID lookup itself is harness-agnostic and lives one level up in
-//! [`crate::attribution::peer_pid`] — Codex uses the same syscalls against a
+//! [`tapes_capture::peer_pid`] — Codex uses the same syscalls against a
 //! different question. What is Claude-specific is only what the PID is used
 //! *for*: indexing a directory Claude maintains.
 //!

@@ -13,24 +13,60 @@ license = "MIT OR Apache-2.0"
 publish = false
 authors = ["Paper Compute"]
 repository = "https://github.com/papercomputeco/tapes-harnesses"
-description = "Harness-agnostic capture primitives: the capture-gateway environment contract and launch-nonce protocol, peer-PID lookup, and the peer-trust ancestry check."
+description = "Harness-agnostic capture primitives: the X-Tapes-* envelope producer, the capture-gateway environment contract and launch-nonce protocol, peer-PID lookup, and the peer-trust ancestry check."
 
 [lib]
 name = "tapes_capture"
 path = "src/lib.rs"
 
-# Deliberately thin, and it must stay that way: this crate is the half of
-# capture that no harness is allowed to reach into. Anything needing `http`,
-# `serde`, or a harness id belongs on the other side of the dependency edge.
+[features]
+# Exposes `envelope::fixtures`: the reader for the shared envelope fixture
+# corpus vendored under `vendor/tapes-envelope-fixtures/`, so a consumer can
+# table-test its own envelope composition against the same cases this crate
+# does instead of re-implementing the loader and the case-direction rules.
+#
+# Off by default, and it must stay that way. The corpus is only reachable
+# because a git-dependency checkout carries the whole repo, and the reader
+# panics by design on a malformed corpus — neither belongs in a production
+# build. Consumers enable it under `[dev-dependencies]`:
+#
+#     [dev-dependencies]
+#     tapes-capture = { git = "...", rev = "...", features = ["envelope-fixtures"] }
+#
+# Feature unification means a normal `[dependencies]` entry for the same crate
+# picks the feature up too — that is fine (the module is inert unless called)
+# and is why it carries no extra dependencies of its own.
+envelope-fixtures = []
+
+# Thin on purpose: this crate is the half of capture that no harness is allowed
+# to reach into. The test for a dependency is the same as the test for a module
+# — would adding one more harness change it? A wire format and a kernel API
+# would not, so the envelope's encoders are here; anything that needs to know a
+# harness's *name* belongs on the other side of the edge.
 #
 # Versions match the sibling crates so a consumer taking both does not fork its
 # lockfile.
 [dependencies]
+# base64url for the metadata blob, percent-encoding for the UTF-8 header
+# values, `http` for the header map itself: the envelope's on-wire encoding,
+# which is the same for every harness.
+base64 = "0.22"
+http = "1"
 libc = "0.2"
 netsock = "0.7"
+percent-encoding = "2"
+# `derive` is for the fixture reader's case structs; the envelope producer
+# itself only builds JSON values.
+serde = { version = "1", features = ["derive"] }
+# The metadata blob a harness session hands the envelope producer is a JSON
+# object; `HarnessSession::metadata` names its type, so it is part of this
+# crate's public surface rather than an implementation detail.
+serde_json = "1"
+snafu = "0.8"
 # `time` only: the async retry path pauses with `tokio::time::sleep` so a caller
 # on a runtime is not blocked. Nothing here spawns.
 tokio = { version = "1", features = ["time"] }
+tracing = "0.1"
 
 [dev-dependencies]
 # `test-util` powers `#[tokio::test(start_paused = true)]`, which the retry

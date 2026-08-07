@@ -42,7 +42,7 @@ name and aliases from a CLI argument;
 harness id from `GEMINI.id()` rather than spelling the string again.
 
 `id` must be the `X-Tapes-Harness-Id` value, declared as a constant in
-`src/envelope.rs` alongside the others. That constant is the on-wire name, and
+`crates/tapes-capture/src/envelope.rs` alongside the others. That constant is the on-wire name, and
 the tapes deriver keys on it — see "The other two places" below.
 
 The invariant tests at the bottom of `src/harness.rs` run against the whole
@@ -98,7 +98,7 @@ variant here; `src/plugin.rs`'s tests enforce the bar for the ones that do.
 Two properties an artifact must have, both tested: it is **inert** until
 `TAPES_GATEWAY_URL` is set, because it installs globally and would otherwise
 change sessions nobody is capturing; and if it stamps an envelope itself, the
-header names must match `src/envelope.rs`, since a rename there would otherwise
+header names must match `crates/tapes-capture/src/envelope.rs`, since a rename there would otherwise
 silently re-file the agent's sessions as `unknown`.
 
 Where an agent auto-loads *every* file in a global directory — pi does — a
@@ -194,14 +194,14 @@ retry are not — they belong to each consumer, and always will.
 ## Step 5 — the envelope
 
 If the agent needs a metadata field no existing envelope header carries, stop
-and read `src/envelope.rs` first. The `X-Tapes-*` envelope is a cross-language
+and read `crates/tapes-capture/src/envelope.rs` first. The `X-Tapes-*` envelope is a cross-language
 contract: this crate produces it in Rust and the Go parsers in tapes read it
 back, and both halves table-test against one shared fixture corpus vendored at
-`vendor/tapes-envelope-fixtures/`.
+`crates/tapes-capture/vendor/tapes-envelope-fixtures/`.
 
 Adding a harness id is routine. Changing producer behaviour is not: update the
 fixture corpus in the tapes repository first, then re-vendor with
-`scripts/sync-envelope-fixtures.sh`. The oracle in `src/envelope_fixtures.rs`
+`scripts/sync-envelope-fixtures.sh`. The oracle in `crates/tapes-capture/src/envelope_fixtures.rs`
 must stay green against the vendored corpus — if a change makes it fail, that
 conversation happens in tapes, not by editing the fixtures here.
 
@@ -226,7 +226,7 @@ were the behaviour.
 The canonical name, and the most load-bearing string in the crate:
 
 - It is the `X-Tapes-Harness-Id` value, so it must already exist as a
-  `HARNESS_ID_*` const in `src/envelope.rs` — `HARNESS_ID_CLAUDE`,
+  `HARNESS_ID_*` const in `crates/tapes-capture/src/envelope.rs` — `HARNESS_ID_CLAUDE`,
   `HARNESS_ID_CODEX`, `HARNESS_ID_OPENCODE`, `HARNESS_ID_PI` today — rather
   than being spelled inline here. `registry_ids_are_the_envelope_ids` pins the
   two together.
@@ -259,9 +259,12 @@ An empty list is the common case: `CODEX`, `OPENCODE`, and `PI` all carry none.
 
 ### `user_agent`
 
-The routing rule `for_user_agent()` applies, and the gate on the Claude
-attribution lane — `ua_matches_claude()` in `src/attribution/pipeline.rs` is a
-registry lookup rather than a hand-written prefix test.
+The routing rule `for_user_agent()` applies, and through it the gate on the
+Claude attribution lane. The pipeline does not read this field: it asks an
+injected `UserAgentHarness` resolver which harness a `User-Agent` names, and
+`RegistryUserAgents` — the implementation a consumer normally passes — answers
+from `for_user_agent()`. So declaring the rule here is the whole edit; there is
+no second prefix test in the pipeline to keep in step.
 
 `UserAgentMatch::Prefix` is a **prefix, not a substring**: `some-claude-like`
 must not be claimed by `claude`. Because `for_user_agent()` returns the first
@@ -499,7 +502,7 @@ against the whole registry, so `cargo test` is the checklist:
   expected list literally. **Any** launchable addition fails it — that is the
   point, so update the expectation as a decision.
 - `registry_ids_are_the_envelope_ids` asserts each id against its
-  `src/envelope.rs` const by name; add a line for yours. Its loop over the miss
+  `crates/tapes-capture/src/envelope.rs` const by name; add a line for yours. Its loop over the miss
   sentinel covers new entries automatically.
 - `every_name_in_the_registry_is_unique` fails on a duplicated id or alias.
 - `user_agent_rules_are_pairwise_disjoint` fails if your prefix nests with an
@@ -514,7 +517,7 @@ against the whole registry, so `cargo test` is the checklist:
   `None`. Step 1's example is not idle: `gemini` is currently pinned as *absent*
   here, and separately in tapesctl's plugin tests, so that particular name
   breaks two test suites the day it becomes real.
-- Outside the registry module: a new `HARNESS_ID_*` const in `src/envelope.rs`,
+- Outside the registry module: a new `HARNESS_ID_*` const in `crates/tapes-capture/src/envelope.rs`,
   and a `harness()` test in your `src/launch/` recipe if you add one.
 
 **Downstream, but only when a consumer bumps its pin.** Both consumers depend on

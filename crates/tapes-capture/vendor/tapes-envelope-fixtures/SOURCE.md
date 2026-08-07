@@ -38,13 +38,18 @@ in total and **all must be refreshed from the same upstream SHA**:
 
 | Repo | Path |
 | --- | --- |
-| `tapes-harnesses` (here) | `vendor/tapes-envelope-fixtures/`| `crates/tapes-harness/vendor/tapes-envelope-fixtures/` |
+| `tapes-harnesses` (here) | `crates/tapes-capture/vendor/tapes-envelope-fixtures/` |
 | `platform/paper` | `crates/paper-daemon/vendor/tapes-envelope-fixtures/` |
 | `tapes-extproc` | `internal/headers/testdata/envelope/` |
 
+The corpus sits under `tapes-capture` because that is where the producer it
+pins lives. The envelope is a wire format, and a wire format does not change
+when a harness is added — so neither it nor its fixtures belong in the crate
+that declares harnesses.
+
 ## What consumes it here
 
-`src/envelope_fixtures.rs` — the producer-side oracle. For
+`crates/tapes-capture/src/envelope_fixtures.rs` — the producer-side oracle. For
 each case whose `direction` is `roundtrip` or `encode` it builds the logical
 envelope (`encode_from` when the case is lossy, else `envelope`), emits the
 headers, and asserts they match the case byte for byte.

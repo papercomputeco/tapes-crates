@@ -236,7 +236,7 @@ pub fn load_cases() -> Vec<FixtureCase> {
 /// Build the attribution a producer would hold for `env`.
 ///
 /// This constructs [`TapesAttribution`] field-by-field rather than going
-/// through `claude()` / `codex_session()` because the corpus spans harnesses
+/// through `from_session()` / `codex_session()` because the corpus spans harnesses
 /// those constructors don't cover (`pi`) and field combinations they can't
 /// express. The named constructors are what production uses; this exercises the
 /// serialization they all funnel into.
@@ -313,7 +313,9 @@ pub fn decode_metadata(encoded: &str) -> serde_json::Value {
 // its own producer.
 
 #[cfg(test)]
-use crate::envelope::{X_TAPES_HARNESS_METADATA, inject_tapes_attribution, inject_tapes_headers};
+use crate::envelope::{
+    X_TAPES_HARNESS_METADATA, inject_tapes_attribution, inject_unattributed_envelope,
+};
 
 #[cfg(test)]
 #[test]
@@ -431,15 +433,15 @@ fn unknown_harness_case_emits_only_the_required_header() {
 ///
 /// The producer loop above cannot cover it. It reconstructs headers from the
 /// parsed envelope via `inject_tapes_attribution`, which is the wrong entry
-/// point — preservation is decided in `inject_tapes_headers`, by
+/// point — preservation is decided in `inject_unattributed_envelope`, by
 /// `has_complete_inbound_envelope`, before any attribution is built. A
 /// regression that broke complete-envelope detection would leave every
 /// assertion above green while the producer silently overwrote a caller's identity
 /// with `unknown`.
 ///
-/// So drive the real entry point with the case's own inbound headers and a
-/// `None` session — the non-Claude caller this contract exists for — and
-/// require the X-Tapes-* set to come back untouched.
+/// So drive the real entry point with the case's own inbound headers — the
+/// unattributed caller this contract exists for — and require the X-Tapes-*
+/// set to come back untouched.
 ///
 /// Selection is by shape, not by name: any case whose headers carry a usable
 /// harness id and session id is a preservation case, so a future one is
@@ -487,8 +489,9 @@ fn preserves_complete_inbound_envelopes(cases: &[FixtureCase]) {
             continue;
         }
 
-        inject_tapes_headers(&mut headers, None, None)
-            .unwrap_or_else(|e| panic!("{}: inject_tapes_headers failed: {e:?}", case.name));
+        inject_unattributed_envelope(&mut headers).unwrap_or_else(|e| {
+            panic!("{}: inject_unattributed_envelope failed: {e:?}", case.name)
+        });
 
         assert_eq!(
             tapes_headers(&headers),

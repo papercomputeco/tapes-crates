@@ -16,10 +16,10 @@
 #![cfg(feature = "envelope-fixtures")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use tapes_harnesses::envelope::fixtures::{
+use tapes_capture::envelope::fixtures::{
     Direction, attribution_from, decode_metadata, load_cases, tapes_headers,
 };
-use tapes_harnesses::envelope::{
+use tapes_capture::envelope::{
     HARNESS_ID_UNKNOWN, TapesAttribution, X_TAPES_HARNESS_METADATA, inject_tapes_attribution,
 };
 
@@ -32,7 +32,7 @@ fn a_consumer_can_load_the_corpus() {
         cases.len() >= 15,
         "only {} cases loaded from {}; the vendored corpus looks truncated",
         cases.len(),
-        tapes_harnesses::envelope::fixtures::cases_dir().display(),
+        tapes_capture::envelope::fixtures::cases_dir().display(),
     );
     assert!(
         cases

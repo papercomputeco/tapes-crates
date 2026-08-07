@@ -1,7 +1,7 @@
 //! The harness registry — the one place a harness is declared.
 //!
 //! Before this module, a harness's identity was scattered: its id was a loose
-//! `const` in [`crate::envelope`] (and, for opencode, a private one in its own
+//! `const` in [`tapes_capture::envelope`] (and, for opencode, a private one in its own
 //! launch recipe), the list of names a client would accept lived in each
 //! consumer's CLI, the User-Agent gate was a hand-written prefix test inside
 //! the attribution pipeline, and which attribution shape a harness had was
@@ -43,7 +43,7 @@
 
 use std::path::PathBuf;
 
-use crate::envelope::{
+use tapes_capture::envelope::{
     HARNESS_ID_CLAUDE, HARNESS_ID_CODEX, HARNESS_ID_CODEX_APP, HARNESS_ID_OPENCODE, HARNESS_ID_PI,
 };
 
@@ -441,6 +441,27 @@ pub fn for_user_agent(ua: &str) -> Option<&'static Harness> {
         .find(|harness| harness.matches_user_agent(ua))
 }
 
+/// The registry, as the attribution pipeline's User-Agent resolver.
+///
+/// [`crate::attribution::pipeline`] needs to know which harness a request's
+/// `User-Agent` names, and used to answer that by reaching into [`CLAUDE`]
+/// directly — a framework holding one harness's declaration, and a second
+/// place to edit when a harness gains a User-Agent rule. The pipeline now
+/// states the question as a trait and this is the registry's answer to it, so
+/// the rules live in exactly one place: the [`Harness`] declarations above.
+///
+/// A consumer wanting to capture fewer agents than the registry knows about
+/// implements the same trait over its own subset; the algorithm does not fork.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RegistryUserAgents;
+
+impl crate::attribution::pipeline::UserAgentHarness for RegistryUserAgents {
+    fn harness_id(&self, user_agent: &str) -> Option<&'static str> {
+        for_user_agent(user_agent).map(Harness::id)
+    }
+}
+
 /// The harnesses a consumer can launch, in registry order.
 ///
 /// This is the list each consumer's `start` command should offer, derived
@@ -506,14 +527,17 @@ mod tests {
     /// its captured traffic would disagree about the harness's name.
     #[test]
     fn registry_ids_are_the_envelope_ids() {
-        assert_eq!(CLAUDE.id(), crate::envelope::HARNESS_ID_CLAUDE);
-        assert_eq!(CODEX.id(), crate::envelope::HARNESS_ID_CODEX);
-        assert_eq!(CODEX_APP.id(), crate::envelope::HARNESS_ID_CODEX_APP);
-        assert_eq!(OPENCODE.id(), crate::envelope::HARNESS_ID_OPENCODE);
-        assert_eq!(PI.id(), crate::envelope::HARNESS_ID_PI);
+        assert_eq!(CLAUDE.id(), tapes_capture::envelope::HARNESS_ID_CLAUDE);
+        assert_eq!(CODEX.id(), tapes_capture::envelope::HARNESS_ID_CODEX);
+        assert_eq!(
+            CODEX_APP.id(),
+            tapes_capture::envelope::HARNESS_ID_CODEX_APP
+        );
+        assert_eq!(OPENCODE.id(), tapes_capture::envelope::HARNESS_ID_OPENCODE);
+        assert_eq!(PI.id(), tapes_capture::envelope::HARNESS_ID_PI);
         // And none of them collides with the miss sentinel.
         for harness in REGISTRY {
-            assert_ne!(harness.id(), crate::envelope::HARNESS_ID_UNKNOWN);
+            assert_ne!(harness.id(), tapes_capture::envelope::HARNESS_ID_UNKNOWN);
         }
     }
 

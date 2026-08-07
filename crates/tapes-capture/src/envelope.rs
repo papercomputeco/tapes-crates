@@ -25,14 +25,13 @@
 //! knowledge every capture proxy needs does live here — see
 //! [`HOP_BY_HOP_HEADERS`] and [`is_hop_by_hop`].
 
+use crate::session::HarnessSession;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use http::{HeaderMap, HeaderName, HeaderValue};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use snafu::{ResultExt, Snafu};
 use tracing::warn;
-
-use crate::attribution::ClaudeSessionFile;
 
 /// Failure modes the envelope helpers can surface.
 #[derive(Debug, Snafu)]
@@ -111,7 +110,7 @@ pub const HARNESS_ID_UNKNOWN: &str = "unknown";
 
 /// Harness-id attached by pi's capture extension — the one harness that stamps
 /// its own envelope from inside itself. The extension is
-/// [`crate::plugin::PI_GATEWAY_EXTENSION`].
+/// `tapes_harnesses::plugin::PI_GATEWAY_EXTENSION`.
 pub const HARNESS_ID_PI: &str = "pi";
 
 /// Harness-id attached for Claude traffic (User-Agent `claude*`).
@@ -125,7 +124,8 @@ pub const HARNESS_ID_CODEX: &str = "codex";
 /// A distinct harness, not an alias of [`HARNESS_ID_CODEX`]: the app is a
 /// long-lived Codex host a consumer configures rather than launches, and its
 /// session identity arrives through lifecycle hook reports (see
-/// [`crate::attribution::codex_app`]) rather than through the peer-PID lanes.
+/// `tapes_harnesses::attribution::codex_app`) rather than through the peer-PID
+/// lanes.
 /// It shares Codex's wire protocol and rollout tree, so requests still carry
 /// the `thread-id`/`session-id` pair and transcripts still land under
 /// `$CODEX_HOME/sessions` — what differs is who answers "which session is
@@ -136,7 +136,7 @@ pub const HARNESS_ID_CODEX_APP: &str = "codex-app";
 /// Harness-id attached for opencode traffic.
 ///
 /// opencode capture arrives with the standalone client; the constant lives
-/// here with the others so [`crate::harness`] has one place to take every id
+/// here with the others so the harness registry has one place to take every id
 /// from, rather than the launch recipe spelling its own.
 pub const HARNESS_ID_OPENCODE: &str = "opencode";
 
@@ -175,7 +175,7 @@ pub const CLAUDE_THREAD_ID_HEADERS: &[&str] = &["x-claude-code-agent-id"];
 /// root turn, a distinct id on a spawned sub-thread's turn.
 ///
 /// Also read — as an ordered first-present list rather than as a pair — by
-/// [`crate::attribution::codex::session::CODEX_ROLLOUT_ID_HEADERS`], which
+/// `tapes_harnesses::attribution::codex::session::CODEX_ROLLOUT_ID_HEADERS`, which
 /// answers a different question: *which rollout* a request belongs to. Both
 /// take their spelling from here so the two readings cannot drift apart.
 pub const CODEX_THREAD_ID_HEADER: &str = "thread-id";
@@ -190,7 +190,7 @@ pub const CODEX_SESSION_ID_HEADER: &str = "session-id";
 /// session header stays pinned to the root. That pairing is what makes a
 /// request self-describing enough to be joined against a rollout transcript's
 /// own `parent_thread_id` — see
-/// [`crate::attribution::codex::request::CodexRequestIdentity`].
+/// `tapes_harnesses::attribution::codex::request::CodexRequestIdentity`.
 pub const CODEX_PARENT_THREAD_ID_HEADER: &str = "x-codex-parent-thread-id";
 
 /// A JSON restatement of the identity headers, plus the turn id.
@@ -204,7 +204,7 @@ pub const CODEX_PARENT_THREAD_ID_HEADER: &str = "x-codex-parent-thread-id";
 /// The blob additionally carries the user's prompt and other conversation
 /// content. Parsing is therefore an allowlist, exactly as it is for the
 /// desktop app's lifecycle payloads: see
-/// [`crate::attribution::codex_app`].
+/// `tapes_harnesses::attribution::codex_app`.
 pub const CODEX_TURN_METADATA_HEADER: &str = "x-codex-turn-metadata";
 
 /// The legacy, unstructured spelling of a sub-thread's kind.
@@ -213,7 +213,7 @@ pub const CODEX_TURN_METADATA_HEADER: &str = "x-codex-turn-metadata";
 /// structured metadata and the rollout transcript name the *thread source*
 /// (`thread_spawn`). The two are canonicalised to one vocabulary before
 /// comparison — see
-/// [`crate::attribution::codex::request::canonical_subagent_kind`] — so a
+/// `tapes_harnesses::attribution::codex::request::canonical_subagent_kind` — so a
 /// request that says both things does not read as self-contradictory.
 pub const OPENAI_SUBAGENT_HEADER: &str = "x-openai-subagent";
 
@@ -319,19 +319,14 @@ pub fn is_hop_by_hop(name: &str) -> bool {
         .any(|h| h.eq_ignore_ascii_case(name))
 }
 
-/// Insert the `X-Tapes-*` envelope headers.
+/// Insert the full `X-Tapes-*` envelope for a resolved harness session.
 ///
-/// * If `session` is `Some`, attaches the full envelope:
-///   `X-Tapes-Harness-Id: claude`, `X-Tapes-Harness-Session-Id`,
-///   `X-Tapes-Harness-Version`, `X-Tapes-Cwd`, `X-Tapes-Session-Name`
-///   (percent-encoded UTF-8), optional `X-Tapes-Parent-Harness-Session-Id`
-///   when `parent_sid` is set, and `X-Tapes-Harness-Metadata`
-///   (base64url(JSON) of the harness's extra metadata) when the JSON
-///   fits the 4 KiB raw cap.
-/// * If `session` is `None`, attaches only
-///   `X-Tapes-Harness-Id: unknown` (the cold-race / non-Claude
-///   fallback) and ignores `parent_sid` — unless the inbound request
-///   already carries a complete envelope, which is preserved as-is.
+/// Attaches `X-Tapes-Harness-Id` (the session's own
+/// [`HarnessSession::harness_id`]), `X-Tapes-Harness-Session-Id`,
+/// `X-Tapes-Harness-Version`, `X-Tapes-Cwd`, `X-Tapes-Session-Name`
+/// (percent-encoded UTF-8), optional `X-Tapes-Parent-Harness-Session-Id` when
+/// `parent_sid` is set, and `X-Tapes-Harness-Metadata` (base64url(JSON) of the
+/// session's metadata object) when the JSON fits the 4 KiB raw cap.
 ///
 /// Budget enforcement: the total `X-Tapes-*` byte budget is 8 KiB.
 /// When the metadata header would push the running total over the cap,
@@ -353,19 +348,38 @@ pub fn is_hop_by_hop(name: &str) -> bool {
 /// value is not valid HTTP-header bytes. Unreachable in practice — the
 /// fallback path substitutes the ASCII `unknown` constant — but the
 /// signature keeps the failure visible to callers.
-pub fn inject_tapes_headers(
+pub fn inject_session_envelope(
     headers: &mut HeaderMap,
-    session: Option<&ClaudeSessionFile>,
+    session: &impl HarnessSession,
     parent_sid: Option<&str>,
 ) -> Result<(), HeaderError> {
-    let Some(session) = session else {
-        if has_complete_inbound_envelope(headers) {
-            return Ok(());
-        }
-        clear_tapes_headers(headers);
-        return inject_tapes_attribution(headers, TapesAttribution::unknown());
-    };
-    inject_tapes_attribution(headers, TapesAttribution::claude(session, parent_sid))
+    inject_tapes_attribution(headers, TapesAttribution::from_session(session, parent_sid))
+}
+
+/// Insert the envelope for a request nobody could attribute.
+///
+/// Attaches only `X-Tapes-Harness-Id: unknown` — unless the inbound request
+/// already carries a complete envelope, which is preserved as-is because a
+/// harness that stamped its own identity from inside itself knows more than a
+/// failed lookup does. Any stale *partial* envelope is cleared first, so a
+/// half-stated identity never rides out alongside the sentinel.
+///
+/// The counterpart to [`inject_session_envelope`], and split from it rather
+/// than expressed as its `None` case: the two arms share no input. This one
+/// needs no session type at all, which is what lets a caller with nothing to
+/// say reach the sentinel path without naming a harness's session shape.
+///
+/// # Errors
+///
+/// Returns [`HeaderError::InvalidValue`] if the ASCII `unknown` constant is
+/// somehow not valid HTTP-header bytes. Unreachable; the signature keeps the
+/// failure visible.
+pub fn inject_unattributed_envelope(headers: &mut HeaderMap) -> Result<(), HeaderError> {
+    if has_complete_inbound_envelope(headers) {
+        return Ok(());
+    }
+    clear_tapes_headers(headers);
+    inject_tapes_attribution(headers, TapesAttribution::unknown())
 }
 
 /// Session-attribution envelope to serialize into `X-Tapes-*` headers.
@@ -476,7 +490,7 @@ impl TapesAttribution {
     /// non-blank session id. That completeness rule is the point of this
     /// constructor. The same rule decides two things in different processes —
     /// here, whether a capture client files a turn under an inbound envelope;
-    /// and in [`inject_tapes_headers`], whether the producer *preserves* an
+    /// and in [`inject_unattributed_envelope`], whether the producer *preserves* an
     /// inbound envelope instead of overwriting it with `unknown`. Two
     /// spellings of it drift into a request whose headers say `pi` and whose
     /// ingest row says `unknown`, so both callers come through here.
@@ -506,37 +520,26 @@ impl TapesAttribution {
         })
     }
 
-    /// Claude traffic attributed to a `~/.claude/sessions/<pid>.json`
-    /// session file, with optional recovered fork-parent lineage.
+    /// Traffic attributed to a resolved harness session, with optional
+    /// recovered fork-parent lineage.
+    ///
+    /// Takes [`HarnessSession`] rather than any harness's own session type.
+    /// That is the whole reason this module can live beside the wire format
+    /// instead of beside the harness registry: the projection from "what the
+    /// harness published" to "what the envelope carries" is stated once, as a
+    /// requirement, and each harness satisfies it on its own side. A new
+    /// harness reaches this constructor by implementing the trait — nothing
+    /// here learns its name.
     #[must_use]
-    pub fn claude(session: &ClaudeSessionFile, parent_sid: Option<&str>) -> Self {
-        let mut metadata = serde_json::Map::new();
-        if let Some(kind) = &session.kind {
-            metadata.insert("kind".to_owned(), serde_json::Value::String(kind.clone()));
-        }
-        if let Some(entrypoint) = &session.entrypoint {
-            metadata.insert(
-                "entrypoint".to_owned(),
-                serde_json::Value::String(entrypoint.clone()),
-            );
-        }
-        if let Some(pp) = session.peer_protocol {
-            metadata.insert(
-                "peerProtocol".to_owned(),
-                serde_json::Value::Number(pp.into()),
-            );
-        }
-        for (k, v) in &session.extra {
-            metadata.insert(k.clone(), v.clone());
-        }
+    pub fn from_session(session: &impl HarnessSession, parent_sid: Option<&str>) -> Self {
         Self {
-            harness_id: HARNESS_ID_CLAUDE.to_owned(),
-            session_id: Some(session.session_id.clone()),
-            version: session.version.clone(),
-            cwd: session.cwd.clone(),
-            name: session.name.clone(),
+            harness_id: session.harness_id().to_owned(),
+            session_id: Some(session.session_id().to_owned()),
+            version: session.version().map(str::to_owned),
+            cwd: session.cwd().map(str::to_owned),
+            name: session.name().map(str::to_owned),
             parent_sid: parent_sid.map(str::to_owned),
-            metadata,
+            metadata: session.metadata(),
         }
     }
 }
@@ -837,12 +840,67 @@ mod tests {
         }
     }
 
-    /// Build a `ClaudeSessionFile` with sensible defaults for header
-    /// tests. Override what the test cares about by mutation after
-    /// the call.
-    fn sample_session() -> ClaudeSessionFile {
-        ClaudeSessionFile {
-            pid: 12345,
+    /// A harness session for header tests, modelled on the shape Claude
+    /// publishes — modelled fields that become metadata keys, plus a verbatim
+    /// `extra` passthrough — without importing any harness's own type. The
+    /// producer must work for whatever satisfies [`HarnessSession`]; testing
+    /// it through one harness's struct would let a change to that struct
+    /// masquerade as a change to the wire format.
+    struct SampleSession {
+        session_id: String,
+        cwd: Option<String>,
+        version: Option<String>,
+        peer_protocol: Option<i64>,
+        kind: Option<String>,
+        entrypoint: Option<String>,
+        name: Option<String>,
+        extra: serde_json::Map<String, serde_json::Value>,
+    }
+
+    impl HarnessSession for SampleSession {
+        fn harness_id(&self) -> &str {
+            HARNESS_ID_CLAUDE
+        }
+        fn session_id(&self) -> &str {
+            &self.session_id
+        }
+        fn version(&self) -> Option<&str> {
+            self.version.as_deref()
+        }
+        fn cwd(&self) -> Option<&str> {
+            self.cwd.as_deref()
+        }
+        fn name(&self) -> Option<&str> {
+            self.name.as_deref()
+        }
+        fn metadata(&self) -> serde_json::Map<String, serde_json::Value> {
+            let mut metadata = serde_json::Map::new();
+            if let Some(kind) = &self.kind {
+                metadata.insert("kind".to_owned(), serde_json::Value::String(kind.clone()));
+            }
+            if let Some(entrypoint) = &self.entrypoint {
+                metadata.insert(
+                    "entrypoint".to_owned(),
+                    serde_json::Value::String(entrypoint.clone()),
+                );
+            }
+            if let Some(pp) = self.peer_protocol {
+                metadata.insert(
+                    "peerProtocol".to_owned(),
+                    serde_json::Value::Number(pp.into()),
+                );
+            }
+            for (k, v) in &self.extra {
+                metadata.insert(k.clone(), v.clone());
+            }
+            metadata
+        }
+    }
+
+    /// Build a session with sensible defaults for header tests. Override what
+    /// the test cares about by mutation after the call.
+    fn sample_session() -> SampleSession {
+        SampleSession {
             session_id: "eae77e15-c7d2-4883-b82e-251161f8eeb3".to_owned(),
             cwd: Some("/Users/matt/code".to_owned()),
             version: Some("2.1.145".to_owned()),
@@ -850,21 +908,17 @@ mod tests {
             kind: Some("interactive".to_owned()),
             entrypoint: Some("cli".to_owned()),
             name: Some("woo-names".to_owned()),
-            status: Some("idle".to_owned()),
-            proc_start: Some("Wed May 20 11:11:00 2026".to_owned()),
-            started_at: Some(1_779_300_649_802),
-            updated_at: Some(1_779_300_681_350),
             extra: serde_json::Map::new(),
         }
     }
 
     #[test]
-    fn inject_tapes_headers_unknown_when_no_session() {
+    fn unattributed_envelope_is_the_unknown_sentinel_alone() {
         // Cold-race / non-Claude callers (curl, health probes,
         // unparsed metadata) land on the unknown-harness path:
         // exactly one header, value `unknown`.
         let mut headers = HeaderMap::new();
-        inject_tapes_headers(&mut headers, None, None).unwrap();
+        inject_unattributed_envelope(&mut headers).unwrap();
 
         assert_eq!(
             headers.get(X_TAPES_HARNESS_ID).unwrap().to_str().unwrap(),
@@ -878,11 +932,15 @@ mod tests {
     }
 
     #[test]
-    fn inject_tapes_headers_unknown_ignores_parent_sid() {
-        // The unknown path has no harness session to be a fork of,
-        // so parent_sid is ignored even if supplied.
+    fn unattributed_envelope_names_no_fork_parent() {
+        // The unknown path has no harness session to be a fork of, so it
+        // emits no lineage. This used to be stated by passing a `parent_sid`
+        // and requiring it to be ignored; the unattributed entry point no
+        // longer accepts one, which makes the property structural. The
+        // assertion stays because "structurally impossible" is a claim about
+        // today's signature, and the header is the thing that must be absent.
         let mut headers = HeaderMap::new();
-        inject_tapes_headers(&mut headers, None, Some("ignored-parent")).unwrap();
+        inject_unattributed_envelope(&mut headers).unwrap();
         assert!(!headers.contains_key(X_TAPES_PARENT_HARNESS_SESSION_ID));
     }
 
@@ -990,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn inject_tapes_headers_preserves_complete_non_claude_envelope() {
+    fn unattributed_envelope_preserves_a_complete_inbound_one() {
         let mut headers = HeaderMap::new();
         headers.insert(X_TAPES_HARNESS_ID, HeaderValue::from_static(HARNESS_ID_PI));
         headers.insert(
@@ -998,7 +1056,7 @@ mod tests {
             HeaderValue::from_static("paper-pi-test-session"),
         );
 
-        inject_tapes_headers(&mut headers, None, None).unwrap();
+        inject_unattributed_envelope(&mut headers).unwrap();
 
         assert_eq!(
             headers.get(X_TAPES_HARNESS_ID).unwrap().to_str().unwrap(),
@@ -1015,11 +1073,11 @@ mod tests {
     }
 
     #[test]
-    fn inject_tapes_headers_replaces_partial_non_claude_envelope_with_unknown() {
+    fn unattributed_envelope_replaces_a_partial_inbound_one() {
         let mut headers = HeaderMap::new();
         headers.insert(X_TAPES_HARNESS_ID, HeaderValue::from_static(HARNESS_ID_PI));
 
-        inject_tapes_headers(&mut headers, None, None).unwrap();
+        inject_unattributed_envelope(&mut headers).unwrap();
 
         assert_eq!(
             headers.get(X_TAPES_HARNESS_ID).unwrap().to_str().unwrap(),
@@ -1029,14 +1087,14 @@ mod tests {
     }
 
     #[test]
-    fn inject_tapes_headers_clears_orphan_session_id_before_unknown() {
+    fn unattributed_envelope_clears_an_orphan_session_id() {
         let mut headers = HeaderMap::new();
         headers.insert(
             X_TAPES_HARNESS_SESSION_ID,
             HeaderValue::from_static("orphan-pi-session"),
         );
 
-        inject_tapes_headers(&mut headers, None, None).unwrap();
+        inject_unattributed_envelope(&mut headers).unwrap();
 
         assert_eq!(
             headers.get(X_TAPES_HARNESS_ID).unwrap().to_str().unwrap(),
@@ -1046,13 +1104,13 @@ mod tests {
     }
 
     #[test]
-    fn inject_tapes_headers_well_formed_envelope() {
+    fn session_envelope_is_well_formed() {
         // Happy path: full session, no parent. All structured fields
         // populated → all corresponding headers present with the
         // verbatim values, plus base64url-encoded metadata.
         let mut headers = HeaderMap::new();
         let session = sample_session();
-        inject_tapes_headers(&mut headers, Some(&session), None).unwrap();
+        inject_session_envelope(&mut headers, &session, None).unwrap();
 
         assert_eq!(
             headers.get(X_TAPES_HARNESS_ID).unwrap().to_str().unwrap(),
@@ -1101,10 +1159,10 @@ mod tests {
     }
 
     #[test]
-    fn inject_tapes_headers_attaches_parent_when_present() {
+    fn session_envelope_attaches_parent_when_present() {
         let mut headers = HeaderMap::new();
         let session = sample_session();
-        inject_tapes_headers(&mut headers, Some(&session), Some("parent-sid-uuid")).unwrap();
+        inject_session_envelope(&mut headers, &session, Some("parent-sid-uuid")).unwrap();
         assert_eq!(
             headers
                 .get(X_TAPES_PARENT_HARNESS_SESSION_ID)
@@ -1116,7 +1174,7 @@ mod tests {
     }
 
     #[test]
-    fn inject_tapes_headers_omits_unset_optionals() {
+    fn session_envelope_omits_unset_optionals() {
         // None for an optional field means "harness didn't write
         // it". We omit the header rather than emitting a sentinel
         // empty value so absent and empty stay distinguishable
@@ -1128,7 +1186,7 @@ mod tests {
         session.name = None;
         // Metadata blob still has kind/entrypoint/peerProtocol so it
         // stays — we're testing the structured-string omissions.
-        inject_tapes_headers(&mut headers, Some(&session), None).unwrap();
+        inject_session_envelope(&mut headers, &session, None).unwrap();
 
         assert!(headers.contains_key(X_TAPES_HARNESS_ID));
         assert!(headers.contains_key(X_TAPES_HARNESS_SESSION_ID));
@@ -1138,7 +1196,7 @@ mod tests {
     }
 
     #[test]
-    fn inject_tapes_headers_percent_encodes_unicode_session_name() {
+    fn session_envelope_percent_encodes_unicode_session_name() {
         // The session name is the only header value that may carry
         // arbitrary UTF-8 (slash-command `/name` accepts anything
         // the user types). Encoded form must be ASCII per RFC 7230.
@@ -1148,7 +1206,7 @@ mod tests {
         // exercise the encoder's UTF-8 and ASCII-escape paths in one
         // shot.
         session.name = Some("name with space \"quotes\" café".to_owned());
-        inject_tapes_headers(&mut headers, Some(&session), None).unwrap();
+        inject_session_envelope(&mut headers, &session, None).unwrap();
 
         let v = headers
             .get(X_TAPES_SESSION_NAME)
@@ -1167,7 +1225,7 @@ mod tests {
     }
 
     #[test]
-    fn inject_tapes_headers_truncates_session_name_at_utf8_boundary() {
+    fn session_envelope_truncates_session_name_at_utf8_boundary() {
         // Names beyond X_TAPES_SESSION_NAME_CAP (256 B raw) are
         // truncated to the cap before encoding. Truncation must
         // happen at a UTF-8 codepoint boundary so the encoder
@@ -1183,7 +1241,7 @@ mod tests {
         // each percent-encoded to `%E0%B8%81` (9 ASCII bytes), so
         // encoded length is 85 × 9 = 765.
         session.name = Some("ก".repeat(100));
-        inject_tapes_headers(&mut headers, Some(&session), None).unwrap();
+        inject_session_envelope(&mut headers, &session, None).unwrap();
 
         // Header value is ASCII (percent-encoded). The function
         // must not have panicked on an invalid UTF-8 slice.
@@ -1197,7 +1255,7 @@ mod tests {
     }
 
     #[test]
-    fn inject_tapes_headers_drops_oversize_metadata() {
+    fn session_envelope_drops_oversize_metadata() {
         // The metadata blob is dropped (silently) when the raw
         // JSON exceeds X_TAPES_METADATA_RAW_CAP (4 KiB). The other
         // X-Tapes-* headers stay; only the metadata is omitted.
@@ -1211,7 +1269,7 @@ mod tests {
             .extra
             .insert("hugeKnob".to_owned(), serde_json::Value::String(huge));
 
-        inject_tapes_headers(&mut headers, Some(&session), None).unwrap();
+        inject_session_envelope(&mut headers, &session, None).unwrap();
 
         assert!(headers.contains_key(X_TAPES_HARNESS_ID));
         assert!(headers.contains_key(X_TAPES_HARNESS_SESSION_ID));
@@ -1223,7 +1281,7 @@ mod tests {
     }
 
     #[test]
-    fn inject_tapes_headers_metadata_includes_extra_keys() {
+    fn session_envelope_metadata_includes_extra_keys() {
         // Forward-compat: anything the harness writes that we don't
         // model explicitly flows through the `extra` map into the
         // metadata blob unchanged, so new keys travel upstream without
@@ -1234,7 +1292,7 @@ mod tests {
             "futureKnob".to_owned(),
             serde_json::Value::String("preserved".to_owned()),
         );
-        inject_tapes_headers(&mut headers, Some(&session), None).unwrap();
+        inject_session_envelope(&mut headers, &session, None).unwrap();
 
         let encoded = headers
             .get(X_TAPES_HARNESS_METADATA)
@@ -1248,7 +1306,7 @@ mod tests {
     }
 
     #[test]
-    fn inject_tapes_headers_metadata_empty_when_no_blob_fields() {
+    fn session_envelope_metadata_empty_when_no_blob_fields() {
         // No kind / entrypoint / peerProtocol / extra → the
         // metadata blob would be an empty JSON object. We omit the
         // header entirely instead of attaching `{}` (the extra
@@ -1259,7 +1317,7 @@ mod tests {
         session.entrypoint = None;
         session.peer_protocol = None;
         session.extra.clear();
-        inject_tapes_headers(&mut headers, Some(&session), None).unwrap();
+        inject_session_envelope(&mut headers, &session, None).unwrap();
 
         assert!(!headers.contains_key(X_TAPES_HARNESS_METADATA));
         // Other headers still present.
@@ -1268,7 +1326,7 @@ mod tests {
     }
 
     #[test]
-    fn inject_tapes_headers_escapes_control_bytes_in_cwd() {
+    fn session_envelope_escapes_control_bytes_in_cwd() {
         // Cwd is percent-encoded UTF-8 on the wire, so CR/LF/NUL
         // bytes — which RFC 7230 forbids in a raw header value, and
         // which would let an attacker inject a second header — are
@@ -1278,7 +1336,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         let mut session = sample_session();
         session.cwd = Some("/Users/matt\nwith-injection: yes".to_owned());
-        inject_tapes_headers(&mut headers, Some(&session), None).unwrap();
+        inject_session_envelope(&mut headers, &session, None).unwrap();
 
         let v = headers.get(X_TAPES_CWD).unwrap().to_str().unwrap();
         assert!(v.contains("%0A"), "newline is percent-encoded: {v}");
@@ -1291,7 +1349,7 @@ mod tests {
     }
 
     #[test]
-    fn inject_tapes_headers_percent_encodes_unicode_cwd() {
+    fn session_envelope_percent_encodes_unicode_cwd() {
         // Working directories on macOS/Linux can contain non-ASCII
         // bytes (Japanese home dirs, accented characters, emoji). A
         // raw `HeaderValue::from_str` only accepts visible ASCII, so
@@ -1301,7 +1359,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         let mut session = sample_session();
         session.cwd = Some("/Users/松本/code".to_owned());
-        inject_tapes_headers(&mut headers, Some(&session), None).unwrap();
+        inject_session_envelope(&mut headers, &session, None).unwrap();
 
         let v = headers.get(X_TAPES_CWD).unwrap().to_str().unwrap();
         assert!(v.is_ascii(), "encoded value must be pure ASCII");
@@ -1627,7 +1685,7 @@ mod tests {
             // envelope survives an unattributed injection untouched, an
             // incomplete one is replaced by the `unknown` sentinel.
             let before = headers.clone();
-            inject_tapes_headers(&mut headers, None, None).unwrap();
+            inject_unattributed_envelope(&mut headers).unwrap();
             if readable {
                 assert_eq!(
                     headers.get(X_TAPES_HARNESS_ID),
@@ -1644,23 +1702,23 @@ mod tests {
         }
     }
 
-    /// The pair rule reads the same header spellings the rollout-id lookup
-    /// does. They answer different questions and must not drift apart.
+    /// Exactly one rule is declared as a divergent pair, and it is the Codex
+    /// one. The harness-side rollout-id lookup reads the same two spellings to
+    /// answer a different question, and asserts agreement from its side —
+    /// which is the only side that can, now that this module cannot name a
+    /// harness's attribution lane.
     #[test]
-    fn the_codex_pair_names_the_rollout_id_headers() {
-        let pair = HARNESS_THREAD_ID_RULES
+    fn exactly_one_rule_is_a_divergent_pair() {
+        let pairs: Vec<(&str, &str)> = HARNESS_THREAD_ID_RULES
             .iter()
-            .find_map(|rule| match rule {
+            .filter_map(|rule| match rule {
                 HarnessThreadRule::DivergentPair { thread, session } => Some((*thread, *session)),
                 HarnessThreadRule::FirstPresent(_) => None,
             })
-            .expect("codex is declared as a divergent pair");
+            .collect();
         assert_eq!(
-            [pair.0, pair.1],
-            [
-                crate::attribution::codex::session::CODEX_ROLLOUT_ID_HEADERS[0],
-                crate::attribution::codex::session::CODEX_ROLLOUT_ID_HEADERS[1],
-            ],
+            pairs,
+            vec![(CODEX_THREAD_ID_HEADER, CODEX_SESSION_ID_HEADER)],
         );
     }
 }

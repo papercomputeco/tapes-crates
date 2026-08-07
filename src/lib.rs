@@ -7,9 +7,9 @@
 //! `tapesctl start` and `paper start` is **structural, not policed** — the same
 //! code runs in both.
 //!
-//! Per the "Tapes and Cassettes" RFC, exactly three places hold harness
-//! knowledge; this crate is one of them (the deriver and the envelope
-//! spec/fixtures are the other two). It owns five responsibilities:
+//! Exactly three places hold harness knowledge; this crate is one of them (the
+//! deriver and the envelope spec/fixtures are the other two). It owns these
+//! responsibilities:
 //!
 //! - [`harness`] — the registry: one declaration per harness, bundling its id,
 //!   User-Agent rule, launch support, attribution strategy, transcript
@@ -32,29 +32,29 @@
 //!   grouped per harness.
 //! - [`transcript`] — discovering and packaging harness transcripts for the
 //!   `POST /v1/ingest/transcript` lane.
-//! - [`envelope`] — the `X-Tapes-*` header contract that carries attribution
-//!   from any capture transport into ingest.
 //!
-//! [`attribution`] and [`envelope`] are extracted from paperd's
-//! `proxy::session::*` and `proxy::headers` — the code that validated peer-PID
-//! attribution, fork-parent discovery, and the `X-Tapes-*` producer against
-//! real Claude and Codex traffic. The envelope's on-wire behaviour is pinned
-//! by the shared cross-language fixture corpus vendored at
-//! `vendor/tapes-envelope-fixtures/`, which the Go parsers table-test against
-//! too, so producer and parser cannot drift silently.
+//! [`attribution`] is extracted from paperd's `proxy::session::*` — the code
+//! that validated peer-PID attribution and fork-parent discovery against real
+//! Claude and Codex traffic.
 //!
 //! # What is *not* here
 //!
 //! Everything above changes when a harness is added. The parts of capture that
-//! do not — the capture-gateway environment contract and launch-nonce protocol,
-//! peer-PID lookup, and the peer-trust ancestry check — live in
-//! [`tapes_capture`], which this crate depends on. The edge runs one way by
+//! do not live in [`tapes_capture`], which this crate depends on: the
+//! `X-Tapes-*` envelope producer and its harness-id vocabulary, the
+//! capture-gateway environment contract and launch-nonce protocol, peer-PID
+//! lookup, and the peer-trust ancestry check. The edge runs one way by
 //! construction: a harness module may reach for a capture primitive, and
 //! nothing over there can reach back, because the moment a capture primitive
 //! knows a harness's name it stops being the thing every harness shares.
 //!
-//! Their previous homes here re-export them unchanged, so a consumer pinning
-//! this crate by git rev is not forced to move in lockstep with the boundary.
+//! The envelope is the sharpest case, because the arrow points the way that
+//! first looks backwards. Harness *ids* are envelope vocabulary — they are what
+//! goes on the wire — so [`harness`] takes its ids from `tapes_capture` rather
+//! than declaring them and having the envelope import them back. Reading them
+//! the other way is what used to make the two mutually dependent, and it is why
+//! the producer now asks for a `tapes_capture::HarnessSession` instead of
+//! naming any harness's session type.
 //!
 //! [`launch`] is extracted from paper's `cli/start.rs` per-agent env/config
 //! injection, with the Go `tapes start` opencode/codex knowledge folded in —
@@ -71,7 +71,6 @@
 
 pub mod attribution;
 pub mod config;
-pub mod envelope;
 pub mod harness;
 pub mod launch;
 pub mod plugin;

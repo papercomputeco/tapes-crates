@@ -22,14 +22,13 @@
 //!   receives. The app shares Codex's wire protocol and rollout tree but is
 //!   configured rather than launched, so its identity evidence arrives at
 //!   lifecycle boundaries instead of through a peer-PID lookup.
-//! * [`peer_pid`] and [`peer_trust`] — harness-agnostic, and therefore no
-//!   longer defined here: they live in `tapes-capture` and are re-exported at
-//!   these paths. `peer_pid` maps an accepted loopback connection to one of a
-//!   candidate PID set via per-OS kernel APIs; `peer_trust` walks the process
-//!   tree to decide whether that peer is the launched harness or one of its
-//!   descendants. Both lanes use them, and so would a lane for a harness that
-//!   does not exist yet — which is exactly why neither belongs in a crate
-//!   whose contents change when a harness is added.
+//! * `tapes_capture::peer_pid` and `tapes_capture::peer_trust` — harness-agnostic,
+//!   and therefore not here at all. `peer_pid` maps an accepted loopback
+//!   connection to one of a candidate PID set via per-OS kernel APIs;
+//!   `peer_trust` walks the process tree to decide whether that peer is the
+//!   launched harness or one of its descendants. Both lanes use them, and so
+//!   would a lane for a harness that does not exist yet — which is exactly why
+//!   neither belongs in a crate whose contents change when a harness is added.
 //! * [`pipeline`] — the composition: [`attribute`] takes one request's facts
 //!   and returns one [`Attributed`] outcome, driving the primitives in the
 //!   order that was validated against real traffic. Capture clients call this;
@@ -47,7 +46,7 @@
 //!
 //! Every lookup here is best-effort and time-budgeted: an absent field means
 //! "unknown", never a sentinel. A capture client that cannot attribute a
-//! request still emits a well-formed envelope (see [`crate::envelope`]) — it
+//! request still emits a well-formed envelope (see [`tapes_capture::envelope`]) — it
 //! just marks the harness `unknown`.
 
 pub mod claude;
@@ -55,33 +54,17 @@ pub mod codex;
 pub mod codex_app;
 pub mod pipeline;
 
-// `peer_pid` and `peer_trust` now live in `tapes-capture`: neither has ever
-// needed a harness id to answer its question, so neither changes when a harness
-// is added. They are re-exported at their original paths because a consumer
-// pinning this crate by git rev should not have to move in lockstep with an
-// internal boundary; the canonical spelling is `tapes_capture::…`.
-pub use tapes_capture::{peer_pid, peer_trust};
-
-// --- compatibility aliases ---------------------------------------------
-//
-// The pre-reorg flat paths, kept working so a consumer pinning this crate by
-// git rev is not forced to move in lockstep with it. `attribution::watcher`
-// really was the *Claude* watcher despite its generic name — that ambiguity is
-// what the reorg removes, so prefer the canonical spelling on the right in new
-// code.
-
-pub use claude::fork_parent;
-pub use claude::session as claude_session;
-pub use claude::watcher;
-pub use codex::process as codex_process;
-pub use codex::session as codex_session;
-pub use codex::watcher as codex_watcher;
-
 // --- flattened re-exports ----------------------------------------------
 //
-// Unchanged from before the reorg: the names a capture client reaches for
-// most, hoisted so the common case is one `use`.
+// The names a capture client reaches for most, hoisted so the common case is
+// one `use`. Everything here is defined in a submodule of this one; nothing is
+// an alias for a path that moved, and nothing forwards another crate's items.
+// A capture primitive is spelled `tapes_capture::…` at the call site, which is
+// the only way the dependency edge stays visible in the code that relies on it.
 
+pub use claude::watcher::{
+    Snapshot as WatcherSnapshotHandle, WatcherSnapshot, spawn as spawn_watcher,
+};
 pub use claude::{ClaudeSessionFile, default_sessions_dir};
 pub use codex::request as codex_request;
 pub use codex::{
@@ -90,15 +73,10 @@ pub use codex::{
     CodexWatcherSnapshotHandle, open_jsonl_sessions_by_pid, rollout_id as codex_rollout_id,
     spawn_codex_watcher,
 };
-pub use peer_pid::{PeerPidLookup, lookup as peer_pid_lookup};
-pub use peer_trust::{
-    is_launched_or_descendant, peer_is_launched_harness, peer_is_launched_harness_async,
-};
 pub use pipeline::{
     Attributed, AttributionConfig, AttributionOutcome, AttributionState, CodexProviderFilter,
-    ForkParentCache, RequestFacts, attribute, attribute_with_evidence, ua_matches_claude,
+    ForkParentCache, RequestFacts, UserAgentHarness, attribute, attribute_with_evidence,
 };
-pub use watcher::{Snapshot as WatcherSnapshotHandle, WatcherSnapshot, spawn as spawn_watcher};
 
 /// Attribution facts discovered for a captured harness session.
 ///

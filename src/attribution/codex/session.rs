@@ -35,13 +35,13 @@ use tracing::warn;
 /// refuses rather than guesses.
 ///
 /// The same two headers are read a second way, by
-/// [`crate::envelope::HARNESS_THREAD_ID_RULES`], to answer a different
+/// [`tapes_capture::envelope::HARNESS_THREAD_ID_RULES`], to answer a different
 /// question: not *which rollout* a request belongs to, but whether it was made
 /// from a sub-thread. That reading needs the pair, because on a root turn the
 /// two are equal. The spellings come from there so the two cannot drift apart.
 pub const CODEX_ROLLOUT_ID_HEADERS: &[&str] = &[
-    crate::envelope::CODEX_THREAD_ID_HEADER,
-    crate::envelope::CODEX_SESSION_ID_HEADER,
+    tapes_capture::envelope::CODEX_THREAD_ID_HEADER,
+    tapes_capture::envelope::CODEX_SESSION_ID_HEADER,
 ];
 
 /// Resolve the id of the rollout a Codex request belongs to.
@@ -254,6 +254,32 @@ fn metadata_value_to_string(value: serde_json::Value) -> Option<String> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// The rollout-id lookup and the envelope's sub-thread pair rule read the
+    /// same two headers to answer different questions — which rollout a
+    /// request belongs to, versus whether it came from a sub-thread — so they
+    /// must not drift apart. The assertion lives on this side because this is
+    /// the side that may name a harness: the envelope cannot reach back into
+    /// an attribution lane to check.
+    #[test]
+    fn the_rollout_id_headers_are_the_envelope_pair_rule_headers() {
+        use tapes_capture::envelope::{HARNESS_THREAD_ID_RULES, HarnessThreadRule};
+
+        let pair = HARNESS_THREAD_ID_RULES
+            .iter()
+            .find_map(|rule| match rule {
+                HarnessThreadRule::DivergentPair { thread, session } => Some((*thread, *session)),
+                // `HarnessThreadRule` is `#[non_exhaustive]`, so a rule shape
+                // added on the envelope side does not break this build — it
+                // simply is not the pair rule this assertion is about.
+                _ => None,
+            })
+            .expect("codex is declared as a divergent pair");
+        assert_eq!(
+            [pair.0, pair.1],
+            [CODEX_ROLLOUT_ID_HEADERS[0], CODEX_ROLLOUT_ID_HEADERS[1]],
+        );
+    }
 
     #[test]
     fn read_parses_session_meta_first_row() {
