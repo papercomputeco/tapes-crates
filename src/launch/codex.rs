@@ -619,7 +619,7 @@ mod tests {
             CodexAuth::ApiKey,
             "p",
         );
-        assert_eq!(recipe.harness(), crate::envelope::HARNESS_ID_CODEX);
+        assert_eq!(recipe.harness(), tapes_capture::envelope::HARNESS_ID_CODEX);
         assert_eq!(recipe.harness(), "codex");
     }
 }

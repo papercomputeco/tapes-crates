@@ -62,8 +62,8 @@ use tracing::warn;
 
 use super::request::{CodexRequestIdentity, transcript_matches_child};
 use super::{CodexSessionFile, open_jsonl_sessions_by_pid, session as codex_session};
-use crate::attribution::peer_pid;
 use crate::attribution::pipeline::{AttributionConfig, AttributionState, RequestFacts};
+use tapes_capture::peer_pid;
 
 /// Lifecycle evidence a consumer has collected out of band.
 ///

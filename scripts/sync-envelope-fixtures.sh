@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # sync-envelope-fixtures.sh — refresh the vendored copy of the shared
-# envelope fixture corpus under vendor/tapes-envelope-fixtures/.
+# envelope fixture corpus under crates/tapes-capture/vendor/tapes-envelope-fixtures/.
 #
 # The corpus is authored in the `tapes` repository at fixtures/envelope/
 # and vendored here so this repo's tests need no cross-repo checkout.
@@ -23,7 +23,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-VENDOR_DIR="$REPO_ROOT/vendor/tapes-envelope-fixtures"
+VENDOR_DIR="$REPO_ROOT/crates/tapes-capture/vendor/tapes-envelope-fixtures"
 
 usage() {
     # Reprint this file's leading comment block as the help text: everything
@@ -175,7 +175,7 @@ echo "Upstream SHA: $upstream_sha"
 echo
 echo "Now:"
 echo "  1. Record that SHA in $VENDOR_DIR/SOURCE.md."
-echo "  2. Run: cargo test -p tapes-harness"
+echo "  2. Run: cargo test -p tapes-capture --all-features"
 echo "  3. If the parser changed behaviour, land the fixture bump and the"
 echo "     parser change in the same PR — the corpus is the contract."
 echo "  4. Refresh the OTHER vendored copies from the SAME SHA:"

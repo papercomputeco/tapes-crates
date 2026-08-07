@@ -25,12 +25,12 @@
 //! knowledge every capture proxy needs does live here — see
 //! [`HOP_BY_HOP_HEADERS`] and [`is_hop_by_hop`].
 
+use crate::session::HarnessSession;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use http::{HeaderMap, HeaderName, HeaderValue};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use snafu::{ResultExt, Snafu};
-use tapes_capture::HarnessSession;
 use tracing::warn;
 
 /// Failure modes the envelope helpers can surface.
@@ -110,7 +110,7 @@ pub const HARNESS_ID_UNKNOWN: &str = "unknown";
 
 /// Harness-id attached by pi's capture extension — the one harness that stamps
 /// its own envelope from inside itself. The extension is
-/// [`crate::plugin::PI_GATEWAY_EXTENSION`].
+/// `tapes_harnesses::plugin::PI_GATEWAY_EXTENSION`.
 pub const HARNESS_ID_PI: &str = "pi";
 
 /// Harness-id attached for Claude traffic (User-Agent `claude*`).
@@ -124,7 +124,8 @@ pub const HARNESS_ID_CODEX: &str = "codex";
 /// A distinct harness, not an alias of [`HARNESS_ID_CODEX`]: the app is a
 /// long-lived Codex host a consumer configures rather than launches, and its
 /// session identity arrives through lifecycle hook reports (see
-/// [`crate::attribution::codex_app`]) rather than through the peer-PID lanes.
+/// `tapes_harnesses::attribution::codex_app`) rather than through the peer-PID
+/// lanes.
 /// It shares Codex's wire protocol and rollout tree, so requests still carry
 /// the `thread-id`/`session-id` pair and transcripts still land under
 /// `$CODEX_HOME/sessions` — what differs is who answers "which session is
@@ -135,7 +136,7 @@ pub const HARNESS_ID_CODEX_APP: &str = "codex-app";
 /// Harness-id attached for opencode traffic.
 ///
 /// opencode capture arrives with the standalone client; the constant lives
-/// here with the others so [`crate::harness`] has one place to take every id
+/// here with the others so the harness registry has one place to take every id
 /// from, rather than the launch recipe spelling its own.
 pub const HARNESS_ID_OPENCODE: &str = "opencode";
 
@@ -174,7 +175,7 @@ pub const CLAUDE_THREAD_ID_HEADERS: &[&str] = &["x-claude-code-agent-id"];
 /// root turn, a distinct id on a spawned sub-thread's turn.
 ///
 /// Also read — as an ordered first-present list rather than as a pair — by
-/// [`crate::attribution::codex::session::CODEX_ROLLOUT_ID_HEADERS`], which
+/// `tapes_harnesses::attribution::codex::session::CODEX_ROLLOUT_ID_HEADERS`, which
 /// answers a different question: *which rollout* a request belongs to. Both
 /// take their spelling from here so the two readings cannot drift apart.
 pub const CODEX_THREAD_ID_HEADER: &str = "thread-id";
@@ -189,7 +190,7 @@ pub const CODEX_SESSION_ID_HEADER: &str = "session-id";
 /// session header stays pinned to the root. That pairing is what makes a
 /// request self-describing enough to be joined against a rollout transcript's
 /// own `parent_thread_id` — see
-/// [`crate::attribution::codex::request::CodexRequestIdentity`].
+/// `tapes_harnesses::attribution::codex::request::CodexRequestIdentity`.
 pub const CODEX_PARENT_THREAD_ID_HEADER: &str = "x-codex-parent-thread-id";
 
 /// A JSON restatement of the identity headers, plus the turn id.
@@ -203,7 +204,7 @@ pub const CODEX_PARENT_THREAD_ID_HEADER: &str = "x-codex-parent-thread-id";
 /// The blob additionally carries the user's prompt and other conversation
 /// content. Parsing is therefore an allowlist, exactly as it is for the
 /// desktop app's lifecycle payloads: see
-/// [`crate::attribution::codex_app`].
+/// `tapes_harnesses::attribution::codex_app`.
 pub const CODEX_TURN_METADATA_HEADER: &str = "x-codex-turn-metadata";
 
 /// The legacy, unstructured spelling of a sub-thread's kind.
@@ -212,7 +213,7 @@ pub const CODEX_TURN_METADATA_HEADER: &str = "x-codex-turn-metadata";
 /// structured metadata and the rollout transcript name the *thread source*
 /// (`thread_spawn`). The two are canonicalised to one vocabulary before
 /// comparison — see
-/// [`crate::attribution::codex::request::canonical_subagent_kind`] — so a
+/// `tapes_harnesses::attribution::codex::request::canonical_subagent_kind` — so a
 /// request that says both things does not read as self-contradictory.
 pub const OPENAI_SUBAGENT_HEADER: &str = "x-openai-subagent";
 
@@ -1701,23 +1702,23 @@ mod tests {
         }
     }
 
-    /// The pair rule reads the same header spellings the rollout-id lookup
-    /// does. They answer different questions and must not drift apart.
+    /// Exactly one rule is declared as a divergent pair, and it is the Codex
+    /// one. The harness-side rollout-id lookup reads the same two spellings to
+    /// answer a different question, and asserts agreement from its side —
+    /// which is the only side that can, now that this module cannot name a
+    /// harness's attribution lane.
     #[test]
-    fn the_codex_pair_names_the_rollout_id_headers() {
-        let pair = HARNESS_THREAD_ID_RULES
+    fn exactly_one_rule_is_a_divergent_pair() {
+        let pairs: Vec<(&str, &str)> = HARNESS_THREAD_ID_RULES
             .iter()
-            .find_map(|rule| match rule {
+            .filter_map(|rule| match rule {
                 HarnessThreadRule::DivergentPair { thread, session } => Some((*thread, *session)),
                 HarnessThreadRule::FirstPresent(_) => None,
             })
-            .expect("codex is declared as a divergent pair");
+            .collect();
         assert_eq!(
-            [pair.0, pair.1],
-            [
-                crate::attribution::codex::session::CODEX_ROLLOUT_ID_HEADERS[0],
-                crate::attribution::codex::session::CODEX_ROLLOUT_ID_HEADERS[1],
-            ],
+            pairs,
+            vec![(CODEX_THREAD_ID_HEADER, CODEX_SESSION_ID_HEADER)],
         );
     }
 }

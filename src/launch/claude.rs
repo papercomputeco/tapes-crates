@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn harness_id_matches_the_envelope_value() {
         let recipe = ClaudeRecipe::new(ProxyEndpoint::new("127.0.0.1:1"));
-        assert_eq!(recipe.harness(), crate::envelope::HARNESS_ID_CLAUDE);
+        assert_eq!(recipe.harness(), tapes_capture::envelope::HARNESS_ID_CLAUDE);
         assert_eq!(recipe.harness(), "claude");
     }
 }

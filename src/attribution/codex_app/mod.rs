@@ -2,7 +2,7 @@
 //!
 //! The desktop app is a Codex host a consumer *configures* rather than
 //! launches: provider traffic is redirected by the app's own `config.toml`,
-//! and there is no launched PID for [`crate::attribution::peer_trust`] to
+//! and there is no launched PID for [`tapes_capture::peer_trust`] to
 //! anchor on and no per-launch environment to carry a capture nonce. What the
 //! app does offer is a hook surface — a plugin the user installs and trusts
 //! runs a consumer-supplied command at session, prompt, stop, and subagent
@@ -28,7 +28,7 @@
 //!   named separately.
 //! * `agent_id` is the child thread's own identity — the lifecycle counterpart
 //!   of a sub-thread request's `thread-id` header, the value
-//!   [`crate::envelope::thread_id`] resolves and ingest lands in
+//!   [`tapes_capture::envelope::thread_id`] resolves and ingest lands in
 //!   `meta.thread_id`.
 //! * `turn_id` bounds one root turn; `SubagentStart`/`SubagentStop` carry the
 //!   root turn their child ran under, which is what joins a child's wire

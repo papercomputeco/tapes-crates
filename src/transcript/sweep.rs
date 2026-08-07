@@ -37,7 +37,7 @@
 //! # Recovering the session envelope
 //!
 //! The projects directory name is the cwd with `/` replaced by `-` (see
-//! [`crate::attribution::fork_parent::encode_cwd`]), which is **not reversible**:
+//! [`crate::attribution::claude::fork_parent::encode_cwd`]), which is **not reversible**:
 //! a path containing a literal `-` decodes ambiguously. So sweep does not decode
 //! it. It reads the head of the transcript instead, where the harness records the
 //! true `cwd` and its own `version` on most records — exact values rather than
@@ -235,7 +235,7 @@ mod tests {
     /// harness's `cwd` and `version`, preceded by the preamble records that
     /// carry neither.
     fn write_session(root: &Path, cwd: &str, sid: &str) -> PathBuf {
-        let dir = root.join(crate::attribution::fork_parent::encode_cwd(cwd));
+        let dir = root.join(crate::attribution::claude::fork_parent::encode_cwd(cwd));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("{sid}.jsonl"));
         // Two preamble records carrying neither fact, then a real one — the

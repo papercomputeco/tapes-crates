@@ -334,10 +334,10 @@ pub(crate) const OPENCODE_ARTIFACTS: &[PluginArtifact] = &[OPENCODE_GATEWAY_EXTE
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::envelope::{
+    use crate::harness::{PluginDelivery, REGISTRY};
+    use tapes_capture::envelope::{
         HARNESS_ID_OPENCODE, HARNESS_ID_PI, X_TAPES_HARNESS_ID, X_TAPES_HARNESS_SESSION_ID,
     };
-    use crate::harness::{PluginDelivery, REGISTRY};
 
     /// Every artifact the crate ships, however it is reached from the registry.
     fn all_artifacts() -> Vec<&'static PluginArtifact> {
@@ -724,7 +724,7 @@ mod tests {
 
     /// pi stamps its own envelope, so the header names in the asset are the
     /// crate's `X-Tapes-*` contract expressed in TypeScript. If
-    /// [`crate::envelope`] renames one, ingest would stop recognising pi's
+    /// [`tapes_capture::envelope`] renames one, ingest would stop recognising pi's
     /// self-attribution and its sessions would silently file as `unknown`.
     #[test]
     fn the_pi_extension_stamps_the_envelope_this_crate_defines() {
@@ -843,7 +843,7 @@ mod tests {
 
     /// opencode stamps its own envelope, so the header names in the asset are
     /// the crate's `X-Tapes-*` contract expressed in TypeScript — a rename in
-    /// [`crate::envelope`] must fail here, not silently re-file opencode's
+    /// [`tapes_capture::envelope`] must fail here, not silently re-file opencode's
     /// sessions as `unknown`.
     #[test]
     fn the_opencode_plugin_stamps_the_envelope_this_crate_defines() {

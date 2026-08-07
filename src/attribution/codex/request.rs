@@ -12,7 +12,7 @@
 //! # Two sources, deliberately compared
 //!
 //! Codex sends the identity twice: as individual headers, and again inside the
-//! [`crate::envelope::CODEX_TURN_METADATA_HEADER`] JSON blob. Parsing both and
+//! [`tapes_capture::envelope::CODEX_TURN_METADATA_HEADER`] JSON blob. Parsing both and
 //! *comparing* them is the point. Agreement is corroboration. Disagreement —
 //! [`CodexRequestIdentity::conflicting_metadata`] — means the request is not a
 //! trustworthy account of itself, and every downstream rule that would act on
@@ -40,7 +40,7 @@ use http::HeaderMap;
 use serde::Deserialize;
 
 use super::CodexSessionFile;
-use crate::envelope::{
+use tapes_capture::envelope::{
     CODEX_PARENT_THREAD_ID_HEADER, CODEX_SESSION_ID_HEADER, CODEX_THREAD_ID_HEADER,
     CODEX_TURN_METADATA_HEADER, OPENAI_SUBAGENT_HEADER, TapesAttribution, X_TAPES_METADATA_RAW_CAP,
 };

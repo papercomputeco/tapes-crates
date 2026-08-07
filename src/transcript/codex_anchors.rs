@@ -299,8 +299,8 @@ pub fn parse_subagent_anchors(raw: &[u8]) -> Vec<SubAgentAnchor> {
 /// serves two harnesses: a `codex` CLI session and a Codex desktop-app session
 /// write the same records, and the row must name the same harness its own wire
 /// traffic does or the deriver files the two under different sessions. Callers
-/// pass [`crate::envelope::HARNESS_ID_CODEX`] or
-/// [`crate::envelope::HARNESS_ID_CODEX_APP`].
+/// pass [`tapes_capture::envelope::HARNESS_ID_CODEX`] or
+/// [`tapes_capture::envelope::HARNESS_ID_CODEX_APP`].
 ///
 /// `records` must be [`files::jsonl_to_records`] over `anchor.line`, wrapped in
 /// a [`RawValue`] so the bytes embed verbatim.
@@ -453,7 +453,7 @@ impl CodexAnchorScanner {
 
 /// The rollout lines and payload bytes both capture clients assert against.
 ///
-/// Not feature-gated, unlike [`crate::envelope_fixtures`]: these are inert
+/// Not feature-gated, unlike `tapes_capture::envelope::fixtures`: these are inert
 /// `&'static str`s with no I/O and no panics, and gating them would put a Cargo
 /// feature between two repositories and the one artifact that proves their
 /// anchor rows are byte-identical. The corpus is small on purpose — it pins the
@@ -562,7 +562,7 @@ pub mod fixtures {
 mod tests {
     use super::fixtures::{INTERACTED_LINE, STARTED_LINE};
     use super::*;
-    use crate::envelope::HARNESS_ID_CODEX;
+    use tapes_capture::envelope::HARNESS_ID_CODEX;
 
     fn rollout_at(path: &Path) -> CodexSessionFile {
         fixtures::session_file(path.to_path_buf())
@@ -711,7 +711,11 @@ mod tests {
         // traffic does.
         let rollout = rollout_at(Path::new("/tmp/rollout.jsonl"));
         let anchor = &parse_subagent_anchors(fixtures::ROLLOUT.as_bytes())[0];
-        let got = body(crate::envelope::HARNESS_ID_CODEX_APP, &rollout, anchor);
+        let got = body(
+            tapes_capture::envelope::HARNESS_ID_CODEX_APP,
+            &rollout,
+            anchor,
+        );
         assert!(got.contains(r#""harness_id":"codex-app""#), "got: {got}");
     }
 

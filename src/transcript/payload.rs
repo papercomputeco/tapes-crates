@@ -223,7 +223,7 @@ mod tests {
 
     fn session() -> TranscriptSession {
         TranscriptSession::new(
-            crate::envelope::HARNESS_ID_CLAUDE,
+            tapes_capture::envelope::HARNESS_ID_CLAUDE,
             "0ea3c2cc-fe9d-41ff-aab1-4134ad00c350",
         )
         .with_harness_version(Some("2.1.161".to_owned()))

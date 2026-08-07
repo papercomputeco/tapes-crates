@@ -32,42 +32,24 @@ license = "MIT OR Apache-2.0"
 publish = false
 authors = ["Paper Compute"]
 repository = "https://github.com/papercomputeco/tapes-harnesses"
-description = "Shared, open-source client-side harness knowledge for Tapes capture: launch recipes, session attribution, transcript discovery, and the X-Tapes-* envelope."
+description = "Shared, open-source client-side harness knowledge for Tapes capture: the harness registry, launch recipes, config patch grammars, plugin artifacts, per-harness session attribution, and transcript discovery."
 
 [lib]
 name = "tapes_harnesses"
 path = "src/lib.rs"
 
-[features]
-# Exposes `envelope::fixtures`: the reader for the shared envelope fixture
-# corpus vendored under `vendor/tapes-envelope-fixtures/`, so a consumer can
-# table-test its own envelope composition against the same cases this crate
-# does instead of re-implementing the loader and the case-direction rules.
+# Dependency versions match `platform/paper`, which the attribution modules were
+# extracted from, so paperd's lockfile does not fork when it consumes this crate.
 #
-# Off by default, and it must stay that way. The corpus is only reachable
-# because a git-dependency checkout carries the whole repo, and the reader
-# panics by design on a malformed corpus — neither belongs in a production
-# build. Consumers enable it under `[dev-dependencies]`:
-#
-#     [dev-dependencies]
-#     tapes-harnesses = { git = "...", rev = "...", features = ["envelope-fixtures"] }
-#
-# Feature unification means a normal `[dependencies]` entry for the same crate
-# picks the feature up too — that is fine (the module is inert unless called)
-# and is why it carries no extra dependencies of its own.
-envelope-fixtures = []
-
-# Dependency versions match `platform/paper`, which the attribution and
-# envelope modules were extracted from, so paperd's lockfile does not fork
-# when it consumes this crate.
+# The envelope's encoders (`base64`, `percent-encoding`) and the peer-PID
+# lookup's socket table (`netsock`) are gone from this list: both moved with the
+# code that needed them. A dependency that outlives its module is how a crate
+# quietly keeps the right to grow that module back.
 [dependencies]
 arc-swap = "1"
-base64 = "0.22"
 dirs = "5"
 http = "1"
 libc = "0.2"
-netsock = "0.7"
-percent-encoding = "2"
 serde = { version = "1", features = ["derive"] }
 # `raw_value` lets the transcript payload embed JSONL records verbatim. The
 # ingest server's dedup key is a content hash of the records array, so
@@ -75,10 +57,11 @@ serde = { version = "1", features = ["derive"] }
 # register identical content as a new version on every push.
 serde_json = { version = "1", features = ["raw_value"] }
 snafu = "0.8"
-# The harness-agnostic half of capture: the gateway/nonce protocol, peer-PID
-# lookup, and the peer-trust ancestry check. The edge is one-way by
-# construction — `tapes-capture` cannot name a harness, so it cannot depend
-# back on this crate, and Cargo now enforces what review used to.
+# The harness-agnostic half of capture: the `X-Tapes-*` envelope producer and
+# its harness-id vocabulary, the gateway/nonce protocol, peer-PID lookup, and
+# the peer-trust ancestry check. The edge is one-way by construction —
+# `tapes-capture` cannot name a harness, so it cannot depend back on this crate,
+# and Cargo now enforces what review used to.
 tapes-capture = { path = "crates/tapes-capture", version = "0.1.0" }
 time = { version = "0.3", features = ["formatting", "parsing", "serde", "macros"] }
 tokio = { version = "1", features = ["rt", "sync", "time"] }

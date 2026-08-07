@@ -15,6 +15,14 @@
 //!
 //! # What is here
 //!
+//! * [`envelope`] — the `X-Tapes-*` request-header contract: the producer that
+//!   turns a resolved session identity into the on-wire header set, the header
+//!   names and caps that set obeys, and the vocabulary of harness ids it
+//!   stamps. It is a wire format, and a wire format that changed when a harness
+//!   was added would not be one. Every id it can carry is declared here, and
+//!   the harness registry takes its ids from this list rather than restating
+//!   them — that direction is the point, not an accident: the envelope is the
+//!   contract a harness declaration must be consistent *with*.
 //! * [`gateway`] — the capture-gateway environment contract and the launch-nonce
 //!   protocol: the variables that name the proxy, the per-launch secret, the
 //!   header that echoes it back, and the constant-time match. This is the
@@ -31,10 +39,11 @@
 //!   the boundary rather than a primitive: stating what is needed, so nothing
 //!   here has to import a supplier of it.
 //!
-//! Together the middle two are the question every capture client asks before it
-//! believes anything a connection tells it about itself, and neither has ever
-//! needed a harness id to answer it.
+//! [`peer_pid`] and [`peer_trust`] together are the question every capture
+//! client asks before it believes anything a connection tells it about itself,
+//! and neither has ever needed a harness id to answer it.
 
+pub mod envelope;
 pub mod gateway;
 pub mod peer_pid;
 pub mod peer_trust;

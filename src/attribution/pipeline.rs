@@ -82,12 +82,13 @@ use std::sync::{Mutex, PoisonError};
 
 use tokio::time::{Duration, Instant};
 
+use super::Attribution;
 use super::claude::{ClaudeSessionFile, WatcherSnapshotHandle, fork_parent};
 use super::codex::request::{self as codex_request, CodexRequestIdentity};
 use super::codex::select::{CodexHookEvidence, CodexSelectionEvidence};
 use super::codex::{CodexSessionFile, CodexWatcherSnapshotHandle, select as codex_select};
-use super::{Attribution, peer_pid};
-use crate::envelope::{HARNESS_ID_CLAUDE, HARNESS_ID_CODEX_APP, TapesAttribution};
+use tapes_capture::envelope::{HARNESS_ID_CLAUDE, HARNESS_ID_CODEX_APP, TapesAttribution};
+use tapes_capture::peer_pid;
 
 /// Default bound on the Claude-lane wait for a freshly-created session file.
 ///
@@ -512,22 +513,27 @@ impl Attributed {
     /// Overwriting it with `harness_id: unknown` would discard a correct
     /// attribution and silently re-file those sessions. Any stale partial
     /// envelope is still cleared.
-    pub fn stamp(&self, headers: &mut http::HeaderMap) -> Result<(), crate::envelope::HeaderError> {
+    pub fn stamp(
+        &self,
+        headers: &mut http::HeaderMap,
+    ) -> Result<(), tapes_capture::envelope::HeaderError> {
         match self {
             // No assertion at all, so nothing is written — see the module docs
             // on the miss cases.
             Self::Undecided => Ok(()),
-            Self::UnknownHarness => crate::envelope::inject_unattributed_envelope(headers),
+            Self::UnknownHarness => tapes_capture::envelope::inject_unattributed_envelope(headers),
             Self::Claude {
                 session,
                 parent_session_id,
-            } => crate::envelope::inject_session_envelope(
+            } => tapes_capture::envelope::inject_session_envelope(
                 headers,
                 session,
                 parent_session_id.as_deref(),
             ),
             Self::Codex { .. } => match self.envelope() {
-                Some(envelope) => crate::envelope::inject_tapes_attribution(headers, envelope),
+                Some(envelope) => {
+                    tapes_capture::envelope::inject_tapes_attribution(headers, envelope)
+                }
                 None => Ok(()),
             },
         }
@@ -756,11 +762,11 @@ mod tests {
     use super::*;
     use crate::attribution::codex::session as codex_session;
     use crate::attribution::{CodexWatcherSnapshot, WatcherSnapshot};
-    use crate::envelope::{HARNESS_ID_CLAUDE, HARNESS_ID_CODEX, HARNESS_ID_UNKNOWN};
     use arc_swap::ArcSwap;
     use std::net::{IpAddr, Ipv4Addr};
     use std::path::PathBuf;
     use std::sync::Arc;
+    use tapes_capture::envelope::{HARNESS_ID_CLAUDE, HARNESS_ID_CODEX, HARNESS_ID_UNKNOWN};
 
     fn filter() -> CodexProviderFilter {
         CodexProviderFilter::new("paper-openai")
@@ -1028,7 +1034,10 @@ mod tests {
             codex_app: true,
         };
         let envelope = attributed.envelope().unwrap();
-        assert_eq!(envelope.harness_id, crate::envelope::HARNESS_ID_CODEX_APP);
+        assert_eq!(
+            envelope.harness_id,
+            tapes_capture::envelope::HARNESS_ID_CODEX_APP
+        );
         assert_eq!(envelope.session_id.as_deref(), Some("sid-app"));
     }
 

@@ -2,7 +2,7 @@
 //!
 //! The Claude harness writes one of these files per active `claude`
 //! process. paperd reads them to map a peer PID (from
-//! [`crate::attribution::peer_pid::lookup`]) into the session-identifying metadata
+//! [`tapes_capture::peer_pid::lookup`]) into the session-identifying metadata
 //! that goes onto the outbound `X-Tapes-*` envelope.
 //!
 //! Schema captured 2026-05-20 from a live `claude` install. Fields
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tapes_capture::HarnessSession;
 use tracing::warn;
 
-use crate::envelope::HARNESS_ID_CLAUDE;
+use tapes_capture::envelope::HARNESS_ID_CLAUDE;
 
 /// Decoded `~/.claude/sessions/<pid>.json`. The on-disk keys are
 /// camelCase; `rename_all` handles the conversion so the Rust field
