@@ -22,8 +22,14 @@
 //!   receives. The app shares Codex's wire protocol and rollout tree but is
 //!   configured rather than launched, so its identity evidence arrives at
 //!   lifecycle boundaries instead of through a peer-PID lookup.
-//! * [`peer_pid`] — harness-agnostic. Maps an accepted loopback connection to
-//!   one of a candidate PID set via per-OS kernel APIs; both lanes use it.
+//! * [`peer_pid`] and [`peer_trust`] — harness-agnostic, and therefore no
+//!   longer defined here: they live in `tapes-capture` and are re-exported at
+//!   these paths. `peer_pid` maps an accepted loopback connection to one of a
+//!   candidate PID set via per-OS kernel APIs; `peer_trust` walks the process
+//!   tree to decide whether that peer is the launched harness or one of its
+//!   descendants. Both lanes use them, and so would a lane for a harness that
+//!   does not exist yet — which is exactly why neither belongs in a crate
+//!   whose contents change when a harness is added.
 //! * [`pipeline`] — the composition: [`attribute`] takes one request's facts
 //!   and returns one [`Attributed`] outcome, driving the primitives in the
 //!   order that was validated against real traffic. Capture clients call this;
@@ -47,9 +53,14 @@
 pub mod claude;
 pub mod codex;
 pub mod codex_app;
-pub mod peer_pid;
-pub mod peer_trust;
 pub mod pipeline;
+
+// `peer_pid` and `peer_trust` now live in `tapes-capture`: neither has ever
+// needed a harness id to answer its question, so neither changes when a harness
+// is added. They are re-exported at their original paths because a consumer
+// pinning this crate by git rev should not have to move in lockstep with an
+// internal boundary; the canonical spelling is `tapes_capture::…`.
+pub use tapes_capture::{peer_pid, peer_trust};
 
 // --- compatibility aliases ---------------------------------------------
 //

@@ -5,14 +5,23 @@
 # available on crates.io (checked 2026-07-29), and `tapes-harness` should be
 # claimed as a stub redirect at the same time.
 
-# This crate is its own workspace root. The empty table is load-bearing: it
-# stops Cargo from walking up and adopting whatever workspace happens to own
-# the directory this repo was checked out into — a real case, since the crate
-# is vendored as a member of the Paper forest, whose root manifest is an
-# unrelated workspace. Being adopted would also silently disable the
-# `[patch.crates-io]` block below, because Cargo only honours `patch` at a
-# workspace root, and the libproc pin there is required to cross-compile.
+# This manifest is the workspace root. Declaring a workspace here is
+# load-bearing even beyond the members below: it stops Cargo from walking up and
+# adopting whatever workspace happens to own the directory this repo was checked
+# out into — a real case, since these crates are vendored into a parent
+# repository whose root manifest is an unrelated workspace. Being adopted would
+# also silently disable the `[patch.crates-io]` block below, because Cargo only
+# honours `patch` at a workspace root, and the libproc pin there is required to
+# cross-compile.
+#
+# `default-members` names every crate, root package included, so a bare
+# `cargo test` / `cargo clippy` at the root covers the whole repository. Without
+# it Cargo selects only the package owning the root manifest, and a member's
+# tests would stop running the moment they were moved into one — silently, and
+# looking exactly like a passing run.
 [workspace]
+members = ["crates/tapes-capture", "cassette-client"]
+default-members = [".", "crates/tapes-capture", "cassette-client"]
 
 [package]
 name = "tapes-harnesses"
@@ -66,6 +75,11 @@ serde = { version = "1", features = ["derive"] }
 # register identical content as a new version on every push.
 serde_json = { version = "1", features = ["raw_value"] }
 snafu = "0.8"
+# The harness-agnostic half of capture: the gateway/nonce protocol, peer-PID
+# lookup, and the peer-trust ancestry check. The edge is one-way by
+# construction — `tapes-capture` cannot name a harness, so it cannot depend
+# back on this crate, and Cargo now enforces what review used to.
+tapes-capture = { path = "crates/tapes-capture", version = "0.1.0" }
 time = { version = "0.3", features = ["formatting", "parsing", "serde", "macros"] }
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 # Format-preserving TOML editing for the codex config.toml patch grammar. The
