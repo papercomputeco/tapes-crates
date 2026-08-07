@@ -87,7 +87,9 @@ mod slots;
 // rev is not forced to move in lockstep; the canonical spelling is
 // `tapes_capture::gateway::…`.
 pub use tapes_capture::gateway::{
-    GATEWAY_NONCE_ENV, GATEWAY_NONCE_HEADER, GATEWAY_SCHEMA_ENV, GATEWAY_URL_ENV, nonce_matches,
+    GATEWAY_NONCE_ENV, GATEWAY_NONCE_HEADER, GATEWAY_PROVIDER_ROUTE_PREFIX,
+    GATEWAY_PROVIDER_ROUTES_ENV, GATEWAY_PROVIDER_ROUTES_ON, GATEWAY_SCHEMA_ENV, GATEWAY_URL_ENV,
+    nonce_matches, provider_route, split_provider_route,
 };
 
 /// One file a consumer installs into a harness.

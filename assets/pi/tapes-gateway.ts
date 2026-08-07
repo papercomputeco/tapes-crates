@@ -42,6 +42,25 @@ const GATEWAY_URL_ENV = "TAPES_GATEWAY_URL";
 const GATEWAY_SCHEMA_ENV = "TAPES_GATEWAY_SCHEMA";
 const GATEWAY_NONCE_ENV = "TAPES_GATEWAY_NONCE";
 
+// Whether the proxy serves each captured provider on its own route.
+//
+// This file registers three providers and a proxy may only be able to carry
+// one. When it can carry one, all three still point at it, and a session on
+// either of the other two is forwarded to a host that has never heard of the
+// route: the request fails outright, and the failure is attributed to the model
+// rather than to capture. The provider is knowable here and nowhere downstream,
+// so when the launcher says its proxy routes per provider, each registration
+// says which provider it is.
+//
+// Unset or empty is the single-upstream shape, which is what a launcher that
+// predates this variable asks for by saying nothing — its requests are
+// unchanged, down to the path.
+const GATEWAY_PROVIDER_ROUTES_ENV = "TAPES_GATEWAY_PROVIDER_ROUTES";
+
+// Where a labelled request puts the provider name. Underscore-led so it cannot
+// collide with a path a provider's own API serves.
+const PROVIDER_ROUTE_PREFIX = "/_tapes/provider";
+
 // The launching product's own presentation, carried the same way — set by the
 // client that launched this session, for the length of that session.
 //
@@ -107,6 +126,20 @@ export default function (pi: ExtensionAPI) {
 
   const baseUrl = normalizeBaseUrl(rawBaseUrl);
 
+  // Any non-empty value asks for per-provider routes; unset and empty are the
+  // single-upstream shape. Deliberately not a parse of `true`/`1`: a launcher
+  // and an installed extension disagreeing about which spellings count is the
+  // kind of skew that shows up as a dead session, and "did the launcher set it"
+  // is the only question with one answer.
+  const providerRoutes = !!process.env[GATEWAY_PROVIDER_ROUTES_ENV];
+
+  // The base URL a provider's requests are built from. With per-provider routes
+  // that is the proxy plus this provider's label, which is the only place the
+  // provider is still known: pi appends its own path to whatever base a
+  // provider was registered with, and sends no header naming it.
+  const providerBaseUrl = (provider: string): string =>
+    providerRoutes ? `${baseUrl}${PROVIDER_ROUTE_PREFIX}/${provider}` : baseUrl;
+
   // Presentation, resolved once per session from the launch's environment.
   // Empty is treated as unset for the two that have meaningful defaults; an
   // explicitly empty suffix is a real value and stays empty.
@@ -133,7 +166,8 @@ export default function (pi: ExtensionAPI) {
     };
 
     for (const provider of CAPTURED_PROVIDERS) {
-      pi.registerProvider(provider, Object.keys(headers).length > 0 ? { baseUrl, headers } : { baseUrl });
+      const url = providerBaseUrl(provider);
+      pi.registerProvider(provider, Object.keys(headers).length > 0 ? { baseUrl: url, headers } : { baseUrl: url });
     }
   };
 
@@ -158,7 +192,11 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    if (schemaProvider && isSchemaProvider(selectedProvider) && selectedProvider !== schemaProvider) {
+    // The active schema only constrains what can be captured while one upstream
+    // serves everything. With per-provider routes the proxy carries all three,
+    // so warning about the "wrong" one would tell a user their working session
+    // is broken.
+    if (!providerRoutes && schemaProvider && isSchemaProvider(selectedProvider) && selectedProvider !== schemaProvider) {
       ctx.ui.notify(
         `The capture proxy is routing the ${schemaProvider} schema; the selected model's provider is ` +
           `${selectedProvider}. ${schemaRemedy}`,
