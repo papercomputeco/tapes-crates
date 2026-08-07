@@ -650,7 +650,10 @@ mod tests {
     }
 
     fn config() -> AttributionConfig {
-        AttributionConfig::new(CodexProviderFilter::new("paper-openai"))
+        AttributionConfig::new(
+            CodexProviderFilter::new("paper-openai"),
+            crate::harness::RegistryUserAgents,
+        )
     }
 
     fn state_with(sessions: Vec<CodexSessionFile>) -> AttributionState {

@@ -259,9 +259,12 @@ An empty list is the common case: `CODEX`, `OPENCODE`, and `PI` all carry none.
 
 ### `user_agent`
 
-The routing rule `for_user_agent()` applies, and the gate on the Claude
-attribution lane — `ua_matches_claude()` in `src/attribution/pipeline.rs` is a
-registry lookup rather than a hand-written prefix test.
+The routing rule `for_user_agent()` applies, and through it the gate on the
+Claude attribution lane. The pipeline does not read this field: it asks an
+injected `UserAgentHarness` resolver which harness a `User-Agent` names, and
+`RegistryUserAgents` — the implementation a consumer normally passes — answers
+from `for_user_agent()`. So declaring the rule here is the whole edit; there is
+no second prefix test in the pipeline to keep in step.
 
 `UserAgentMatch::Prefix` is a **prefix, not a substring**: `some-claude-like`
 must not be claimed by `claude`. Because `for_user_agent()` returns the first

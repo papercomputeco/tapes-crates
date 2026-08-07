@@ -96,7 +96,7 @@ pub use peer_trust::{
 };
 pub use pipeline::{
     Attributed, AttributionConfig, AttributionOutcome, AttributionState, CodexProviderFilter,
-    ForkParentCache, RequestFacts, attribute, attribute_with_evidence, ua_matches_claude,
+    ForkParentCache, RequestFacts, UserAgentHarness, attribute, attribute_with_evidence,
 };
 pub use watcher::{Snapshot as WatcherSnapshotHandle, WatcherSnapshot, spawn as spawn_watcher};
 

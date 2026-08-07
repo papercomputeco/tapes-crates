@@ -14,7 +14,7 @@
 //! A request arrives on exactly one of two lanes, and the consumer decides
 //! which by setting [`RequestFacts::codex_route`]:
 //!
-//! * **Claude lane.** Gate on a `claude*` User-Agent, then poll the watcher
+//! * **Claude lane.** Gate on the User-Agent resolving to Claude, then poll the watcher
 //!   snapshot until the peer PID resolves to a parsed
 //!   `~/.claude/sessions/<pid>.json`. On a hit, recover fork-parent lineage
 //!   (cached per session id). A miss yields [`Attributed::UnknownHarness`].
@@ -64,7 +64,12 @@
 //! * **lifecycle-hook evidence** ([`RequestFacts::codex_hook_evidence`]), when
 //!   the consumer has a hook lane at all. It is injected as a trait rather
 //!   than forked into a second algorithm: a consumer without one passes `None`
-//!   and the hook rungs simply never fire.
+//!   and the hook rungs simply never fire;
+//! * the **User-Agent → harness resolver** ([`UserAgentHarness`]), which
+//!   answers "which harness sent this?" for the lane gate. Which User-Agents
+//!   name which harness is a registry declaration that changes every time a
+//!   harness is added — precisely what this module must not hold, or the
+//!   composition becomes a second place a harness has to be taught about.
 //!
 //! The provider filter is why [`CodexProviderFilter`] exists rather than a
 //! hardcoded `paper-openai` test: a standalone `tapesctl` names its provider
@@ -82,7 +87,7 @@ use super::codex::request::{self as codex_request, CodexRequestIdentity};
 use super::codex::select::{CodexHookEvidence, CodexSelectionEvidence};
 use super::codex::{CodexSessionFile, CodexWatcherSnapshotHandle, select as codex_select};
 use super::{Attribution, peer_pid};
-use crate::envelope::{HARNESS_ID_CODEX_APP, TapesAttribution};
+use crate::envelope::{HARNESS_ID_CLAUDE, HARNESS_ID_CODEX_APP, TapesAttribution};
 
 /// Default bound on the Claude-lane wait for a freshly-created session file.
 ///
@@ -150,10 +155,40 @@ impl CodexProviderFilter {
     }
 }
 
+/// Resolves a request's `User-Agent` to the harness it identifies.
+///
+/// The pipeline needs an answer to "which harness sent this?" before it can
+/// pick a lane. It used to get one by calling a named harness's match rule
+/// directly, which made a module that describes itself as harness-agnostic
+/// depend on the registry — and meant that teaching the gate about a second
+/// User-Agent-identified harness would be an edit *here*, in the composition,
+/// rather than in the one place a harness is declared.
+///
+/// Injected instead, for the same reason [`CodexHookEvidence`] is: the
+/// question belongs to the pipeline, the answer belongs to whoever knows what
+/// harnesses exist. A registry-backed implementation ships with the harness
+/// registry; a consumer with its own idea of which agents it captures can
+/// supply another without forking the algorithm.
+///
+/// Returns the harness's canonical id — the same value the envelope stamps as
+/// `X-Tapes-Harness-Id` — so the pipeline can compare an answer against the
+/// vocabulary it already speaks, rather than holding a registry type.
+pub trait UserAgentHarness: std::fmt::Debug + Send + Sync {
+    /// The id of the harness `user_agent` identifies.
+    ///
+    /// `None` for a User-Agent no harness claims — a loopback `curl`, a health
+    /// probe, or a harness selected by other evidence entirely. It must never
+    /// be a substring match: a harness whose rule claimed `some-claude-like`
+    /// would silently divert another agent's traffic into its lane.
+    fn harness_id(&self, user_agent: &str) -> Option<&'static str>;
+}
+
 /// Timeouts and per-consumer identifiers the pipeline needs.
 ///
-/// The timeouts default to the values paperd runs in production. The provider
-/// filter has no default on purpose — see [`CodexProviderFilter`].
+/// The timeouts default to the values a production capture client runs. The
+/// provider filter has no default on purpose — see [`CodexProviderFilter`] —
+/// and neither does the User-Agent resolver, because a default would have to
+/// name the harnesses this module is trying not to know about.
 #[derive(Debug, Clone)]
 pub struct AttributionConfig {
     /// Bound on the Claude-lane wait.
@@ -168,12 +203,21 @@ pub struct AttributionConfig {
     pub codex_recent_window: time::Duration,
     /// Which Codex provider ids are ours.
     pub codex_provider: CodexProviderFilter,
+    /// How a `User-Agent` resolves to a harness id.
+    ///
+    /// Shared rather than owned so the config stays cheap to clone per
+    /// request; resolution is a pure read.
+    pub user_agents: std::sync::Arc<dyn UserAgentHarness>,
 }
 
 impl AttributionConfig {
-    /// Config with the production timeouts and the supplied provider filter.
+    /// Config with the production timeouts, the supplied provider filter, and
+    /// the supplied User-Agent resolver.
     #[must_use]
-    pub fn new(codex_provider: CodexProviderFilter) -> Self {
+    pub fn new(
+        codex_provider: CodexProviderFilter,
+        user_agents: impl UserAgentHarness + 'static,
+    ) -> Self {
         Self {
             claude_timeout: DEFAULT_CLAUDE_TIMEOUT,
             claude_poll: DEFAULT_CLAUDE_POLL,
@@ -181,6 +225,7 @@ impl AttributionConfig {
             codex_poll: DEFAULT_CODEX_POLL,
             codex_recent_window: DEFAULT_CODEX_RECENT_WINDOW,
             codex_provider,
+            user_agents: std::sync::Arc::new(user_agents),
         }
     }
 }
@@ -559,21 +604,6 @@ pub struct AttributionOutcome {
     pub codex_evidence: Option<CodexSelectionEvidence>,
 }
 
-/// Case-insensitive `claude*` prefix check for the User-Agent gate.
-///
-/// `Claude-CLI`, `claude-cli`, `CLAUDE/2.1`, and any future Anthropic-side
-/// casing all qualify; non-Claude callers (curl health probes, OpenAI SDKs) do
-/// not. It is a **prefix** test, not a substring test — `some-claude-like` must
-/// not match.
-///
-/// The rule itself is declared once in [`crate::harness::CLAUDE`]; this stays
-/// as the named entry point the lane and its tests read, and so that a
-/// consumer already calling it keeps working.
-#[must_use]
-pub fn ua_matches_claude(ua: &str) -> bool {
-    crate::harness::CLAUDE.matches_user_agent(ua)
-}
-
 /// Attribute one request.
 ///
 /// Dispatches to the Codex lane when the consumer says the request is Codex
@@ -649,12 +679,23 @@ pub async fn attribute_with_evidence(
 }
 
 /// Claude lane: User-Agent gate, then a bounded poll for the session file.
+///
+/// The gate asks the injected resolver which harness the User-Agent names and
+/// takes the lane only when the answer is the harness whose sessions this
+/// lane's watcher indexes. Naming that harness here is not the dependency the
+/// inversion removed: [`HARNESS_ID_CLAUDE`] is envelope vocabulary, shared by
+/// every capture client, whereas the *rule* for matching it is a registry
+/// declaration that changes whenever a harness is added or its User-Agent
+/// changes. The lane keeps the former and no longer holds the latter.
 async fn attribute_claude(
     state: &AttributionState,
     config: &AttributionConfig,
     facts: RequestFacts<'_>,
 ) -> Option<ClaudeSessionFile> {
-    if !facts.user_agent.is_some_and(ua_matches_claude) {
+    let harness = facts
+        .user_agent
+        .and_then(|ua| config.user_agents.harness_id(ua));
+    if harness != Some(HARNESS_ID_CLAUDE) {
         return None;
     }
     let peer = facts.peer?;
@@ -726,7 +767,7 @@ mod tests {
     }
 
     fn config() -> AttributionConfig {
-        AttributionConfig::new(filter())
+        AttributionConfig::new(filter(), crate::harness::RegistryUserAgents)
     }
 
     fn state_with(claude: WatcherSnapshot, codex: CodexWatcherSnapshot) -> AttributionState {
@@ -772,18 +813,58 @@ mod tests {
 
     // --- the UA gate ----------------------------------------------------
 
+    /// The gate as the lane sees it: a User-Agent reaches the Claude lane only
+    /// when the injected resolver names Claude. Driven through the real
+    /// registry resolver, so this covers the wiring as well as the rule — the
+    /// rule itself is pinned in `crate::harness`.
     #[test]
-    fn ua_gate_matches_any_casing_but_only_as_a_prefix() {
-        assert!(ua_matches_claude("claude-cli/2.1.145"));
-        // The exact spelling Anthropic shipped on at least one beta build.
-        assert!(ua_matches_claude("Claude-CLI/2.1.145"));
-        assert!(ua_matches_claude("CLAUDE/0.0"));
+    fn the_lane_gate_matches_any_casing_but_only_as_a_prefix() {
+        let claims = |ua: &str| config().user_agents.harness_id(ua) == Some(HARNESS_ID_CLAUDE);
 
-        assert!(!ua_matches_claude("curl/8.0"));
-        assert!(!ua_matches_claude("OpenAI/python"));
-        assert!(!ua_matches_claude(""));
+        assert!(claims("claude-cli/2.1.145"));
+        // The exact spelling Anthropic shipped on at least one beta build.
+        assert!(claims("Claude-CLI/2.1.145"));
+        assert!(claims("CLAUDE/0.0"));
+
+        assert!(!claims("curl/8.0"));
+        assert!(!claims("OpenAI/python"));
+        assert!(!claims(""));
         // Substring matching would be wrong — we want a prefix.
-        assert!(!ua_matches_claude("some-claude-like"));
+        assert!(!claims("some-claude-like"));
+    }
+
+    /// A resolver that names a *different* harness must not open the Claude
+    /// lane. The gate compares the resolved id rather than merely checking
+    /// that something resolved, and this is the difference between the two:
+    /// with a substring-ish "did anything match" gate, another agent's traffic
+    /// would be handed to Claude's session-file watcher.
+    #[tokio::test(start_paused = true)]
+    async fn a_user_agent_naming_another_harness_does_not_take_the_claude_lane() {
+        #[derive(Debug)]
+        struct AlwaysCodex;
+        impl UserAgentHarness for AlwaysCodex {
+            fn harness_id(&self, _user_agent: &str) -> Option<&'static str> {
+                Some(HARNESS_ID_CODEX)
+            }
+        }
+
+        let state = empty_state();
+        let config = AttributionConfig::new(filter(), AlwaysCodex);
+        let facts = RequestFacts {
+            peer: Some(peer()),
+            user_agent: Some("claude-cli/2.1.145"),
+            ..RequestFacts::default()
+        };
+
+        // Returning immediately is the assertion: a lane it may not take is
+        // not a lane it waits on.
+        let got = tokio::time::timeout(
+            std::time::Duration::from_millis(1),
+            attribute(&state, &config, facts),
+        )
+        .await
+        .expect("a foreign harness id must not open the claude lane");
+        assert_eq!(got, Attributed::UnknownHarness);
     }
 
     #[tokio::test(start_paused = true)]

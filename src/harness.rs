@@ -441,6 +441,27 @@ pub fn for_user_agent(ua: &str) -> Option<&'static Harness> {
         .find(|harness| harness.matches_user_agent(ua))
 }
 
+/// The registry, as the attribution pipeline's User-Agent resolver.
+///
+/// [`crate::attribution::pipeline`] needs to know which harness a request's
+/// `User-Agent` names, and used to answer that by reaching into [`CLAUDE`]
+/// directly — a framework holding one harness's declaration, and a second
+/// place to edit when a harness gains a User-Agent rule. The pipeline now
+/// states the question as a trait and this is the registry's answer to it, so
+/// the rules live in exactly one place: the [`Harness`] declarations above.
+///
+/// A consumer wanting to capture fewer agents than the registry knows about
+/// implements the same trait over its own subset; the algorithm does not fork.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RegistryUserAgents;
+
+impl crate::attribution::pipeline::UserAgentHarness for RegistryUserAgents {
+    fn harness_id(&self, user_agent: &str) -> Option<&'static str> {
+        for_user_agent(user_agent).map(Harness::id)
+    }
+}
+
 /// The harnesses a consumer can launch, in registry order.
 ///
 /// This is the list each consumer's `start` command should offer, derived
