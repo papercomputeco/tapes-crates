@@ -4,15 +4,15 @@
 # `publish` stays false until the first deliberate crates.io release; flip it
 # together with that release PR, alongside the sibling `tapes-harnesses` crate.
 
-# This crate is its own workspace root. The empty table is load-bearing: it
-# stops Cargo from walking up and adopting whatever workspace happens to own
-# the directory this repo was checked out into — a real case, since the crate
-# is vendored as a member of the Paper forest, whose root manifest is an
-# unrelated workspace. It also keeps this package a *sibling* of the
-# repository-root `tapes-harnesses` crate rather than a member of it, so each
-# is consumed by git pin independently.
-[workspace]
-
+# A member of the repository-root workspace. It used to declare an empty
+# `[workspace]` of its own, which made it a sibling package that every gate had
+# to be pointed at by hand — and one that was therefore easy to leave out of a
+# gate entirely. Membership is what puts it in the same `cargo test` and
+# `cargo clippy` selection as the crates it ships beside.
+#
+# Being a member changes nothing for consumers: a git pin resolves a package by
+# name anywhere in the repository, so this crate is still taken independently of
+# its siblings.
 [package]
 name = "tapes-cassette-client"
 version = "0.1.0"

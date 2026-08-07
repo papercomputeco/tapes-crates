@@ -154,8 +154,11 @@ synthetic one. Which strategy applies is a property of the agent, not a choice:
 - **`None`** — no client-side attribution yet.
 
 New attribution code goes in `src/attribution/<harness>/`, grouped by harness.
-Anything genuinely harness-agnostic stays at the root of `src/attribution/`
-next to `peer_pid`, which both existing lanes share.
+Anything genuinely harness-agnostic does not belong in this crate at all: it
+goes to `tapes-capture`, beside `peer_pid` and `peer_trust`, which both
+existing lanes share. The test is whether adding one more harness would change
+it — if not, it is capture knowledge, and the dependency edge only runs this
+way, so putting it here is what makes it unreachable from the other side.
 
 The composition — the sequence that turns one request's facts into one outcome
 — lives in `src/attribution/pipeline.rs` and stays there. It exists precisely so

@@ -43,6 +43,19 @@
 //! `vendor/tapes-envelope-fixtures/`, which the Go parsers table-test against
 //! too, so producer and parser cannot drift silently.
 //!
+//! # What is *not* here
+//!
+//! Everything above changes when a harness is added. The parts of capture that
+//! do not — the capture-gateway environment contract and launch-nonce protocol,
+//! peer-PID lookup, and the peer-trust ancestry check — live in
+//! [`tapes_capture`], which this crate depends on. The edge runs one way by
+//! construction: a harness module may reach for a capture primitive, and
+//! nothing over there can reach back, because the moment a capture primitive
+//! knows a harness's name it stops being the thing every harness shares.
+//!
+//! Their previous homes here re-export them unchanged, so a consumer pinning
+//! this crate by git rev is not forced to move in lockstep with the boundary.
+//!
 //! [`launch`] is extracted from paper's `cli/start.rs` per-agent env/config
 //! injection, with the Go `tapes start` opencode/codex knowledge folded in —
 //! including opencode, which paper never supported. Its recipes are pure: they
