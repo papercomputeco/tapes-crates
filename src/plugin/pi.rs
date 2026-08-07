@@ -1,178 +1,85 @@
-//! pi's capture extension, as a template.
+//! pi's capture extension: one installed file, branded at runtime.
 //!
 //! pi has no base-URL environment knob, so capture requires code running
 //! *inside* the harness: an extension that registers pi's providers against the
 //! capture proxy and stamps the `X-Tapes-*` envelope pi's turns are attributed
 //! by. That extension is harness knowledge — written against pi's extension API
-//! — and so it lives here.
+//! — and so it lives here, as [`super::PI_GATEWAY_EXTENSION`].
 //!
-//! # Why a template and not just a file
+//! # Why exactly one file
 //!
-//! [`super::PI_GATEWAY_EXTENSION`] ships the extension as a fixed file, and for
-//! a consumer whose product has nothing to say that is the whole story. But a
-//! consumer *does* legitimately differ in three presentational ways: what its
-//! status entry is called, what it tells a user to run when the proxy is
-//! fronting the wrong schema, and — for a product that runs one long-lived
-//! proxy at a known address — where to point when nothing set
-//! [`super::GATEWAY_URL_ENV`]. Before this module those differences were a
-//! forked copy of the whole extension in a consumer's repository, and the fork
-//! bit exactly as forks do: the nonce echo-and-delete hardening had to be
-//! hand-mirrored into it, and its assertions hand-mirrored alongside.
+//! pi auto-discovers global extensions by loading *every* file in
+//! `~/.pi/agent/extensions/`, into one process. That makes the number of
+//! installed copies a correctness property rather than a packaging detail.
 //!
-//! So the capture logic is written once, in `assets/pi/gateway.template.ts`,
-//! and the branded strings are slots a consumer fills through
-//! [`render_extension`]. A hardening lands in the template and every consumer
-//! regenerates. This is the same bargain [`super::codex_app`] strikes, arrived
-//! at from the opposite direction: there the consumer's part could not be
-//! removed, here it could not be *shared*.
+//! Two copies contend over everything the file touches. The nonce read is a
+//! read-and-delete, so the second copy to load finds nothing; worse, it
+//! registers the same three providers anyway, without the echo, and the last
+//! registration wins. The proxy then cannot tell a real launch from a forged
+//! envelope, and both products' sessions file as `unknown` with no error
+//! anywhere. Coordinating two copies — per-product variable names, a gate that
+//! stands one of them down — manages that collision. Installing one file to one
+//! path removes the second reader, and a collision needs two.
 //!
-//! # What a slot may be
+//! So the asset is not rendered per consumer. Every client writes the same
+//! bytes to the same path, which is the property the opencode plugin has always
+//! had for free and the reason it was never exposed to this bug.
 //!
-//! Branding and defaults. Never behaviour.
+//! # What a product may still say
 //!
-//! The template declares every slot as the entire string literal of a `const`
-//! at the top of the file, and reads slots nowhere else. A rendered value is
-//! therefore data in a string, and cannot reach the capture-nonce handling — or
-//! anything else — however it is spelled. That is a structural property, and
-//! the test `a_slot_reaches_nothing_but_its_own_declaration` pins it by
-//! rendering deliberately hostile values and checking that only the slot
-//! declarations moved.
+//! Its status entry's name, and what it tells a user to run when the proxy is
+//! fronting the wrong schema. Those are real differences and shipping different
+//! *bytes* was only ever one way to express them; the extension reads them from
+//! the environment of the launch instead — [`GATEWAY_LABEL_ENV`],
+//! [`GATEWAY_LABEL_SUFFIX_ENV`], [`GATEWAY_REMEDY_ENV`] — set by whichever
+//! client launched the session, for the length of that session.
 //!
-//! The env, nonce, and schema contract stays crate-owned in full. A consumer
-//! that wanted the extension to read a different variable, or to trust an
-//! envelope on different terms, is not asking for a slot — it is asking for a
-//! fork, and the answer is no.
+//! Runtime branding keeps the containment a rendered slot used to buy, and
+//! keeps it more cheaply: a value read from the environment is a string in a
+//! variable, so it cannot be syntax however it is spelled. It reaches
+//! `setStatus` and `notify` and nothing else — never the nonce handling, the
+//! envelope, or the provider registration — and the test
+//! `presentation_values_reach_only_the_status_entry_and_the_notification` pins
+//! that by reading the asset.
+//!
+//! What is *not* here is a default endpoint. The asset used to carry one, so a
+//! product running a long-lived proxy at a fixed address could capture pi
+//! sessions nobody launched under it. One file cannot hold one product's
+//! address without redirecting every other product's sessions there too, so the
+//! address moved entirely into the launch: a product that wants uncaptured pi
+//! sessions routed anyway sets [`super::GATEWAY_URL_ENV`] in the environment
+//! those sessions inherit, where the claim is explicit and revocable.
+//!
+//! The environment, nonce, and schema contract stays wholly crate-owned. There
+//! is no product-supplied name anywhere in it, which is what makes the shared
+//! spellings in [`super`] safe again.
 
-use super::slots::render_slots;
-
-/// The extension template — one implementation, rendered per consumer.
+/// Environment variable naming the pi status entry this extension registers,
+/// and the prefix of the label shown in it.
 ///
-/// Not installable as it stands: it still carries its slot placeholders. Every
-/// path that writes a file goes through [`render_extension`].
-pub const EXTENSION_TEMPLATE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/assets/pi/gateway.template.ts"
-));
+/// Display text, set by the launching client. A short product word — the
+/// crate's own asset falls back to [`DEFAULT_LABEL`] when nothing set it.
+pub const GATEWAY_LABEL_ENV: &str = "TAPES_GATEWAY_LABEL";
 
-/// Slot for [`ExtensionBranding::default_gateway_url`].
-pub const DEFAULT_GATEWAY_URL_SLOT: &str = "__TAPES_DEFAULT_GATEWAY_URL__";
-
-/// Slot for [`ExtensionBranding::status_key`].
-pub const STATUS_KEY_SLOT: &str = "__TAPES_STATUS_KEY__";
-
-/// Slot for [`ExtensionBranding::status_suffix`].
-pub const STATUS_SUFFIX_SLOT: &str = "__TAPES_STATUS_SUFFIX__";
-
-/// Slot for [`ExtensionBranding::schema_mismatch_remedy`].
-pub const SCHEMA_MISMATCH_REMEDY_SLOT: &str = "__TAPES_SCHEMA_MISMATCH_REMEDY__";
-
-/// Every slot the template declares, for consumers that want to check their own
-/// rendering left none behind.
-pub const SLOTS: &[&str] = &[
-    DEFAULT_GATEWAY_URL_SLOT,
-    STATUS_KEY_SLOT,
-    STATUS_SUFFIX_SLOT,
-    SCHEMA_MISMATCH_REMEDY_SLOT,
-];
-
-/// The consumer-supplied strings a rendered pi extension presents.
+/// Environment variable appended to the status label after the active schema.
 ///
-/// All fields are plain strings that [`render_extension`] emits as escaped
-/// string literals, so quotes, backslashes, backticks and `${…}` in any field
-/// are inert: a double-quoted literal is not a template literal, and the two
-/// characters that could end one early are escaped.
-///
-/// Build one with [`ExtensionBranding::new`] and the `with_*` setters. The
-/// fields stay public because reading one is useful, but the type is
-/// `#[non_exhaustive]`, so a struct literal only compiles inside this crate and
-/// a downstream renderer must go through the constructor.
-///
-/// # Examples
-///
-/// ```
-/// use tapes_harnesses::plugin::pi::{ExtensionBranding, render_extension};
-///
-/// let branding = ExtensionBranding::new("acme", "Run `acme proxy use …` if requests fail.")
-///     .with_default_gateway_url("127.0.0.1:4000");
-/// let extension = render_extension(&branding);
-/// assert!(!extension.contains("__TAPES_"));
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct ExtensionBranding<'a> {
-    /// Where to route when [`super::GATEWAY_URL_ENV`] is unset.
-    ///
-    /// Empty — the default, and the right answer for almost everyone — leaves
-    /// uncaptured pi sessions entirely alone. See the slot's own commentary in
-    /// the template for why a non-empty value is a product decision with
-    /// consequences beyond capture.
-    pub default_gateway_url: &'a str,
-    /// The pi status-entry key, and the prefix of the label in it.
-    pub status_key: &'a str,
-    /// Appended to the status label after the active schema. Usually empty.
-    pub status_suffix: &'a str,
-    /// The sentence appended to the schema-mismatch warning, naming whatever
-    /// command *this* product switches its proxy with. The diagnosis it
-    /// follows is the template's.
-    pub schema_mismatch_remedy: &'a str,
-}
+/// Display text. Exists because a product may need to say something about its
+/// own routing that the schema name alone does not carry — a proxy that also
+/// fronts a provider outside the active schema, say. Unset and empty mean the
+/// same thing: nothing appended.
+pub const GATEWAY_LABEL_SUFFIX_ENV: &str = "TAPES_GATEWAY_LABEL_SUFFIX";
 
-impl<'a> ExtensionBranding<'a> {
-    /// A branding from the two strings every consumer must answer for itself:
-    /// what its status entry is called, and how a user fixes a schema
-    /// mismatch. The other two slots have meaningful empty defaults.
-    #[must_use]
-    pub const fn new(status_key: &'a str, schema_mismatch_remedy: &'a str) -> Self {
-        Self {
-            default_gateway_url: "",
-            status_key,
-            status_suffix: "",
-            schema_mismatch_remedy,
-        }
-    }
-
-    /// Route uncaptured pi sessions at `url` instead of leaving them alone.
-    #[must_use]
-    pub const fn with_default_gateway_url(mut self, url: &'a str) -> Self {
-        self.default_gateway_url = url;
-        self
-    }
-
-    /// Append `suffix` to the status label.
-    #[must_use]
-    pub const fn with_status_suffix(mut self, suffix: &'a str) -> Self {
-        self.status_suffix = suffix;
-        self
-    }
-
-    fn slots(&self) -> [(&str, &str); 4] {
-        [
-            (DEFAULT_GATEWAY_URL_SLOT, self.default_gateway_url),
-            (STATUS_KEY_SLOT, self.status_key),
-            (STATUS_SUFFIX_SLOT, self.status_suffix),
-            (SCHEMA_MISMATCH_REMEDY_SLOT, self.schema_mismatch_remedy),
-        ]
-    }
-}
-
-/// This crate's own branding — the one [`super::PI_GATEWAY_EXTENSION`] carries.
+/// Environment variable carrying the sentence appended to the extension's
+/// schema-mismatch warning.
 ///
-/// Vendor-neutral by obligation, not by taste: an asset shipped from here loads
-/// in every consumer's install, so it names no product, points nowhere by
-/// default, and phrases its remedy in terms of the environment contract.
-pub const NEUTRAL_BRANDING: ExtensionBranding<'static> = ExtensionBranding::new(
-    "tapes",
-    "Point TAPES_GATEWAY_URL at a proxy serving that provider, or switch that proxy's active schema, if requests fail.",
-);
+/// Display text. The diagnosis is the asset's; only the remedy is the
+/// launching client's, because only that client knows what command switches
+/// its proxy. Unset falls back to a sentence phrased in terms of
+/// [`super::GATEWAY_URL_ENV`], since the crate's own asset may name no product.
+pub const GATEWAY_REMEDY_ENV: &str = "TAPES_GATEWAY_REMEDY";
 
-/// Render the extension with a consumer's branding.
-///
-/// The result is a complete TypeScript file, ready to write into pi's
-/// extension directory.
-#[must_use]
-pub fn render_extension(branding: &ExtensionBranding) -> String {
-    render_slots(EXTENSION_TEMPLATE, &branding.slots())
-}
+/// The status label the asset presents when [`GATEWAY_LABEL_ENV`] is unset.
+pub const DEFAULT_LABEL: &str = "tapes";
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -183,180 +90,246 @@ mod tests {
     };
     use super::*;
 
-    /// The checked-in neutral asset, as a path, so a failing golden test can
-    /// name it — and rewrite it when asked to.
-    fn neutral_asset_path() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/pi/tapes-gateway.ts")
+    /// The asset, as the only thing there is to inspect. There is no renderer
+    /// any more: what a consumer installs is exactly these bytes.
+    fn asset() -> &'static str {
+        PI_GATEWAY_EXTENSION.contents()
     }
 
-    /// **The golden test.** `assets/pi/tapes-gateway.ts` is not hand-written any
-    /// more: it is this template rendered with [`NEUTRAL_BRANDING`], checked in
-    /// so that [`PI_GATEWAY_EXTENSION`] can stay a compile-time `&'static str`
-    /// and every consumer that only copies bytes needs no code change at all.
+    /// The value of a `const NAME = "…";` declaration in the asset.
     ///
-    /// Checked in *and* generated means the two can disagree, so the comparison
-    /// is byte-for-byte: an edit to either the template or the asset that is not
-    /// mirrored in the other fails here rather than shipping an asset nobody
-    /// meant to write.
-    #[test]
-    fn the_shipped_asset_is_this_template_rendered_neutrally() {
-        let rendered = render_extension(&NEUTRAL_BRANDING);
-        if rendered == PI_GATEWAY_EXTENSION.contents() {
-            return;
-        }
-        if std::env::var_os("TAPES_BLESS").is_some() {
-            std::fs::write(neutral_asset_path(), &rendered).unwrap();
-            panic!("TAPES_BLESS rewrote the asset; rerun without it to confirm");
-        }
-        panic!(
-            "{} has drifted from `gateway.template.ts` rendered with NEUTRAL_BRANDING.\n\
-             Regenerate with `TAPES_BLESS=1 cargo test -p tapes-harnesses \
-             the_shipped_asset_is_this_template_rendered_neutrally`.",
-            neutral_asset_path().display(),
-        );
+    /// Reading the declaration rather than matching a substring is what makes
+    /// the pins below say "this name and no other": an asset that kept a stale
+    /// spelling *alongside* the right one would satisfy a `contains` and fail
+    /// here.
+    fn declared_const(name: &str) -> String {
+        let prefix = format!("const {name} = \"");
+        let at = asset()
+            .find(&prefix)
+            .unwrap_or_else(|| panic!("the asset declares no {name}"));
+        let rest = &asset()[at + prefix.len()..];
+        let end = rest
+            .find("\";")
+            .unwrap_or_else(|| panic!("the asset's {name} declaration is unterminated"));
+        rest[..end].to_string()
     }
 
-    /// A rendering is a finished file, not a half-filled template. A slot the
-    /// template gained without [`ExtensionBranding`] gaining a field would
-    /// otherwise be written into a user's pi directory verbatim.
-    #[test]
-    fn a_rendering_leaves_no_slot_behind() {
-        for branding in [NEUTRAL_BRANDING, hostile_branding()] {
-            let rendered = render_extension(&branding);
-            assert!(
-                !rendered.contains("__TAPES_"),
-                "rendered extension still carries a slot placeholder"
-            );
-        }
-        // …and the check above can actually fail: the template really does
-        // carry every slot this module declares.
-        for slot in SLOTS {
-            assert!(
-                EXTENSION_TEMPLATE.contains(slot),
-                "the template declares no {slot}"
-            );
-        }
-    }
-
-    /// Values chosen to break out of a string literal, out of a template
-    /// literal, out of a comment, and onto their own line.
-    fn hostile_branding() -> ExtensionBranding<'static> {
-        ExtensionBranding::new(
-            "\";\ndelete process.env;\nconst STATUS_KEY = \"",
-            "*/ `${nonce}` \\ end",
-        )
-        .with_default_gateway_url("\\\"; process.exit(1); //")
-        .with_status_suffix("`+nonce+`")
-    }
-
-    /// **The containment property**, and the reason a slot is safe to hand a
-    /// consumer at all: a rendered value lands in its own `const` declaration
-    /// and nowhere else. Rendered against values built to escape, every line of
-    /// the file except the four slot declarations must come out byte-identical
-    /// to the neutral rendering — so no slot value, however spelled, can alter
-    /// the nonce handling, the envelope, or the provider registration.
-    #[test]
-    fn a_slot_reaches_nothing_but_its_own_declaration() {
-        let neutral = render_extension(&NEUTRAL_BRANDING);
-        let hostile = render_extension(&hostile_branding());
-
-        // Escaping keeps a newline inside a value a *newline in a value*, so
-        // the two renderings still line up line for line.
-        assert_eq!(
-            neutral.lines().count(),
-            hostile.lines().count(),
-            "a slot value changed the file's line structure; escaping failed"
-        );
-
-        let differing: Vec<&str> = neutral
+    /// The asset's code, one line per line, with line comments and blank lines
+    /// removed.
+    ///
+    /// The containment test below asks what a value *reaches*, and prose about
+    /// what it must not reach would otherwise answer for it.
+    fn code_lines() -> Vec<String> {
+        asset()
             .lines()
-            .zip(hostile.lines())
-            .filter(|(before, after)| before != after)
-            .map(|(_, after)| after)
-            .collect();
+            .map(|line| match line.find("//") {
+                // `http://` is the one `//` inside code here, and truncating at
+                // it leaves the identifiers this test looks for intact.
+                Some(at) => line[..at].to_string(),
+                None => line.to_string(),
+            })
+            .filter(|line| !line.trim().is_empty())
+            .collect()
+    }
+
+    /// **The PCC-1125 fix, stated as a property.** The asset is not a template
+    /// and has no consumer-varying bytes: what any client installs is this
+    /// file, so a second installed reader of the pi extension directory cannot
+    /// exist for the copies to contend over.
+    ///
+    /// A reintroduced renderer would show up here as a placeholder left in the
+    /// shipped asset — which is precisely what the old two-branding model wrote
+    /// into it.
+    #[test]
+    fn the_asset_is_a_finished_file_and_not_a_template() {
+        assert!(
+            !asset().contains("__TAPES_"),
+            "the asset carries a slot placeholder; it is a template again, and \
+             a template means one rendering per product means two installed files"
+        );
+    }
+
+    /// The environment contract, pinned as whole declarations.
+    ///
+    /// The asset reads the environment by name, so the Rust constant and the
+    /// literal in the asset are two spellings of one contract; renaming the
+    /// constant alone would leave an installed extension waiting for a variable
+    /// nobody sets, which is a silently uncaptured session rather than a build
+    /// failure. Pinned as the entire `const … = "…";` declaration because the
+    /// per-product namespacing this change replaces is exactly the kind of
+    /// second spelling a `contains` would let through.
+    #[test]
+    fn the_asset_reads_the_shared_gateway_environment_contract() {
+        assert_eq!(declared_const("GATEWAY_URL_ENV"), GATEWAY_URL_ENV);
+        assert_eq!(declared_const("GATEWAY_SCHEMA_ENV"), GATEWAY_SCHEMA_ENV);
+        assert_eq!(declared_const("GATEWAY_NONCE_ENV"), GATEWAY_NONCE_ENV);
+        assert_eq!(declared_const("GATEWAY_NONCE_HEADER"), GATEWAY_NONCE_HEADER);
+    }
+
+    /// The presentation contract, pinned the same way. These are the names that
+    /// replaced the render-time slots, so a client that sets them and an asset
+    /// that reads something else is the failure mode: a status entry stuck on
+    /// the neutral fallback, with capture otherwise working.
+    #[test]
+    fn the_asset_reads_the_presentation_contract_at_runtime() {
+        assert_eq!(declared_const("GATEWAY_LABEL_ENV"), GATEWAY_LABEL_ENV);
         assert_eq!(
-            differing.len(),
-            SLOTS.len(),
-            "expected exactly the slot declarations to differ, got: {differing:#?}"
+            declared_const("GATEWAY_LABEL_SUFFIX_ENV"),
+            GATEWAY_LABEL_SUFFIX_ENV
         );
-        for line in &differing {
+        assert_eq!(declared_const("GATEWAY_REMEDY_ENV"), GATEWAY_REMEDY_ENV);
+        assert_eq!(declared_const("DEFAULT_LABEL"), DEFAULT_LABEL);
+        // …and each declared name is actually read, so the pins above cannot
+        // pass against a variable the asset merely names.
+        for identifier in [
+            "GATEWAY_LABEL_ENV",
+            "GATEWAY_LABEL_SUFFIX_ENV",
+            "GATEWAY_REMEDY_ENV",
+        ] {
             assert!(
-                line.starts_with("const ") && line.ends_with("\";"),
-                "a slot value reached something that is not a const string \
-                 declaration: {line:?}"
+                asset().contains(&format!("process.env[{identifier}]")),
+                "the asset declares {identifier} but never reads it"
             );
         }
     }
 
-    /// The nonce contract is the template's, in full, and survives any
-    /// branding. Pinned here as well as against the shipped asset because the
-    /// asset is now derived: a consumer rendering its own variant must get
-    /// these bytes too.
+    /// **The containment property**, and the reason runtime branding is safe to
+    /// hand a product at all: a value the launching client sets reaches the
+    /// status entry and the notification, and nothing else.
+    ///
+    /// The rendered-slot model needed this proven against deliberately hostile
+    /// values, because a rendered value became *syntax* in a file. A runtime
+    /// value cannot: it is a string in a variable however it is spelled. What
+    /// is still worth pinning is where the file lets those variables go — a
+    /// later edit that interpolated the product's label into the envelope, or
+    /// used it to build the base URL, would hand a display string authority
+    /// over attribution.
     #[test]
-    fn every_rendering_carries_the_whole_nonce_contract() {
-        for branding in [NEUTRAL_BRANDING, hostile_branding()] {
-            let rendered = render_extension(&branding);
-            assert!(rendered.contains(GATEWAY_NONCE_ENV));
-            assert!(rendered.contains(GATEWAY_NONCE_HEADER));
+    fn presentation_values_reach_only_the_status_entry_and_the_notification() {
+        let sensitive = [
+            "registerProvider",
+            "GATEWAY_NONCE_HEADER",
+            "nonce",
+            "baseUrl",
+            "X-Tapes-",
+            "envelope",
+            "headers",
+        ];
+        for identifier in ["statusLabel", "statusSuffix", "schemaRemedy"] {
+            let lines: Vec<String> = code_lines()
+                .into_iter()
+                .filter(|line| line.contains(identifier))
+                .collect();
             assert!(
-                rendered.contains("const nonce = process.env[GATEWAY_NONCE_ENV];"),
-                "the rendering does not read the nonce from the environment"
+                lines.len() >= 2,
+                "{identifier} is declared but never used; this test would pass vacuously"
             );
-            assert!(
-                rendered.contains("delete process.env[GATEWAY_NONCE_ENV];"),
-                "the rendering does not delete the nonce from its environment"
-            );
-            assert!(
-                rendered.contains("[GATEWAY_NONCE_HEADER]: nonce"),
-                "the rendering does not echo the nonce under the header name"
-            );
-            let read = rendered
-                .find("process.env[GATEWAY_NONCE_ENV]")
-                .unwrap_or(usize::MAX);
-            let delete = rendered
-                .find("delete process.env[GATEWAY_NONCE_ENV]")
-                .unwrap_or(0);
-            assert!(read < delete, "the rendering deletes before it reads");
+            for line in lines {
+                for token in sensitive {
+                    assert!(
+                        !line.contains(token),
+                        "{identifier} reaches {token:?} on {line:?}; a display string \
+                         must not touch the capture path"
+                    );
+                }
+            }
         }
     }
 
-    /// The environment contract is the template's too — a consumer cannot
-    /// render an extension that listens on a different variable, because there
-    /// is no slot that could.
+    /// The status label a product sees, still built the way it was before the
+    /// slots became environment reads. Paper's label is `paper:anthropic+codex`
+    /// exactly, and it is a string users read in a status bar and match on: the
+    /// pieces, their order, and the separator are all observable.
+    ///
+    /// The expected value is reconstructed from the template literal *in the
+    /// asset*, so reordering the pieces there fails here instead of quietly
+    /// producing `anthropic:paper+codex`.
     #[test]
-    fn no_branding_can_move_the_environment_contract() {
-        let hostile = render_extension(&hostile_branding());
-        assert!(hostile.contains(&format!("= \"{GATEWAY_URL_ENV}\"")));
-        assert!(hostile.contains(&format!("= \"{GATEWAY_SCHEMA_ENV}\"")));
-        assert!(hostile.contains("process.env[GATEWAY_URL_ENV]"));
-        assert!(hostile.contains("process.env[GATEWAY_SCHEMA_ENV]"));
-    }
+    fn the_status_label_is_composed_exactly_as_it_was_when_it_was_rendered() {
+        let opening = "ctx.ui.setStatus(statusLabel, `";
+        let at = asset()
+            .find(opening)
+            .expect("the asset does not set a status entry from the runtime label");
+        let rest = &asset()[at + opening.len()..];
+        let pattern = &rest[..rest.find("`);").expect("unterminated status label")];
 
-    /// The neutral remedy sentence names the variable a user would actually
-    /// set. It is prose, so nothing else would notice it going stale after a
-    /// rename of the constant.
-    #[test]
-    fn the_neutral_remedy_names_the_environment_variable_it_tells_users_to_set() {
-        assert!(
-            NEUTRAL_BRANDING
-                .schema_mismatch_remedy
-                .contains(GATEWAY_URL_ENV),
-            "the neutral remedy does not name {GATEWAY_URL_ENV}"
+        assert_eq!(pattern, "${statusLabel}:${activeSchema}${statusSuffix}");
+        let label = pattern
+            .replace("${statusLabel}", "paper")
+            .replace("${activeSchema}", "anthropic")
+            .replace("${statusSuffix}", "+codex");
+        assert_eq!(
+            label, "paper:anthropic+codex",
+            "the label a paper launch presents has changed"
         );
     }
 
-    /// A consumer's default endpoint is a real slot with real consequences, so
-    /// it must actually work — and must not be reachable by accident. Rendered
-    /// empty (the neutral case) the extension stays inert.
+    /// An unset presentation variable must leave the asset saying something,
+    /// and something vendor-neutral: these bytes install into every client,
+    /// including ones that set none of the three.
     #[test]
-    fn the_default_endpoint_slot_renders_a_usable_fallback() {
-        let branded = render_extension(
-            &ExtensionBranding::new("acme", "…").with_default_gateway_url("127.0.0.1:51539"),
-        );
-        assert!(branded.contains("const DEFAULT_GATEWAY_URL = \"127.0.0.1:51539\";"));
+    fn the_fallbacks_are_neutral_and_name_the_variable_a_user_would_set() {
+        assert_eq!(declared_const("DEFAULT_LABEL"), DEFAULT_LABEL);
+        let remedy = asset()
+            .split_once("const DEFAULT_REMEDY =")
+            .expect("the asset declares no DEFAULT_REMEDY")
+            .1;
+        let remedy = &remedy[..remedy.find(';').expect("unterminated DEFAULT_REMEDY")];
         assert!(
-            render_extension(&NEUTRAL_BRANDING).contains("const DEFAULT_GATEWAY_URL = \"\";"),
-            "the neutral rendering must fall back to nothing"
+            remedy.contains(GATEWAY_URL_ENV),
+            "the neutral remedy does not name {GATEWAY_URL_ENV}, so it tells a \
+             user nothing they can act on"
+        );
+    }
+
+    /// The nonce contract in full, against the one asset there now is: read
+    /// once, deleted before any tool can run, echoed under the crate's header
+    /// name, and in that order. Unchanged by this fix, and pinned so it stays
+    /// that way — the delete is what keeps shell-tool children from inheriting
+    /// the secret, and it is the read the *second* installed copy used to lose.
+    #[test]
+    fn the_asset_reads_deletes_and_echoes_the_nonce_in_that_order() {
+        assert!(
+            asset().contains("const nonce = process.env[GATEWAY_NONCE_ENV];"),
+            "the asset does not read the nonce from the environment"
+        );
+        assert!(
+            asset().contains("delete process.env[GATEWAY_NONCE_ENV];"),
+            "the asset does not delete the nonce from its environment; \
+             shell-tool subprocesses would inherit the secret"
+        );
+        assert!(
+            asset().contains("[GATEWAY_NONCE_HEADER]: nonce"),
+            "the asset does not echo the nonce under the header name"
+        );
+        let read = asset()
+            .find("process.env[GATEWAY_NONCE_ENV]")
+            .unwrap_or(usize::MAX);
+        let delete = asset()
+            .find("delete process.env[GATEWAY_NONCE_ENV]")
+            .unwrap_or(0);
+        assert!(
+            read < delete,
+            "the asset deletes the nonce before it reads it"
+        );
+    }
+
+    /// The default endpoint is gone, and must stay gone. One file installed by
+    /// every client cannot carry one client's address: it would redirect every
+    /// other client's uncaptured pi sessions to that address too. Absence of a
+    /// loopback literal is the cheapest durable check that it has not come
+    /// back as a constant.
+    #[test]
+    fn the_asset_has_no_built_in_endpoint_to_fall_back_to() {
+        for literal in ["127.0.0.1", "localhost:", "DEFAULT_GATEWAY_URL"] {
+            assert!(
+                !asset().contains(literal),
+                "the asset carries {literal:?}; it must be inert without {GATEWAY_URL_ENV}"
+            );
+        }
+        assert!(
+            asset().contains("const rawBaseUrl = process.env[GATEWAY_URL_ENV];"),
+            "the asset must take its address from the launch and nowhere else"
         );
     }
 }
