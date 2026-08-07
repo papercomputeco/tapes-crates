@@ -85,8 +85,9 @@ pub const DEFAULT_LABEL: &str = "tapes";
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::super::{
-        GATEWAY_NONCE_ENV, GATEWAY_NONCE_HEADER, GATEWAY_SCHEMA_ENV, GATEWAY_URL_ENV,
-        PI_GATEWAY_EXTENSION,
+        GATEWAY_NONCE_ENV, GATEWAY_NONCE_HEADER, GATEWAY_PROVIDER_ROUTE_PREFIX,
+        GATEWAY_PROVIDER_ROUTES_ENV, GATEWAY_SCHEMA_ENV, GATEWAY_URL_ENV, PI_GATEWAY_EXTENSION,
+        provider_route, split_provider_route,
     };
     use super::*;
 
@@ -190,6 +191,91 @@ mod tests {
                 asset().contains(&format!("process.env[{identifier}]")),
                 "the asset declares {identifier} but never reads it"
             );
+        }
+    }
+
+    /// The per-provider routing contract, pinned as whole declarations for the
+    /// same reason the rest of the environment contract is: the asset and the
+    /// launching client are two spellings of one agreement, and a rename on one
+    /// side alone is a session that routes every provider to one upstream while
+    /// the proxy waits for labels.
+    #[test]
+    fn the_asset_reads_the_provider_routing_contract() {
+        assert_eq!(
+            declared_const("GATEWAY_PROVIDER_ROUTES_ENV"),
+            GATEWAY_PROVIDER_ROUTES_ENV
+        );
+        assert_eq!(
+            declared_const("PROVIDER_ROUTE_PREFIX"),
+            GATEWAY_PROVIDER_ROUTE_PREFIX
+        );
+        assert!(
+            asset().contains(&format!("process.env[{}]", "GATEWAY_PROVIDER_ROUTES_ENV")),
+            "the asset declares the routing variable but never reads it"
+        );
+    }
+
+    /// **The property paperctl's gateway depends on.** A launcher that sets
+    /// nothing must get the requests it got before this existed — same base
+    /// URL, same path — because a gateway that routes internally would receive
+    /// a labelled path it has no route for and fail every turn.
+    ///
+    /// Stated against the asset's own conditional rather than by executing it:
+    /// the label is built in exactly one place, and that place is gated on the
+    /// variable. An edit that labelled unconditionally would have to move the
+    /// construction out of the ternary, which fails here.
+    #[test]
+    fn a_launcher_that_asks_for_nothing_gets_unlabelled_registrations() {
+        let opening = "providerRoutes ? `";
+        let at = asset()
+            .find(opening)
+            .expect("the asset does not gate the provider label on the routing variable");
+        let rest = &asset()[at + opening.len()..];
+        let labelled = &rest[..rest.find('`').expect("unterminated provider base URL")];
+        assert_eq!(labelled, "${baseUrl}${PROVIDER_ROUTE_PREFIX}/${provider}");
+        // …and the other arm is the bare base URL, unchanged.
+        let otherwise = rest[rest.find('`').unwrap() + 1..]
+            .trim_start()
+            .strip_prefix(':')
+            .expect("the routing conditional has no unlabelled arm")
+            .trim_start();
+        assert!(
+            otherwise.starts_with("baseUrl"),
+            "the unlabelled arm is not the bare base URL: {otherwise:?}"
+        );
+    }
+
+    /// The active schema stops being a constraint once every provider has its
+    /// own route, so the mismatch warning must stand down with it. Left in, it
+    /// tells a user whose session is being captured correctly that it is not.
+    #[test]
+    fn the_schema_mismatch_warning_stands_down_under_provider_routes() {
+        assert!(
+            asset().contains("if (!providerRoutes && schemaProvider &&"),
+            "the schema-mismatch warning still fires when the proxy routes \
+             every provider it registers"
+        );
+    }
+
+    /// The two halves of the route shape agree: what the asset builds is what
+    /// [`split_provider_route`] takes apart. The asset composes its path in
+    /// TypeScript and the proxy parses it in Rust, so nothing but a test can
+    /// hold the two spellings together.
+    #[test]
+    fn the_route_the_asset_builds_is_the_route_the_contract_parses() {
+        for provider in ["anthropic", "openai", "openai-codex"] {
+            let base = provider_route(provider);
+            assert!(
+                base.starts_with(GATEWAY_PROVIDER_ROUTE_PREFIX),
+                "{base} is not under the declared prefix"
+            );
+            // pi appends its own path to the registered base URL; the join is
+            // what actually reaches the proxy.
+            let requested = format!("{base}/v1/messages");
+            let (labelled, rest) = split_provider_route(&requested)
+                .expect("a route this contract built is not one it parses");
+            assert_eq!(labelled, provider);
+            assert_eq!(rest, "/v1/messages");
         }
     }
 

@@ -27,6 +27,77 @@ pub const GATEWAY_URL_ENV: &str = "TAPES_GATEWAY_URL";
 /// deployment shape, not a requirement of the contract.
 pub const GATEWAY_SCHEMA_ENV: &str = "TAPES_GATEWAY_SCHEMA";
 
+/// Environment variable declaring that the capture proxy serves each captured
+/// provider on its own route, so an installed plugin must say which provider a
+/// request belongs to.
+///
+/// Unset or empty means the proxy fronts a single upstream and a plugin
+/// registers every captured provider at [`GATEWAY_URL_ENV`] unchanged. Any
+/// other value means the plugin registers each provider at
+/// [`provider_route`] instead.
+///
+/// It exists because a plugin may register more providers than a
+/// single-upstream proxy can serve. pi's extension registers three, all at one
+/// base URL: with one upstream behind it, a session on any provider other than
+/// the one that upstream speaks is forwarded to a host that has never heard of
+/// the route, and the harness fails outright. Which of those two shapes a proxy
+/// is cannot be inferred from the address, so the launching client states it.
+///
+/// The default is the single-upstream shape on purpose: a client that predates
+/// this variable sets nothing, and gets exactly the requests it got before.
+pub const GATEWAY_PROVIDER_ROUTES_ENV: &str = "TAPES_GATEWAY_PROVIDER_ROUTES";
+
+/// The value a client sets in [`GATEWAY_PROVIDER_ROUTES_ENV`] to ask for
+/// per-provider routes.
+///
+/// A plugin treats *any* non-empty value as the request, so this is the
+/// spelling to write rather than the only one accepted — one less way for a
+/// client and an installed plugin to disagree.
+pub const GATEWAY_PROVIDER_ROUTES_ON: &str = "1";
+
+/// Path prefix under which a labelled request names its provider.
+///
+/// Underscore-led so it cannot collide with a provider API path: no upstream
+/// schema this contract covers serves anything beneath `/_tapes`.
+pub const GATEWAY_PROVIDER_ROUTE_PREFIX: &str = "/_tapes/provider";
+
+/// The path a request for `provider` is sent to when per-provider routes are
+/// on: [`GATEWAY_PROVIDER_ROUTE_PREFIX`], the provider name, then whatever path
+/// the harness's client would have used on its own.
+///
+/// The prefix is a *base URL* suffix rather than a header because it has to
+/// survive a harness client that composes its own paths — pi appends
+/// `/v1/messages` to whatever base URL a provider was registered with, and
+/// never consults a header the extension did not put on the request.
+#[must_use]
+pub fn provider_route(provider: &str) -> String {
+    format!("{GATEWAY_PROVIDER_ROUTE_PREFIX}/{provider}")
+}
+
+/// Split a labelled request path into the provider it names and the path the
+/// harness's client actually asked for.
+///
+/// `None` when the path carries no label at all, which a proxy must not read as
+/// "any provider will do": it means the request came from something that does
+/// not speak this half of the contract — an installed plugin older than the
+/// launching client, most likely — and the provider it wanted is simply not
+/// knowable from the request.
+///
+/// The remainder always begins with `/`, including for a bare
+/// `/_tapes/provider/<name>`, so a caller can concatenate it onto an upstream
+/// base without a second normalisation rule.
+#[must_use]
+pub fn split_provider_route(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix(GATEWAY_PROVIDER_ROUTE_PREFIX)?;
+    let rest = rest.strip_prefix('/')?;
+    let end = rest.find('/').unwrap_or(rest.len());
+    let (provider, remainder) = rest.split_at(end);
+    if provider.is_empty() {
+        return None;
+    }
+    Some((provider, if remainder.is_empty() { "/" } else { remainder }))
+}
+
 /// Environment variable carrying the per-launch capture nonce.
 ///
 /// A self-attributing harness's `X-Tapes-*` envelope is a claim, and the
@@ -92,6 +163,55 @@ pub fn nonce_matches(expected: &str, presented: &str) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// A route this module builds is a route it takes apart again, for every
+    /// path shape a harness client actually produces.
+    #[test]
+    fn a_built_route_round_trips_through_the_split() {
+        for provider in ["anthropic", "openai", "openai-codex"] {
+            for path in ["/v1/messages", "/v1/responses", "/v1/models?limit=1"] {
+                let joined = format!("{}{path}", provider_route(provider));
+                assert_eq!(
+                    split_provider_route(&joined),
+                    Some((provider, path)),
+                    "round trip failed for {joined}"
+                );
+            }
+        }
+        // A client that appended nothing still names a provider, and the
+        // remainder is a path rather than the empty string — so a caller can
+        // concatenate it without a second rule for this case.
+        assert_eq!(
+            split_provider_route(&provider_route("anthropic")),
+            Some(("anthropic", "/")),
+        );
+    }
+
+    /// An unlabelled path is `None` rather than a guess. The proxy's whole
+    /// reason for asking is that it cannot otherwise tell which upstream a
+    /// request wants, and a default here would put the guess back.
+    #[test]
+    fn a_path_that_names_no_provider_resolves_to_nothing() {
+        for path in [
+            "/v1/messages",
+            "/",
+            // The prefix with no name after it names no provider.
+            GATEWAY_PROVIDER_ROUTE_PREFIX,
+            "/_tapes/provider/",
+            // A *different* `_tapes` route is not a provider label; the proxy
+            // serves its own paths under that namespace.
+            "/_tapes/codex-app/lifecycle",
+            // Prefix-of-a-longer-segment must not match: `providerX` is not
+            // the provider route.
+            "/_tapes/providerX/anthropic/v1/messages",
+        ] {
+            assert_eq!(
+                split_provider_route(path),
+                None,
+                "{path} was read as labelled"
+            );
+        }
+    }
 
     /// Fail closed on an unset expectation, and match only the exact echo.
     #[test]
