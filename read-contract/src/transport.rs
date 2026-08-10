@@ -80,20 +80,52 @@ where
     /// Every hand-written URL builder a consumer used to carry is this line:
     /// the verb, the path template, and the parameter routing all come from
     /// `contracts/tapes-api.yaml`.
+    ///
+    /// Equivalent to [`ReadOperations::call_operation_with_body`] with no
+    /// body, which is what every read operation wants. An operation whose
+    /// `requestBody` the contract marks required is refused rather than sent
+    /// without one — the same refusal, for the same reason, as at
+    /// [`crate::contract::call_for`].
     fn call_operation<T: DeserializeOwned>(
         &self,
         operation_id: &str,
         values: Vec<(&str, String)>,
     ) -> impl Future<Output = Result<T, Self::Error>> {
+        self.call_operation_with_body(operation_id, values, None)
+    }
+
+    /// Resolve one core operation and call it with a request body.
+    ///
+    /// The body travels the same route as every other value: the contract
+    /// decides whether the operation accepts one, requires one, or takes none,
+    /// and a disagreement in either direction is refused before anything is
+    /// sent. Without this method the capability would exist at
+    /// [`crate::contract::call_for_with_body`] and be unreachable from the
+    /// facade every consumer actually calls — which would put the payload back
+    /// in exactly the place it can go missing quietly.
+    fn call_operation_with_body<T: DeserializeOwned>(
+        &self,
+        operation_id: &str,
+        values: Vec<(&str, String)>,
+        body: Option<String>,
+    ) -> impl Future<Output = Result<T, Self::Error>> {
         async move {
             let method = core()?.method(operation_id)?;
-            let call = contract::call_for(method, values)?;
+            let call = contract::call_for_with_body(method, values, body)?;
             let value = self.execute(&call).await?;
             Ok(serde_json::from_value(value).map_err(|source| Error::Decode { source })?)
         }
     }
 
     /// Resolve one core operation and stream its response.
+    ///
+    /// Bodyless, and deliberately so: nothing in this contract both streams a
+    /// response and takes a request body. That is an observation about the
+    /// document rather than a rule, so it is not enforced here — an operation
+    /// that did take a required body would be refused by
+    /// [`crate::contract::call_for`] with the same loud error as anywhere
+    /// else, which is a signal to add the body-bearing sibling rather than a
+    /// payload going missing.
     fn stream_operation(
         &self,
         operation_id: &str,
@@ -124,21 +156,27 @@ mod tests {
     use std::cell::RefCell;
     use url::Url;
 
-    /// A transport that records the URL it was asked for and answers with a
-    /// canned body — enough to prove the contract layer routed the values and
-    /// that `T` is the caller's choice, without a socket.
+    /// A transport that records what it was asked to send and answers with a
+    /// canned response — enough to prove the contract layer routed the values
+    /// and that `T` is the caller's choice, without a socket.
+    ///
+    /// It records the request body as well as the URL, because "the payload
+    /// arrived at the transport" is the only place a facade that dropped it
+    /// would be visible: every layer above still looks correct.
     struct Recorder {
         base: Url,
-        body: Value,
+        response: Value,
         seen: RefCell<Vec<String>>,
+        bodies: RefCell<Vec<Option<String>>>,
     }
 
     impl Recorder {
-        fn new(base: &str, body: Value) -> Self {
+        fn new(base: &str, response: Value) -> Self {
             Self {
                 base: Url::parse(base).unwrap(),
-                body,
+                response,
                 seen: RefCell::new(Vec::new()),
+                bodies: RefCell::new(Vec::new()),
             }
         }
     }
@@ -149,7 +187,8 @@ mod tests {
         async fn execute(&self, call: &Call<'_>) -> Result<Value, Error> {
             let url = call_url(&self.base, call, PathMode::UnderBase)?;
             self.seen.borrow_mut().push(url.to_string());
-            Ok(self.body.clone())
+            self.bodies.borrow_mut().push(call.body.clone());
+            Ok(self.response.clone())
         }
 
         async fn execute_stream(&self, _call: &Call<'_>) -> Result<reqwest::Response, Error> {
@@ -221,5 +260,80 @@ mod tests {
             recorder.seen.borrow().is_empty(),
             "nothing may be sent for a call the contract refused",
         );
+    }
+
+    #[tokio::test]
+    async fn a_body_supplied_at_the_facade_reaches_the_transport() {
+        // The gap this closes: the body capability existed one layer down and
+        // the facade every consumer actually calls routed around it, so a
+        // payload passed at this level would have been dropped on the way to
+        // a request that still looked correct.
+        let recorder = Recorder::new("http://127.0.0.1:8081", serde_json::json!({"id": "sk-1"}));
+        let _: Value = recorder
+            .call_operation_with_body(
+                "createSkill",
+                Vec::new(),
+                Some(r#"{"name":"x"}"#.to_owned()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            recorder.bodies.borrow().as_slice(),
+            [Some(r#"{"name":"x"}"#.to_owned())],
+        );
+    }
+
+    #[tokio::test]
+    async fn the_bodyless_facade_refuses_an_operation_that_requires_a_body() {
+        // The same loud error as at the lower layer, pinned here too: the
+        // whole point of the refusal is that it survives every route to the
+        // wire, and a facade that quietly sent the request anyway would be
+        // the original silence with an extra layer on top.
+        let recorder = Recorder::new("http://127.0.0.1:8081", Value::Null);
+        let err = recorder
+            .call_operation::<Value>("createSkill", Vec::new())
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("requires a request body"),
+            "got: {err}",
+        );
+        assert!(
+            recorder.seen.borrow().is_empty(),
+            "nothing may be sent for a call the contract refused",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_facade_refuses_a_body_on_an_operation_that_declares_none() {
+        let recorder = Recorder::new("http://127.0.0.1:8081", Value::Null);
+        let err = recorder
+            .call_operation_with_body::<Value>(
+                ops::GET_SESSION,
+                vec![("id", "s-1".to_owned())],
+                Some("{}".to_owned()),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("declares no request body"),
+            "got: {err}",
+        );
+        assert!(recorder.seen.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_bodyless_facade_still_sends_no_body_for_an_ordinary_read() {
+        // Plumbing a body through must not start attaching one where none was
+        // asked for: every read operation goes out exactly as before.
+        let recorder = Recorder::new("http://127.0.0.1:8081", serde_json::json!({"items": []}));
+        let _: Value = recorder
+            .call_operation(ops::LIST_SESSIONS, Vec::new())
+            .await
+            .unwrap();
+        assert_eq!(recorder.bodies.borrow().as_slice(), [None]);
     }
 }
