@@ -1,0 +1,65 @@
+# Dual-licensed under MIT OR Apache-2.0 — see LICENSE-MIT and LICENSE-APACHE
+# at the repository root.
+#
+# `publish` stays false until the first deliberate crates.io release; flip it
+# together with that release PR, alongside the sibling crates.
+
+# A member of the repository-root workspace, like `cassette-client`. Membership
+# is what puts this crate in the same `cargo test` / `cargo clippy` selection as
+# the crates it ships beside — a package outside that selection is covered only
+# where somebody remembers to name it, which is how `cassette-client` once went
+# missing from CI entirely.
+#
+# Being a member changes nothing for consumers: a git pin resolves a package by
+# name anywhere in the repository, so this crate is still taken independently of
+# its siblings.
+[package]
+name = "tapes-read-contract"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+publish = false
+authors = ["Paper Compute"]
+repository = "https://github.com/papercomputeco/tapes-crates"
+description = "The vendored tapes read contract and the machinery that drives requests from it: operation lookup, parameter routing, URL construction, and the operation-coverage gate."
+
+[lib]
+name = "tapes_read_contract"
+path = "src/lib.rs"
+
+# Dependency versions match the consumers, so their lockfiles do not fork when
+# they consume this crate.
+[dependencies]
+# The OpenAPI reducer and the `Call` type. The read contract and the cassette
+# surface deliberately share one reducer — two document sources, one reading of
+# OpenAPI — so this crate layers on `cassette-client` rather than copying it.
+tapes-cassette-client = { path = "../cassette-client", version = "0.1.0" }
+# reqwest appears only in the streaming half of the transport seam, whose
+# return type is a live response. Built WITHOUT any compression feature,
+# matching the consumers: the transport hands back the server's bytes as sent.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# `DeserializeOwned` is the bound on the generic response target; the derive
+# feature is for consumers' models, not this crate's, but the dev-tests below
+# exercise a typed instantiation and so need it too.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# serde_yaml is archived upstream, but it is what both consumers already read
+# the vendored contract with, and this crate must parse the same bytes the same
+# way. Replacing it is a change to make in one place, later, on purpose.
+serde_yaml = "0.9"
+snafu = "0.8"
+url = "2"
+
+[dev-dependencies]
+# The seal check's negative controls point its checkout fallback at an empty
+# directory, so a tapes checkout beside the repository cannot make them pass
+# for the wrong reason.
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

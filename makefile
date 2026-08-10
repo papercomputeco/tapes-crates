@@ -14,7 +14,8 @@
 # somebody remembered to name it, and `cassette-client` was in fact missing
 # from CI entirely while being present here.
 
-.PHONY: help build test fmt fmt-check clippy lint check clean sync-fixtures pin-parity
+.PHONY: help build test fmt fmt-check clippy lint check clean sync-fixtures pin-parity \
+	contracts-check
 
 # Consumer manifests for `make pin-parity`. Defaults to the GitHub repos, which
 # is what CI compares; override with local checkouts when working in a forest
@@ -61,3 +62,6 @@ sync-fixtures:	## Refresh the vendored envelope fixture corpus from a local tape
 
 pin-parity:	## Assert every consumer pins the same tapes-harnesses revision
 	scripts/check-pin-parity.sh $(PIN_PARITY_SOURCES)
+
+contracts-check:	## Verify the vendored tapes read contract against its recorded fingerprint and the pinned release asset
+	scripts/contracts-check.sh
