@@ -13,6 +13,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The vendored read contract is a copy of a published release asset, and a
+  # copy nothing checks is a copy that drifts. This gate had no CI caller in
+  # either client before the contract moved here; giving it one at the same
+  # time is most of why the contract has a single home now — both clients
+  # inherit the check through their pin rather than each maintaining one.
+  #
+  # Its own job, not a step on the matrix: it needs no toolchain and no cache,
+  # it is the same answer on every OS, and a failure here should read as
+  # "the vendored bytes are wrong", not as a lint failure on ubuntu.
+  contract-seal:
+    name: Contract seal
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make contracts-check
+
   lint-test:
     name: Lint & Test (${{ matrix.os }})
     strategy:

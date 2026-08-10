@@ -28,8 +28,8 @@ responsibilities:
 
 ## The crates
 
-The repository is one workspace of three crates, split by a single test: does
-adding one more harness change this code?
+The repository is one workspace. Its first two crates are split by a single
+test: does adding one more harness change this code?
 
 - **`tapes-harnesses`** (root) — no, it changes *because* of harnesses. The
   registry, launch recipes, config patch grammars, plugin artifacts, the
@@ -41,6 +41,11 @@ adding one more harness change this code?
   lookup, and the peer-trust ancestry walk.
 - **`tapes-cassette-client`** (`cassette-client/`) — the cassette surface a
   consumer's CLI generates from a fetched document.
+- **`tapes-read-contract`** (`read-contract/`) — the other document source for
+  the same reducer: the *published* tapes read contract, vendored here from a
+  release asset so the system holds one copy rather than one per client, plus
+  the operation lookup, URL construction, transport seam, and coverage gate
+  that turn it into requests.
 
 The dependency edge runs one way, and Cargo enforces it rather than review:
 `tapes-harnesses` depends on `tapes-capture`, never the reverse. The moment a

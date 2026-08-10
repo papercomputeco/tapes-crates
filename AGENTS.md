@@ -9,6 +9,7 @@ recommended development environment; it pins the Rust toolchain via
 | `tapes-harnesses` (repository root) | knowledge that changes when a harness is added: the registry, launch recipes, config patch grammars, plugin artifacts, per-harness attribution lanes, transcript discovery, and the `X-Tapes-*` envelope |
 | `tapes-capture` (`crates/tapes-capture/`) | knowledge that does not: the capture-gateway environment contract and launch-nonce protocol, peer-PID lookup, and the peer-trust ancestry check |
 | `tapes-cassette-client` (`cassette-client/`) | the generated cassette surface: discovery, OpenAPI reduction, the surface cache, clap command synthesis, and the transport |
+| `tapes-read-contract` (`read-contract/`) | the vendored tapes read contract and the machinery that drives requests from it: operation lookup, parameter routing, URL construction in both path modes, the transport seam, and the operation-coverage gate |
 
 The membership test for the first two is **would adding one more harness change
 this?** If not, it belongs in `tapes-capture`. The dependency edge runs one way

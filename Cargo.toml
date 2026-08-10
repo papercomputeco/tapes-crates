@@ -20,8 +20,8 @@
 # tests would stop running the moment they were moved into one — silently, and
 # looking exactly like a passing run.
 [workspace]
-members = ["crates/tapes-capture", "cassette-client"]
-default-members = [".", "crates/tapes-capture", "cassette-client"]
+members = ["crates/tapes-capture", "cassette-client", "read-contract"]
+default-members = [".", "crates/tapes-capture", "cassette-client", "read-contract"]
 
 [package]
 name = "tapes-harnesses"
