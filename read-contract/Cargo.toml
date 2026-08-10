@@ -52,6 +52,10 @@ snafu = "0.8"
 url = "2"
 
 [dev-dependencies]
+# The seal check's negative controls point its checkout fallback at an empty
+# directory, so a tapes checkout beside the repository cannot make them pass
+# for the wrong reason.
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
 

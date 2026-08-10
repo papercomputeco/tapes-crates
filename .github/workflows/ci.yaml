@@ -27,7 +27,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Strict is explicit rather than inherited from the runner's CI
+      # variable: this job exists to fail when the byte comparison cannot run,
+      # and that behaviour should not hinge on a variable someone else sets.
       - run: make contracts-check
+        env:
+          TAPES_CONTRACT_STRICT: "1"
 
   lint-test:
     name: Lint & Test (${{ matrix.os }})

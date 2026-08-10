@@ -52,6 +52,24 @@ if [ -n "${TAPES_CONTRACT_TAG:-}" ] && [ "${TAPES_CONTRACT_TAG}" != "${pinned_ta
   echo "        treating this as a refresh in progress — gate 1 is informational, gate 2 decides"
 fi
 
+# Strict mode: a gate that could not read its input is a FAILURE, not a pass.
+#
+# Gate 2 is the only gate that can be unavailable — it needs either the network
+# or a tapes checkout. Skipping it on a laptop with no connectivity is a
+# kindness; skipping it in CI means the seal job goes green having verified
+# nothing, which is the one outcome a seal must never produce. Automation says
+# so by setting CI, and this can be forced either way for a test.
+strict="${TAPES_CONTRACT_STRICT:-}"
+if [ -z "${strict}" ]; then
+  if [ -n "${CI:-}" ]; then strict=1; else strict=0; fi
+fi
+
+# Test seams, and honest overrides for a mirror or a vendored checkout. Neither
+# is set in normal use; both exist because the fail-closed behaviour above is
+# only worth having if something proves it fires.
+release_base="${TAPES_RELEASE_BASE:-https://github.com/papercomputeco/tapes/releases/download}"
+fallback_repo="${TAPES_FALLBACK_REPO:-${here}/../tapes}"
+
 fail=0
 
 # --- gate 1: recorded fingerprint --------------------------------------------
@@ -128,7 +146,7 @@ if [ -z "${tag}" ]; then
   exit 1
 fi
 
-base="https://github.com/papercomputeco/tapes/releases/download/${tag}"
+base="${release_base}/${tag}"
 if curl -fsSL --retry 2 -o "${tmp}/${name}" "${base}/tapes-api-${tag}.yaml"; then
   if ! diff -u "${vendored}/${name}" "${tmp}/${name}"; then
     echo "FAIL: vendored ${name} differs from the ${tag} release asset" >&2
@@ -141,16 +159,31 @@ fi
 
 # Fetch failed (offline, or the tag's asset is missing): fall back to a
 # checkout beside this repo when one exists.
-fallback_repo="${here}/../tapes"
 if [ -f "${fallback_repo}/cli/tapes/main.go" ]; then
   echo "notice: could not fetch the ${tag} release asset; falling back to re-emission from ${fallback_repo}"
   emit_and_diff "${fallback_repo}"
-elif [ "${refresh}" = 1 ]; then
+  exit "${fail}"
+fi
+
+# Nothing authoritative ran. Whether that is survivable depends entirely on
+# who is asking: a developer offline still got gate 1, while CI asking the
+# same question and being told "fine" is the seal reporting on a comparison it
+# never made.
+if [ "${refresh}" = 1 ]; then
   echo "FAIL: mid-refresh, but the ${tag} release asset could not be fetched and no tapes" >&2
   echo "      checkout exists at ${fallback_repo} (set TAPES_REPO) — nothing authoritative ran" >&2
   fail=1
+elif [ "${strict}" = 1 ]; then
+  echo "FAIL: the ${tag} release asset could not be fetched and no tapes checkout exists at" >&2
+  echo "      ${fallback_repo} (set TAPES_REPO) — nothing authoritative ran, and a seal that" >&2
+  echo "      cannot read its input must block rather than report success" >&2
+  fail=1
 else
-  echo "notice: could not fetch the ${tag} release asset and no tapes checkout at ${fallback_repo} (set TAPES_REPO); skipping the byte diff"
+  echo "notice: could not fetch the ${tag} release asset and no tapes checkout at ${fallback_repo} (set TAPES_REPO)."
+  echo "        gate 2 DID NOT RUN: the vendored bytes were NOT compared against the published"
+  echo "        release, and this run says nothing about whether they match. Gate 1 (the recorded"
+  echo "        fingerprint) passed, which only proves the file is unchanged since it was vendored."
+  echo "        Re-run with connectivity, or set TAPES_REPO, before trusting this as a verdict."
 fi
 
 exit "${fail}"
