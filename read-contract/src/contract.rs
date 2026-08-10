@@ -129,14 +129,45 @@ pub fn core() -> Result<&'static CoreSurface> {
 
 /// Build the [`Call`] for one operation from wire-named values.
 ///
-/// This is where "drive through the contract" becomes enforceable: the verb
-/// and path template are the document's, every value is routed by the
-/// document's declared location for that name, a name the document does not
-/// declare is refused, and a path placeholder left without a value is refused
-/// (no URL could be built from it). Values are given under their wire names —
-/// the same names the hand-written builders this replaced used — so the call
-/// sites read as the requests they make.
+/// Equivalent to [`call_for_with_body`] with no body, which is what every read
+/// operation wants. An operation whose `requestBody` the contract marks
+/// required is refused here rather than sent without one — use
+/// [`call_for_with_body`] for those.
 pub fn call_for<'m>(method: &'m Method, values: Vec<(&str, String)>) -> Result<Call<'m>> {
+    call_for_with_body(method, values, None)
+}
+
+/// Build the [`Call`] for one operation from wire-named values and a body.
+///
+/// This is where "drive through the contract" becomes enforceable. The verb
+/// and path template are the document's, and every value is routed by the
+/// document's declared location for that name. Four things are refused before
+/// anything is sent, and they are refusals rather than best-effort requests
+/// because each one produces a request that *looks* fine on the wire:
+///
+/// - a name the document does not declare — the drift a vendored contract
+///   exists to catch, which a server that ignores unknown query parameters
+///   would otherwise hide;
+/// - a path placeholder left without a value, which cannot produce a URL at
+///   all;
+/// - a query or header parameter the document marks **required** and that has
+///   no value. This one is the quietest: the URL is perfectly well-formed, and
+///   the server answers with a 400 in its own words — or, worse, on an
+///   operation whose required filter is what scopes the result, answers a
+///   different question than the caller believes it asked;
+/// - a body that disagrees with the operation's `requestBody` in either
+///   direction. A required body left absent arrives as a syntactically valid
+///   request that means nothing; a body sent to an operation declaring none is
+///   dropped somewhere before the handler. Both look correct at the call site.
+///
+/// Values are given under their wire names — the same names the hand-written
+/// builders this replaced used — so the call sites read as the requests they
+/// make.
+pub fn call_for_with_body<'m>(
+    method: &'m Method,
+    values: Vec<(&str, String)>,
+    body: Option<String>,
+) -> Result<Call<'m>> {
     let operation = || {
         method
             .operation_id
@@ -167,16 +198,76 @@ pub fn call_for<'m>(method: &'m Method, values: Vec<(&str, String)>) -> Result<C
         }
     }
 
-    // A path placeholder without a value cannot produce a callable URL; the
-    // substitution would leave a literal `{id}` segment addressing nothing.
-    for param in method.path_params() {
-        if !call.path_params.iter().any(|(name, _)| *name == param.wire) {
-            return error::ContractPathParameterSnafu {
+    // Every declared parameter that must have a value, checked in one pass so
+    // the three locations cannot drift apart in what they enforce. Path is
+    // checked first by construction — the reducer orders path parameters ahead
+    // of the rest — and keeps its own error, because "no URL could be built"
+    // is a different problem from "this is not the request the contract
+    // describes".
+    for param in &method.params {
+        let supplied = match param.location {
+            Location::Path => &call.path_params,
+            Location::Query => &call.query,
+            Location::Header => &call.headers,
+        }
+        .iter()
+        .any(|(name, _)| *name == param.wire);
+        if supplied {
+            continue;
+        }
+        match param.location {
+            // A path placeholder without a value cannot produce a callable
+            // URL; the substitution would leave a literal `{id}` segment
+            // addressing nothing.
+            Location::Path => {
+                return error::ContractPathParameterSnafu {
+                    operation: operation(),
+                    parameter: param.wire.clone(),
+                }
+                .fail();
+            }
+            Location::Query if param.required => {
+                return error::ContractRequiredParameterSnafu {
+                    operation: operation(),
+                    parameter: param.wire.clone(),
+                    location: "query",
+                }
+                .fail();
+            }
+            Location::Header if param.required => {
+                return error::ContractRequiredParameterSnafu {
+                    operation: operation(),
+                    parameter: param.wire.clone(),
+                    location: "header",
+                }
+                .fail();
+            }
+            // An optional parameter left unset is the omit-when-unset rule:
+            // the server's own default applies, and this client never has to
+            // be updated when one of them changes.
+            Location::Query | Location::Header => {}
+        }
+    }
+
+    // `Method::body` is `Some(true)` when the contract requires a body,
+    // `Some(false)` when it accepts an optional one, and `None` when the
+    // operation takes none at all.
+    match (method.body, body) {
+        (Some(true), None) => {
+            return error::ContractBodySnafu {
                 operation: operation(),
-                parameter: param.wire.clone(),
+                detail: "requires a request body and none was supplied",
             }
             .fail();
         }
+        (None, Some(_)) => {
+            return error::ContractBodySnafu {
+                operation: operation(),
+                detail: "declares no request body, so one cannot be sent",
+            }
+            .fail();
+        }
+        (_, supplied) => call.body = supplied,
     }
 
     Ok(call)
@@ -239,6 +330,120 @@ mod tests {
         let method = surface.method(ops::GET_SPAN).unwrap();
         let err = call_for(method, vec![("trace_id", "t-1".to_owned())]).unwrap_err();
         assert!(err.to_string().contains("span_id"), "got: {err}");
+    }
+
+    #[test]
+    fn a_missing_required_query_parameter_is_refused_like_a_missing_path_one() {
+        // The asymmetry this closes: a missing path value cannot produce a
+        // URL, so it was always caught, while a missing required query value
+        // produces a perfectly well-formed URL that is not the request the
+        // contract describes. `searchSpans` without `query` would have gone
+        // out and come back as the server's own 400.
+        let surface = core().unwrap();
+        for (operation, missing) in [
+            (ops::SEARCH_SPANS, "query"),
+            (ops::LIST_TRACES, "session_id"),
+        ] {
+            let method = surface.method(operation).unwrap();
+            let err = call_for(method, Vec::new()).unwrap_err();
+            assert!(
+                err.to_string().contains(missing),
+                "{operation} must name {missing:?}: {err}",
+            );
+            assert!(
+                err.to_string().contains("query parameter"),
+                "{operation} must say where the parameter travels: {err}",
+            );
+        }
+    }
+
+    #[test]
+    fn supplying_a_required_query_parameter_is_all_that_is_asked() {
+        // The other half of the gate: enforcement may not start demanding
+        // optional parameters. `searchSpans` requires `query` and not
+        // `top_k`, and every caller that sends the required one must still
+        // build.
+        let surface = core().unwrap();
+        let call = call_for(
+            surface.method(ops::SEARCH_SPANS).unwrap(),
+            vec![("query", "gum glow charm".to_owned())],
+        )
+        .unwrap();
+        assert_eq!(call.path, "/v1/search/spans");
+        assert_eq!(
+            call.query,
+            vec![("query".to_owned(), "gum glow charm".to_owned())],
+        );
+    }
+
+    #[test]
+    fn an_optional_parameter_left_unset_is_still_simply_omitted() {
+        // The omit-when-unset rule predates this gate and must survive it:
+        // an unset optional parameter is left out so the server's own default
+        // applies, rather than pinned to whatever today's default happens to
+        // be.
+        let surface = core().unwrap();
+        let call = call_for(surface.method(ops::LIST_SESSIONS).unwrap(), Vec::new()).unwrap();
+        assert!(call.query.is_empty(), "got: {:?}", call.query);
+    }
+
+    #[test]
+    fn an_operation_that_requires_a_body_is_refused_without_one() {
+        // Contract-invalid and invisible: the request is syntactically fine
+        // and means nothing. Every operation in this position is one this
+        // crate's consumers do not expose today, which is exactly why the
+        // gap could sit here unnoticed until one of them does.
+        let surface = core().unwrap();
+        let method = surface.method("createSkill").unwrap();
+        let err = call_for(method, Vec::new()).unwrap_err();
+        assert!(
+            err.to_string().contains("requires a request body"),
+            "got: {err}",
+        );
+    }
+
+    #[test]
+    fn an_operation_that_declares_no_body_refuses_one() {
+        let surface = core().unwrap();
+        let method = surface.method(ops::GET_SESSION).unwrap();
+        let err = call_for_with_body(
+            method,
+            vec![("id", "s-1".to_owned())],
+            Some("{}".to_owned()),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("declares no request body"),
+            "got: {err}",
+        );
+    }
+
+    #[test]
+    fn a_required_body_is_carried_on_the_call_when_it_is_supplied() {
+        let surface = core().unwrap();
+        let method = surface.method("createSkill").unwrap();
+        let call =
+            call_for_with_body(method, Vec::new(), Some(r#"{"name":"x"}"#.to_owned())).unwrap();
+        assert_eq!(call.method, "POST");
+        assert_eq!(call.body.as_deref(), Some(r#"{"name":"x"}"#));
+    }
+
+    #[test]
+    fn an_optional_body_may_be_present_or_absent() {
+        // `seedDemo` is the one operation a consumer drives today that takes
+        // a body at all, and its body is optional — so both spellings have to
+        // keep working, or the seed command breaks on a rule meant for
+        // operations nobody calls yet.
+        let surface = core().unwrap();
+        let method = surface.method(ops::SEED_DEMO).unwrap();
+        assert_eq!(call_for(method, Vec::new()).unwrap().body, None);
+        assert_eq!(
+            call_for_with_body(method, Vec::new(), Some("{}".to_owned()))
+                .unwrap()
+                .body
+                .as_deref(),
+            Some("{}"),
+        );
     }
 
     #[test]

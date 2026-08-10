@@ -12,6 +12,11 @@
 //! (which is normal in a development grove) cannot rescue the run and make the
 //! test pass for the wrong reason.
 
+// The same allowance the crate's unit-test modules carry: a test that cannot
+// set its own fixture up has nothing left to assert, so panicking is the
+// outcome rather than a failure mode to handle.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::path::PathBuf;
 use std::process::{Command, Output};
 

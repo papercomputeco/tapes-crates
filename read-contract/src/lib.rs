@@ -37,7 +37,7 @@ pub mod error;
 pub mod invoke;
 pub mod transport;
 
-pub use contract::{CoreSurface, TAPES_API_YAML, call_for, core, ops};
+pub use contract::{CoreSurface, TAPES_API_YAML, call_for, call_for_with_body, core, ops};
 pub use error::{Error, Result};
 pub use invoke::{PathMode, call_url};
 pub use transport::{ReadOperations, ReadTransport};
