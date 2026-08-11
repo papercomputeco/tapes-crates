@@ -4,7 +4,7 @@
 # Two gates, in order:
 #
 #   1. The vendored file still carries the fingerprint recorded in
-#      crates/tapes-read-contract/contracts/PROVENANCE.md — a hand-edit of the vendored
+#      crates/tapes-client/contracts/PROVENANCE.md — a hand-edit of the vendored
 #      document fails here even with no network and no tapes checkout on the
 #      machine.
 #   2. Fetch the contract asset from the pinned tapes release and byte-diff it
@@ -35,7 +35,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
-vendored="${here}/crates/tapes-read-contract/contracts"
+vendored="${here}/crates/tapes-client/contracts"
 provenance="${vendored}/PROVENANCE.md"
 
 # The tag the recorded fingerprint belongs to, per PROVENANCE.md.

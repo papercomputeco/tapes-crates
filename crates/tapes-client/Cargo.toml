@@ -1,0 +1,80 @@
+# Dual-licensed under MIT OR Apache-2.0 — see LICENSE-MIT and LICENSE-APACHE
+# at the repository root.
+#
+# `publish` stays false until the first deliberate crates.io release; flip it
+# together with that release PR, alongside the sibling crates.
+
+# A member of the repository-root workspace, like every crate here. Membership
+# is what puts this crate in the same `cargo test` / `cargo clippy` selection as
+# the crates it ships beside — a package outside that selection is covered only
+# where somebody remembers to name it.
+[package]
+name = "tapes-client"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.85"
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository = "https://github.com/papercomputeco/tapes-crates"
+description = "One client for the whole tapes read surface: the sealed contract and a deployment's discovered cassettes, driven through a single pluggable transport."
+
+[lib]
+name = "tapes_client"
+path = "src/lib.rs"
+
+# The default build is what a command-line consumer wants. Both features are
+# additive and neither is load-bearing for the crate's own logic: a consumer
+# embedding this in a GUI takes `--no-default-features` and skips clap, and one
+# supplying its own authenticated transport skips reqwest with it.
+[features]
+default = ["cli", "direct-http"]
+# The generated clap surfaces. Off, the operation tables and the transport seam
+# are unchanged — only the command synthesis goes away.
+cli = ["dep:clap"]
+# The in-crate HTTP transport. Off, the crate has no HTTP client at all and a
+# consumer plugs its own into `TapesTransport`.
+direct-http = ["dep:http", "dep:reqwest"]
+
+# Dependency versions match the consumers, so their lockfiles do not fork when
+# they consume this crate.
+[dependencies]
+# `string` lets a Command/Arg be named by an owned String rather than only by a
+# `&'static str`. The cassette surface is built from a document fetched at
+# runtime, so every one of its names is owned; without this feature that
+# surface cannot be expressed at all.
+clap = { version = "4", features = ["string"], optional = true }
+dirs = "5"
+http = { version = "1", optional = true }
+# reqwest is built WITHOUT any compression feature on purpose: the transport
+# hands back the server's bytes as sent.
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls",
+  "json",
+], optional = true }
+# `DeserializeOwned` is the bound on the generic response target; the derive
+# feature is for this crate's own models and for consumers'.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# serde_yaml is archived upstream, but it is what the consumers already read
+# the vendored contract with, and this crate must parse the same bytes the same
+# way. Replacing it is a change to make in one place, later, on purpose.
+serde_yaml = "0.9"
+snafu = "0.8"
+tracing = "0.1"
+url = "2"
+
+[dev-dependencies]
+# The tests pin a consumer's decorator shape, whose `--tapes-url` falls back to
+# an environment variable; `env` is a test-only need, the library itself never
+# reads one through clap.
+clap = { version = "4", features = ["env", "string"] }
+# The seal check's negative controls point its checkout fallback at an empty
+# directory, so a tapes checkout beside the repository cannot make them pass
+# for the wrong reason.
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
+
+[lints]
+workspace = true

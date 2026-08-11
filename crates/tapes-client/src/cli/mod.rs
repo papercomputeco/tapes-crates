@@ -19,9 +19,9 @@
 use clap::{Arg, ArgMatches, Command};
 use snafu::{OptionExt, ResultExt};
 
+use crate::cassettes::spec::{Cassette, Location, Method, Surface};
 use crate::error::{Result, error};
-use crate::invoke::Call;
-use crate::spec::{Cassette, Location, Method, Surface};
+use crate::transport::Call;
 
 /// The flag a request body is supplied through.
 const BODY: &str = "body";
@@ -207,7 +207,7 @@ pub fn read_body(raw: &str) -> Result<String> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::spec::{self, ReducerConfig};
+    use crate::cassettes::spec::{self, ReducerConfig};
     use clap::ArgAction;
     use serde_json::json;
 
@@ -564,7 +564,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_resolved_invocation_calls_the_route_the_spec_named() {
-        use crate::transport::DirectHttp;
+        use crate::http::DirectHttp;
         use url::Url;
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -608,7 +608,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_cassette_error_body_is_surfaced_rather_than_the_bare_status() {
-        use crate::transport::DirectHttp;
+        use crate::http::DirectHttp;
         use url::Url;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};

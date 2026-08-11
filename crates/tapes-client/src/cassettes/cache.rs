@@ -44,8 +44,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::discovery::Discovery;
-use crate::spec::{self, ReducerConfig, Surface};
+use crate::cassettes::discovery::Discovery;
+use crate::cassettes::spec::{self, ReducerConfig, Surface};
 use crate::transport::{SpecFetch, SpecTransport};
 
 /// How one consumer's cache is named, keyed, and aged.
@@ -323,7 +323,7 @@ async fn revalidate<T: SpecTransport>(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::discovery::DiscoveryEntry;
+    use crate::cassettes::discovery::DiscoveryEntry;
     use serde_json::json;
 
     /// tapesctl's parameters, which these moved tests were written against.

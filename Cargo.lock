@@ -1490,12 +1490,24 @@ dependencies = [
 name = "tapes-cassette-client"
 version = "0.1.0"
 dependencies = [
+ "reqwest",
+ "serde_json",
+ "snafu",
+ "tapes-client",
+ "url",
+]
+
+[[package]]
+name = "tapes-client"
+version = "0.1.0"
+dependencies = [
  "clap",
  "dirs",
  "http",
  "reqwest",
  "serde",
  "serde_json",
+ "serde_yaml",
  "snafu",
  "tempfile",
  "tokio",
@@ -1527,16 +1539,7 @@ dependencies = [
 name = "tapes-read-contract"
 version = "0.1.0"
 dependencies = [
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "snafu",
- "tapes-cassette-client",
- "tempfile",
- "tokio",
- "url",
- "wiremock",
+ "tapes-client",
 ]
 
 [[package]]

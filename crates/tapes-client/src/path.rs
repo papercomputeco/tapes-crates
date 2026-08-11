@@ -17,23 +17,27 @@
 //! belongs in one place: a path value is substituted into its segment and the
 //! segment is pushed whole through `path_segments_mut`, so a value containing
 //! `../` stays one segment instead of addressing a different route.
+//!
+//! Both surfaces join here. A cassette route and a sealed-contract route are
+//! the same kind of string against the same kind of base, and when the two had
+//! a builder each only one of them had learned about gateway prefixes.
 
+use crate::transport::Call;
 use snafu::ResultExt;
-use tapes_cassette_client::Call;
 use url::Url;
 
 use crate::error::{Result, error};
 
 /// How a contract path template is joined onto a base URL.
 ///
-/// The default is [`PathMode::RootAbsolute`], which is the behaviour every
+/// The default is [`PathMode::Direct`], which is the behaviour every
 /// existing caller of the shared builder already has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PathMode {
     /// The path template is root-absolute: any path prefix on the base is
     /// dropped, and `/v1/sessions` addresses the server's own root.
     #[default]
-    RootAbsolute,
+    Direct,
     /// The path template is joined *under* the base's path, preserving a
     /// gateway prefix such as `/<gateway>/tapes/`.
     UnderBase,
@@ -71,7 +75,7 @@ pub fn call_url(base: &Url, call: &Call<'_>, mode: PathMode) -> Result<Url> {
     let mut url = match mode {
         // `join("/")` resets to the origin root and drops any query or
         // fragment the base carried.
-        PathMode::RootAbsolute => base.join("/").context(error::UrlSnafu)?,
+        PathMode::Direct => base.join("/").context(error::UrlSnafu)?,
         PathMode::UnderBase => {
             let mut url = base.clone();
             // A base is a mount point, not a request: anything after the path
@@ -88,7 +92,7 @@ pub fn call_url(base: &Url, call: &Call<'_>, mode: PathMode) -> Result<Url> {
             .path_segments_mut()
             .map_err(|()| error::NotABaseSnafu.build())?;
         match mode {
-            PathMode::RootAbsolute => {
+            PathMode::Direct => {
                 segments.clear();
             }
             PathMode::UnderBase => {
@@ -132,19 +136,19 @@ mod tests {
     }
 
     #[test]
-    fn root_absolute_is_the_default_mode() {
+    fn direct_is_the_default_mode() {
         // The mode every existing caller of the shared builder already has.
-        assert_eq!(PathMode::default(), PathMode::RootAbsolute);
+        assert_eq!(PathMode::default(), PathMode::Direct);
     }
 
     #[test]
-    fn a_root_absolute_join_drops_a_base_path_prefix() {
+    fn a_direct_join_drops_a_base_path_prefix() {
         // A standalone client's `/v1/sessions` addresses the server root, and
         // this is the behaviour the cassette transport has always had.
         let url = call_url(
             &base("http://127.0.0.1:8081/base/"),
             &sessions(),
-            PathMode::RootAbsolute,
+            PathMode::Direct,
         )
         .unwrap();
         assert_eq!(url.as_str(), "http://127.0.0.1:8081/v1/sessions");
@@ -187,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn an_under_base_join_against_a_bare_origin_matches_the_root_absolute_result() {
+    fn an_under_base_join_against_a_bare_origin_matches_the_direct_result() {
         // With no prefix to preserve the two modes must agree, or a
         // standalone deployment would depend on which mode its client picked.
         let bare = base("http://127.0.0.1:8081");
@@ -201,7 +205,7 @@ mod tests {
                 expected,
             );
             assert_eq!(
-                call_url(candidate, &sessions(), PathMode::RootAbsolute)
+                call_url(candidate, &sessions(), PathMode::Direct)
                     .unwrap()
                     .as_str(),
                 expected,
@@ -220,7 +224,7 @@ mod tests {
             ..Default::default()
         };
         for (mode, prefix) in [
-            (PathMode::RootAbsolute, "http://127.0.0.1:8081/v1/sessions/"),
+            (PathMode::Direct, "http://127.0.0.1:8081/v1/sessions/"),
             (
                 PathMode::UnderBase,
                 "http://127.0.0.1:8081/primary/tapes/v1/sessions/",
@@ -234,7 +238,7 @@ mod tests {
 
     #[test]
     fn an_empty_query_set_leaves_no_bare_question_mark() {
-        for mode in [PathMode::RootAbsolute, PathMode::UnderBase] {
+        for mode in [PathMode::Direct, PathMode::UnderBase] {
             let url = call_url(&base("http://127.0.0.1:8081"), &sessions(), mode).unwrap();
             assert_eq!(url.as_str(), "http://127.0.0.1:8081/v1/sessions");
         }
@@ -253,7 +257,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        for mode in [PathMode::RootAbsolute, PathMode::UnderBase] {
+        for mode in [PathMode::Direct, PathMode::UnderBase] {
             let url = call_url(&base("http://127.0.0.1:8081"), &call, mode).unwrap();
             let query = url.query().unwrap();
             assert!(query.contains("query=gum+glow+charm"), "got: {query}");

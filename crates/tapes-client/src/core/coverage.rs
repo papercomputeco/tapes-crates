@@ -20,7 +20,7 @@
 //! Each consumer keeps its own tables and calls [`check`] from a test:
 //!
 //! ```no_run
-//! # use tapes_read_contract::coverage;
+//! # use tapes_client::core::coverage;
 //! const EXPOSED: &[(&str, &str)] = &[("listSessions", "sessions list")];
 //! const UNEXPOSED: &[(&str, &str)] = &[("ping", "liveness probe; no CLI health verb asked for")];
 //!
@@ -32,7 +32,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::contract::core;
+use crate::core::contract::core;
 use crate::error::Result;
 
 /// A coverage table: `operationId` paired with prose for the reviewer and the
@@ -141,7 +141,7 @@ pub fn check(exposed: Table<'_>, unexposed: Table<'_>) -> std::result::Result<()
 ///
 /// The input a consumer's own gate reads; exposed as a convenience so a
 /// consumer that wants a different check than [`check`] does not have to reach
-/// through [`crate::contract::core`].
+/// through [`crate::core::contract::core`].
 pub fn operation_ids() -> Result<Vec<String>> {
     let mut ids: Vec<String> = core()?.operation_ids().map(ToOwned::to_owned).collect();
     ids.sort();
@@ -152,7 +152,7 @@ pub fn operation_ids() -> Result<Vec<String>> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::contract::ops;
+    use crate::core::contract::ops;
 
     #[test]
     fn the_contract_has_operations_to_gate() {
