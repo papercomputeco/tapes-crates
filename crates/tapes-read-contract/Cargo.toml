@@ -4,23 +4,23 @@
 # `publish` stays false until the first deliberate crates.io release; flip it
 # together with that release PR, alongside the sibling crates.
 
-# A member of the repository-root workspace, like `cassette-client`. Membership
+# A member of the repository-root workspace, like every crate here. Membership
 # is what puts this crate in the same `cargo test` / `cargo clippy` selection as
 # the crates it ships beside — a package outside that selection is covered only
-# where somebody remembers to name it, which is how `cassette-client` once went
-# missing from CI entirely.
+# where somebody remembers to name it, which is how the cassette client once
+# went missing from CI entirely.
 #
 # Being a member changes nothing for consumers: a git pin resolves a package by
 # name anywhere in the repository, so this crate is still taken independently of
 # its siblings.
 [package]
 name = "tapes-read-contract"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 rust-version = "1.85"
-license = "MIT OR Apache-2.0"
-publish = false
-authors = ["Paper Compute"]
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
 repository = "https://github.com/papercomputeco/tapes-crates"
 description = "The vendored tapes read contract and the machinery that drives requests from it: operation lookup, parameter routing, URL construction, and the operation-coverage gate."
 
@@ -33,8 +33,8 @@ path = "src/lib.rs"
 [dependencies]
 # The OpenAPI reducer and the `Call` type. The read contract and the cassette
 # surface deliberately share one reducer — two document sources, one reading of
-# OpenAPI — so this crate layers on `cassette-client` rather than copying it.
-tapes-cassette-client = { path = "../cassette-client", version = "0.1.0" }
+# OpenAPI — so this crate layers on the cassette client rather than copying it.
+tapes-cassette-client = { path = "../tapes-cassette-client", version = "0.1.0" }
 # reqwest appears only in the streaming half of the transport seam, whose
 # return type is a live response. Built WITHOUT any compression feature,
 # matching the consumers: the transport hands back the server's bytes as sent.
@@ -59,7 +59,5 @@ tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
 
-[lints.clippy]
-unwrap_used = "deny"
-expect_used = "deny"
-panic = "deny"
+[lints]
+workspace = true

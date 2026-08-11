@@ -28,10 +28,11 @@ responsibilities:
 
 ## The crates
 
-The repository is one workspace. Its first two crates are split by a single
-test: does adding one more harness change this code?
+The repository is one workspace: the root manifest is a workspace and nothing
+else, and every crate lives under `crates/`. Its first two crates are split by
+a single test: does adding one more harness change this code?
 
-- **`tapes-harnesses`** (root) — no, it changes *because* of harnesses. The
+- **`tapes-harnesses`** (`crates/tapes-harnesses/`) — no, it changes *because* of harnesses. The
   registry, launch recipes, config patch grammars, plugin artifacts, the
   per-harness attribution lanes and their composition, and per-harness
   transcript knowledge.
@@ -39,9 +40,9 @@ test: does adding one more harness change this code?
   `X-Tapes-*` envelope producer and the harness-id vocabulary it stamps, the
   capture-gateway environment contract and launch-nonce protocol, peer-PID
   lookup, and the peer-trust ancestry walk.
-- **`tapes-cassette-client`** (`cassette-client/`) — the cassette surface a
+- **`tapes-cassette-client`** (`crates/tapes-cassette-client/`) — the cassette surface a
   consumer's CLI generates from a fetched document.
-- **`tapes-read-contract`** (`read-contract/`) — the other document source for
+- **`tapes-read-contract`** (`crates/tapes-read-contract/`) — the other document source for
   the same reducer: the *published* tapes read contract, vendored here from a
   release asset so the system holds one copy rather than one per client, plus
   the operation lookup, URL construction, transport seam, and coverage gate
@@ -56,7 +57,7 @@ session's fields — it declares a trait and the harness crate implements it.
 ## Adding a harness
 
 Teaching this crate about a new coding agent starts with one `const` in
-`src/harness.rs`. [`docs/adding-a-harness.md`](docs/adding-a-harness.md) walks
+`crates/tapes-harnesses/src/harness.rs`. [`docs/adding-a-harness.md`](docs/adding-a-harness.md) walks
 the whole path: the registry declaration, when a launch recipe is needed, which
 attribution strategy applies, and what the tapes deriver needs on its side.
 

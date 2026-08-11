@@ -4,23 +4,23 @@
 # `publish` stays false until the first deliberate crates.io release; flip it
 # together with that release PR, alongside the sibling `tapes-harnesses` crate.
 
-# A member of the repository-root workspace. It used to declare an empty
-# `[workspace]` of its own, which made it a sibling package that every gate had
-# to be pointed at by hand — and one that was therefore easy to leave out of a
-# gate entirely. Membership is what puts it in the same `cargo test` and
-# `cargo clippy` selection as the crates it ships beside.
+# A member of the repository-root workspace, which is what puts it in the same
+# `cargo test` and `cargo clippy` selection as the crates it ships beside. It
+# once declared an empty `[workspace]` of its own, making it a sibling package
+# every gate had to be pointed at by hand — and therefore easy to leave out of
+# a gate entirely.
 #
 # Being a member changes nothing for consumers: a git pin resolves a package by
 # name anywhere in the repository, so this crate is still taken independently of
 # its siblings.
 [package]
 name = "tapes-cassette-client"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 rust-version = "1.85"
-license = "MIT OR Apache-2.0"
-publish = false
-authors = ["Paper Compute"]
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
 repository = "https://github.com/papercomputeco/tapes-harnesses"
 description = "Shared client-side machinery for the generated tapes cassette surface: discovery, OpenAPI reduction, the on-disk surface cache, clap command synthesis, and the no-auth HTTP transport."
 
@@ -56,7 +56,5 @@ tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
 
-[lints.clippy]
-unwrap_used = "deny"
-expect_used = "deny"
-panic = "deny"
+[lints]
+workspace = true

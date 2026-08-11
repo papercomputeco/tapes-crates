@@ -3,10 +3,10 @@
 This crate is client-side harness knowledge: how to launch a coding agent
 under a capture proxy, how to work out which session a request belongs to,
 where the agent writes its transcripts, and what goes in the `X-Tapes-*`
-envelope. Teaching it about a new agent starts in one file — `src/harness.rs` —
+envelope. Teaching it about a new agent starts in one file — `crates/tapes-harnesses/src/harness.rs` —
 and grows from there only as far as that agent's shape demands.
 
-Start by reading `src/harness.rs`. The types there are the vocabulary this
+Start by reading `crates/tapes-harnesses/src/harness.rs`. The types there are the vocabulary this
 document uses.
 
 The five steps below are the walkthrough. The sections after them are the
@@ -16,7 +16,7 @@ trusted, and what breaks when the registry changes.
 
 ## Step 1 — declare it
 
-Add a `const` to `src/harness.rs` and put it in `REGISTRY`:
+Add a `const` to `crates/tapes-harnesses/src/harness.rs` and put it in `REGISTRY`:
 
 ```rust
 /// Gemini CLI.
@@ -45,7 +45,7 @@ harness id from `GEMINI.id()` rather than spelling the string again.
 `crates/tapes-capture/src/envelope.rs` alongside the others. That constant is the on-wire name, and
 the tapes deriver keys on it — see "The other two places" below.
 
-The invariant tests at the bottom of `src/harness.rs` run against the whole
+The invariant tests at the bottom of `crates/tapes-harnesses/src/harness.rs` run against the whole
 registry, so `cargo test` will tell you if a declaration is inconsistent: a
 duplicated name, an id the envelope never emits, a transcript tree that cannot
 be located, a User-Agent rule that claims traffic it should not.
@@ -58,16 +58,16 @@ self-attributing. Land the declaration, then add capability.
 
 ## Step 2 — a launch recipe, if the agent needs one
 
-`LaunchSupport::Recipe` promises a `LaunchRecipe` in `src/launch/` whose
+`LaunchSupport::Recipe` promises a `LaunchRecipe` in `crates/tapes-harnesses/src/launch/` whose
 `harness()` returns your id. Recipes are **pure**: given a `ProxyEndpoint`,
 `plan()` returns the argv prefix, the environment overlay, and any config
 documents the agent reads from disk. It never spawns a process, writes a file,
 creates a temporary directory, or reads the user's home — the consumer owns all
 of that, and therefore owns cleanup.
 
-`src/launch/claude.rs` is the smallest complete example (one environment
-variable). `src/launch/codex.rs` shows a config-flag grammar with fallible
-planning; `src/launch/opencode.rs` shows a recipe that emits a config document.
+`crates/tapes-harnesses/src/launch/claude.rs` is the smallest complete example (one environment
+variable). `crates/tapes-harnesses/src/launch/codex.rs` shows a config-flag grammar with fallible
+planning; `crates/tapes-harnesses/src/launch/opencode.rs` shows a recipe that emits a config document.
 
 The line to hold is *harness* knowledge versus *deployment* knowledge. Which
 environment variable carries the base URL is yours. What that URL's path prefix
@@ -83,7 +83,7 @@ set and capture needs code running *inside* the agent instead. Declare
 
 An agent with no base-URL knob needs a file installed into it — an extension
 that registers the agent's providers against the proxy from the inside. Those
-files live in `assets/<harness>/` and are declared in `src/plugin.rs` as
+files live in `crates/tapes-harnesses/assets/<harness>/` and are declared in `crates/tapes-harnesses/src/plugin.rs` as
 `PluginArtifact`s, which the registry hands out through
 `PluginDelivery::BundledExtension`. A consumer's `plugin install` is then a file
 copy: it resolves the name, takes `harness.plugin_artifacts()`, and writes each
@@ -93,7 +93,7 @@ The bar for putting an asset here is that it names **no vendor**. It reads its
 endpoint from `plugin::GATEWAY_URL_ENV` and nothing else — no product-branded
 variable, no default endpoint, no "run `<product> ...`" hint in its copy. An
 asset that cannot meet that bar stays in the consumer's repository and gets no
-variant here; `src/plugin.rs`'s tests enforce the bar for the ones that do.
+variant here; `crates/tapes-harnesses/src/plugin.rs`'s tests enforce the bar for the ones that do.
 
 Two properties an artifact must have, both tested: it is **inert** until
 `TAPES_GATEWAY_URL` is set, because it installs globally and would otherwise
@@ -110,20 +110,20 @@ error. Anything a client needs to say differently is read from the environment
 of the launch it owns, never shipped as different bytes; and because an earlier
 release may have installed a differently-named copy, `PluginArtifact` carries
 the names it supersedes and `PluginArtifact::install` removes them. See
-`src/plugin/pi.rs`.
+`crates/tapes-harnesses/src/plugin/pi.rs`.
 
 An agent whose plugin is installed by the agent's *own* plugin manager, and
 whose hook command or identity strings are irreducibly the consumer's, cannot
 ship as fixed artifacts. It ships as **templates** instead —
 `PluginDelivery::HookManifestTemplates`, where the crate owns the JSON
 structure and event set and the consumer renders its command and identity into
-slots (see `src/plugin/codex_app.rs`). The vendor-neutrality bar is the same;
+slots (see `crates/tapes-harnesses/src/plugin/codex_app.rs`). The vendor-neutrality bar is the same;
 only the branding *slots* are consumer-filled.
 
 Rendered manifests are still not an installed plugin: the harness's plugin
 manager wants a packaged source directory and is driven by the harness's own
 CLI. Both belong to the harness, so both live here too —
-`src/plugin/codex_app/manager.rs` renders the marketplace wrapper, names the
+`crates/tapes-harnesses/src/plugin/codex_app/manager.rs` renders the marketplace wrapper, names the
 paths inside it, and runs the registration, including the CLI quirks (stderr
 phrasings that mean "already done", a same-named source pointing elsewhere)
 that decide whether an install completes. A consumer writes bytes and prints
@@ -136,11 +136,11 @@ synthetic one. Which strategy applies is a property of the agent, not a choice:
 
 - **`SessionsDir`** — the agent publishes a PID-indexed session file it keeps
   current. The peer PID of the accepted loopback connection indexes straight to
-  an identity. Claude Code works this way; see `src/attribution/claude/`.
+  an identity. Claude Code works this way; see `crates/tapes-harnesses/src/attribution/claude/`.
 - **`OpenRollout`** — the agent publishes nothing by PID, and identity must be
   recovered from a transcript file a live process holds open, filtered by
   recency and by the provider the launch configured. Codex works this way; see
-  `src/attribution/codex/`.
+  `crates/tapes-harnesses/src/attribution/codex/`.
 - **`SelfAttributing`** — the agent stamps its own complete `X-Tapes-*`
   envelope from inside itself, through an extension a peer-PID lookup cannot
   see. There is no lane to write: the client's whole job is to *preserve* what
@@ -150,10 +150,10 @@ synthetic one. Which strategy applies is a property of the agent, not a choice:
   launched process. Identity arrives instead as allowlisted lifecycle reports
   from a hook plugin installed into the agent; the crate owns the parsed
   shape of those reports, and the consumer owns receiving them. The Codex
-  desktop app (`CODEX_APP`) is this shape; see `src/attribution/codex_app/`.
+  desktop app (`CODEX_APP`) is this shape; see `crates/tapes-harnesses/src/attribution/codex_app/`.
 - **`None`** — no client-side attribution yet.
 
-New attribution code goes in `src/attribution/<harness>/`, grouped by harness.
+New attribution code goes in `crates/tapes-harnesses/src/attribution/<harness>/`, grouped by harness.
 Anything genuinely harness-agnostic does not belong in this crate at all: it
 goes to `tapes-capture`, beside `peer_pid` and `peer_trust`, which both
 existing lanes share. The test is whether adding one more harness would change
@@ -161,7 +161,7 @@ it — if not, it is capture knowledge, and the dependency edge only runs this
 way, so putting it here is what makes it unreachable from the other side.
 
 The composition — the sequence that turns one request's facts into one outcome
-— lives in `src/attribution/pipeline.rs` and stays there. It exists precisely so
+— lives in `crates/tapes-harnesses/src/attribution/pipeline.rs` and stays there. It exists precisely so
 that it does not exist twice: it was validated against real traffic, and a
 second implementation would drift silently, mis-attributing sessions in ways
 only a parity corpus would catch.
@@ -188,7 +188,7 @@ uploads. If your agent writes a tree this crate can locate, add a
 home-directory override the agent itself honours, in one place, the way
 `CodexRollouts` delegates for `$CODEX_HOME`.
 
-Discovery and packaging in `src/transcript/` are shared. Delivery, auth, and
+Discovery and packaging in `crates/tapes-harnesses/src/transcript/` are shared. Delivery, auth, and
 retry are not — they belong to each consumer, and always will.
 
 ## Step 5 — the envelope
@@ -232,8 +232,8 @@ The canonical name, and the most load-bearing string in the crate:
   two together.
 - It is what `supported_agents()` returns, and so the name a consumer offers.
 - It is what `LaunchRecipe::harness()` must return; each recipe pins that in
-  its own test (`src/launch/claude.rs`, `src/launch/codex.rs`,
-  `src/launch/opencode.rs`).
+  its own test (`crates/tapes-harnesses/src/launch/claude.rs`, `crates/tapes-harnesses/src/launch/codex.rs`,
+  `crates/tapes-harnesses/src/launch/opencode.rs`).
 - It is the key the tapes deriver reads on the far side of the wire, which is
   why renaming one is a two-repository change and not a rename.
 
@@ -286,7 +286,7 @@ Read through `is_launchable()`, which is exactly the predicate
 `supported_agents()` filters on. The variants differ in *who plans* the launch,
 not in whether one happens:
 
-- **`Recipe`** promises a `LaunchRecipe` in `src/launch/` whose `harness()`
+- **`Recipe`** promises a `LaunchRecipe` in `crates/tapes-harnesses/src/launch/` whose `harness()`
   returns your id. The consumer constructs it — the registry deliberately holds
   no recipe instances, because recipes carry per-harness inputs (Claude needs an
   endpoint; Codex an endpoint plus an auth mode and a provider identity;
@@ -303,7 +303,7 @@ not in whether one happens:
 ### `attribution`
 
 The declarative statement of which shape the harness's identity recovery has,
-and so which submodule under `src/attribution/` owns it. Step 3 covers what
+and so which submodule under `crates/tapes-harnesses/src/attribution/` owns it. Step 3 covers what
 each variant means; two behaviours hang off the *value* rather than off which
 modules happen to exist:
 
@@ -345,8 +345,8 @@ whole input to a `plugin install`: resolve the typed name through `find()`,
 take the slice, write each artifact beneath the user's home.
 `HookManifestTemplates` deliberately flattens to the empty slice — templates
 carry un-rendered slots, so a file-copy installer must see nothing to copy;
-an installer for that shape renders through `src/plugin/codex_app.rs` and
-packages the result with `src/plugin/codex_app/manager.rs`, which also drives
+an installer for that shape renders through `crates/tapes-harnesses/src/plugin/codex_app.rs` and
+packages the result with `crates/tapes-harnesses/src/plugin/codex_app/manager.rs`, which also drives
 the harness's own plugin manager over the packaged tree.
 
 The empty slice is the ordinary case and is not an error. An installer must be
@@ -375,7 +375,7 @@ does not buy, because "it's in the registry" is easy to over-read.
 answers "this harness needs no plugin" instead of "unknown harness".
 `supported_agents()` includes it, so anything deriving its list from the
 registry offers it without being edited. And with `LaunchSupport::Recipe` there
-is a real, tested recipe in the crate — `src/launch/opencode.rs` plans the
+is a real, tested recipe in the crate — `crates/tapes-harnesses/src/launch/opencode.rs` plans the
 config document that points opencode at the proxy — so the *crate* can plan the
 launch that makes its traffic capturable.
 
@@ -389,7 +389,7 @@ inventory and no subagent structure.
 
 That is exactly the gap opencode's bundled plugin closed. The recipe could
 always redirect, but a config file cannot name the session it belongs to;
-`assets/opencode/tapes-gateway.ts` stamps the complete envelope (and the
+`crates/tapes-harnesses/assets/opencode/tapes-gateway.ts` stamps the complete envelope (and the
 capture-nonce echo) from inside the harness, which is what moved `OPENCODE`
 from `None` to `SelfAttributing` — the pi road, taken by a harness that also
 kept its recipe.
@@ -451,7 +451,7 @@ dash where `/.` was. `encode_cwd` mapped only the slash, so every cwd containing
 a dot resolved to a directory that does not exist.
 
 The failure was **silent**. `session_files()` on a missing directory returns an
-empty set (`src/transcript/files.rs`), so the affected sessions lost every
+empty set (`crates/tapes-harnesses/src/transcript/files.rs`), so the affected sessions lost every
 transcript turn *and* their fork-parent evidence with no error raised anywhere.
 It was found by the first smoke run that happened to start from a dotted cwd.
 
@@ -459,7 +459,7 @@ It was found by the first smoke run that happened to start from a dotted cwd.
   documentation or your reading of its source. List the transcript root and
   compare it against the cwds you actually ran from.
 - Test a dotted cwd explicitly, and pin it byte-for-byte — the double-dash case
-  is pinned that way in `src/attribution/claude/fork_parent.rs` so a future
+  is pinned that way in `crates/tapes-harnesses/src/attribution/claude/fork_parent.rs` so a future
   encoding change is an obvious diff. Test whatever else your harness's users
   really have in paths: spaces, `@`, non-ASCII.
 - Make a resolved-but-missing transcript root **warn loudly**. Today an empty
@@ -495,7 +495,7 @@ session:
 Adding or modifying an entry is a small diff with a wide blast radius. This is
 the enumeration, so you can update deliberately rather than chase failures.
 
-**In this crate**, the invariant tests at the bottom of `src/harness.rs` run
+**In this crate**, the invariant tests at the bottom of `crates/tapes-harnesses/src/harness.rs` run
 against the whole registry, so `cargo test` is the checklist:
 
 - `supported_agents_is_the_launchable_subset_in_registry_order` asserts the full
@@ -518,7 +518,7 @@ against the whole registry, so `cargo test` is the checklist:
   here, and separately in tapesctl's plugin tests, so that particular name
   breaks two test suites the day it becomes real.
 - Outside the registry module: a new `HARNESS_ID_*` const in `crates/tapes-capture/src/envelope.rs`,
-  and a `harness()` test in your `src/launch/` recipe if you add one.
+  and a `harness()` test in your `crates/tapes-harnesses/src/launch/` recipe if you add one.
 
 **Downstream, but only when a consumer bumps its pin.** Both consumers depend on
 this crate by git revision, so nothing breaks in paper or tapesctl the moment
