@@ -39,6 +39,12 @@
 # No org, workflow, or packages scope is needed. The token never touches this
 # repository, so a leak cannot rewrite the crates themselves.
 #
+# Inside the job it is handed to the three steps that must have it — the
+# consumer checkout, the push, and `gh` — and is never persisted into a
+# `.git/config`. One step here runs the consumer's own Makefile, and this token
+# can write to every consumer, so a bump target that read it back out of a
+# checkout would be able to write to the other consumer too.
+#
 # One consumer is a private repository today. A public workflow naming it is
 # acceptable for now, and worth revisiting when that changes.
 # ---------------------------------------------------------------------------
@@ -95,34 +101,65 @@ jobs:
             echo "provisioned=true" >>"$GITHUB_OUTPUT"
           fi
 
+      # Actions are pinned to full commit SHAs rather than to `@v4` or
+      # `@stable`. Those are mutable refs, and this job handles a token that is
+      # writable in two repositories that are not this one — so an upstream tag
+      # that gets repointed would be reaching a credential with a blast radius
+      # larger than anything in the repository that runs it. A SHA cannot be
+      # repointed, and upgrading becomes a visible diff.
+      #
       # Full history: the PR body quotes the commit range between the revision
       # the consumer pins today and the one being shipped, and a shallow clone
       # cannot resolve the older end of it.
+      #
+      # `persist-credentials: false` on both checkouts. Nothing in this job
+      # needs a credential sitting in a `.git/config`, and one step here runs
+      # code this repository does not control (see below), so the tokens are
+      # handed to the two steps that actually need them and to nothing else.
       - name: Check out the crates repository
         if: steps.guard.outputs.provisioned == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           path: crates
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Check out ${{ matrix.consumer.repo }}
         if: steps.guard.outputs.provisioned == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ matrix.consumer.repo }}
           token: ${{ secrets.BUMP_FANOUT_TOKEN }}
           path: consumer
-          # Persist so the later `git push` reuses this token rather than the
-          # default one, which has no access to the consumer.
-          persist-credentials: true
+          # The token authenticates this clone and is then discarded rather than
+          # written into `consumer/.git/config`. The push step re-supplies it for
+          # exactly one command.
+          persist-credentials: false
 
       # The consumers' bump target refreshes Cargo.lock, which needs cargo.
       # Stable rather than each consumer's pinned toolchain: this only resolves
       # dependencies, and the consumer's own CI compiles the result.
+      #
+      # `@v1` of this action makes `toolchain` a required input; the `stable`
+      # branch is the same action with `stable` as its default.
       - name: Install Rust
         if: steps.guard.outputs.provisioned == 'true'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
 
+      # THE UNTRUSTED STEP. `make bump-harnesses` is the consumer's own
+      # Makefile, running whatever that repository's default branch says it
+      # runs, plus a dependency resolution that executes third-party build
+      # scripts. This repository does not review that code and should not have
+      # to: the design is that the consumers own their bump target.
+      #
+      # What makes that safe is that no credential is reachable from here.
+      # BUMP_FANOUT_TOKEN is writable in every consumer, so a single malicious
+      # or merely compromised bump target would otherwise be able to read it out
+      # of `.git/config` and write to the OTHER consumer — turning one bad
+      # repository into two. Hence `persist-credentials: false` above and no
+      # token in this step's `env`.
       - name: Run the consumer's bump target
         id: bump
         if: steps.guard.outputs.provisioned == 'true'
@@ -166,20 +203,49 @@ jobs:
             echo "changed=true" >>"$GITHUB_OUTPUT"
           fi
 
-      - name: Open the repin PR
+      # Commit the bump and write the PR text. Still no credential: everything
+      # here is local, and the two steps that follow are the only ones that see
+      # a token.
+      #
+      # ONE branch per consumer, reused and force-updated, rather than one per
+      # revision.
+      #
+      # A per-revision name (`...-<short>`) looked like it kept re-runs tidy, and
+      # it did — but only for re-runs of the SAME revision. When main moved while
+      # a repin PR was still open, the next run produced a second branch, a
+      # second PR, and no relationship between them: two independently mergeable
+      # PRs against the same pin. Merging them out of order then moves the pin
+      # BACKWARD, silently, to a revision the consumer had already left behind —
+      # and the result still passes CI, because an older pin is not a broken one.
+      # That is precisely the quiet divergence this workflow exists to prevent,
+      # reintroduced by the workflow itself.
+      #
+      # With a stable name there is exactly one repin PR per consumer and it
+      # always carries the newest revision, so the failure has nowhere to live:
+      # there is never a second PR to merge in the wrong order. The cost is that
+      # a review in progress can be force-updated underneath it, which is the
+      # right trade — the newest revision is the one worth reviewing, and the PR
+      # body is rewritten to describe the new range.
+      - name: Commit the bump and describe it
+        id: commit
         if: steps.guard.outputs.provisioned == 'true' && steps.bump.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ secrets.BUMP_FANOUT_TOKEN }}
           REV: ${{ github.sha }}
           OLD_REV: ${{ steps.bump.outputs.old_rev }}
-          CONSUMER: ${{ matrix.consumer.repo }}
         run: |
           set -euo pipefail
           short="${REV:0:7}"
+          branch="automation/bump-tapes-crates"
+          echo "branch=${branch}" >>"$GITHUB_OUTPUT"
+          echo "title=:arrow_up: chore: bump the tapes crates to ${short}" >>"$GITHUB_OUTPUT"
 
           # What actually changed upstream, which is the whole reason a reviewer
           # can judge this PR at all — without it the diff is four opaque SHAs.
           # `--no-merges` because the range is squash-merged PRs already.
+          #
+          # `OLD_REV` is the pin on the consumer's default branch, not on the
+          # repin branch, so this range stays correct every time the branch is
+          # force-updated.
           cd crates
           if git rev-parse --verify --quiet "${OLD_REV}^{commit}" >/dev/null; then
             log="$(git log --oneline --no-merges "${OLD_REV}..${REV}")"
@@ -191,19 +257,7 @@ jobs:
           fi
           cd ..
 
-          cd consumer
-          # A deterministic branch name per revision, so re-running this
-          # workflow updates the existing PR instead of opening a second one.
-          branch="automation/bump-tapes-crates-${short}"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$branch"
-          git add -A
-          git commit -m ":arrow_up: chore: bump the tapes crates to ${short}"
-          git push --force-with-lease origin "$branch"
-
-          body="$(cat <<EOF
+          cat >"${GITHUB_WORKSPACE}/pr-body.md" <<EOF
           Re-points every tapes crates git dependency at \`${REV}\`.
 
           Opened automatically by the crates repository's \`bump-consumers\`
@@ -214,6 +268,11 @@ jobs:
           a sibling in the other consumer. Landing only one of them puts the two
           clients on different harness knowledge while both repos stay green.
 
+          This branch is reused: if main moves again before this lands, the
+          branch is force-updated to the newer revision and this description is
+          rewritten. There is only ever one open repin PR per consumer, so an
+          older one cannot be merged later and drag the pin backward.
+
           ## Upstream commits (\`${OLD_REV:0:7}..${short}\`)
 
           \`\`\`
@@ -223,20 +282,63 @@ jobs:
           Not auto-merged, and not to be merged on the strength of this
           description: CI on this PR is the gate.
           EOF
-          )"
 
-          # Update the existing PR when the branch already has one, rather than
-          # failing the run on a re-dispatch.
-          if existing="$(gh pr list --repo "$CONSUMER" --head "$branch" --state open --json number --jq '.[0].number')" &&
+          cd consumer
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git add -A
+          git commit -m ":arrow_up: chore: bump the tapes crates to ${short}"
+
+      # The first of two steps that see the token, and the only one that writes
+      # git objects. The credential is supplied for the length of one command
+      # through `http.extraheader` — it never reaches `.git/config`, so it is
+      # gone again the moment this step ends, and it was never present while the
+      # consumer's Makefile ran.
+      #
+      # `--force`, not `--force-with-lease`: the lease would be checked against a
+      # remote ref this clone deliberately never fetched, and the branch has a
+      # single writer anyway — the workflow's concurrency group serialises runs,
+      # and each matrix leg owns a different repository. The branch is automation
+      # property; overwriting it with the newest revision is the whole point.
+      - name: Push the bump branch
+        if: steps.guard.outputs.provisioned == 'true' && steps.bump.outputs.changed == 'true'
+        env:
+          BUMP_TOKEN: ${{ secrets.BUMP_FANOUT_TOKEN }}
+          BRANCH: ${{ steps.commit.outputs.branch }}
+        run: |
+          set -euo pipefail
+          cd consumer
+          auth="$(printf 'x-access-token:%s' "${BUMP_TOKEN}" | base64 -w0)"
+          # Masked so a git error that echoes its own arguments cannot print it.
+          echo "::add-mask::${auth}"
+          git -c "http.extraheader=AUTHORIZATION: basic ${auth}" \
+            push --force origin "HEAD:refs/heads/${BRANCH}"
+
+      # `gh` gets the token in its own environment and touches no working tree.
+      - name: Open or update the repin PR
+        if: steps.guard.outputs.provisioned == 'true' && steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.BUMP_FANOUT_TOKEN }}
+          CONSUMER: ${{ matrix.consumer.repo }}
+          BRANCH: ${{ steps.commit.outputs.branch }}
+          TITLE: ${{ steps.commit.outputs.title }}
+        run: |
+          set -euo pipefail
+          body="${GITHUB_WORKSPACE}/pr-body.md"
+
+          # The branch is stable, so on every run after the first there is
+          # already an open PR to update rather than a second one to open.
+          if existing="$(gh pr list --repo "$CONSUMER" --head "$BRANCH" --state open --json number --jq '.[0].number')" &&
              [[ -n "$existing" ]]; then
-            gh pr edit "$existing" --repo "$CONSUMER" --body "$body"
+            gh pr edit "$existing" --repo "$CONSUMER" --title "$TITLE" --body-file "$body"
             echo "::notice::Updated existing PR #${existing} on ${CONSUMER}."
           else
             gh pr create \
               --repo "$CONSUMER" \
-              --head "$branch" \
-              --title ":arrow_up: chore: bump the tapes crates to ${short}" \
-              --body "$body"
+              --head "$BRANCH" \
+              --title "$TITLE" \
+              --body-file "$body"
           fi
 
 # When these crates move to crates.io the shape survives: a version replaces the
