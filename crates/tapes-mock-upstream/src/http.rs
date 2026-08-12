@@ -348,6 +348,17 @@ fn accept_once(listener: &TcpListener, handler: &Handler, log: &Arc<Mutex<Vec<Re
 
 /// Read one request, hand it to `handler`, write the response, record it.
 fn serve_connection(mut stream: TcpStream, handler: &Handler, log: &Mutex<Vec<Request>>) {
+    // The listener is non-blocking so the accept loop can poll for shutdown, and
+    // on BSD-derived platforms — macOS included — `accept` hands back a socket
+    // that has *inherited* that flag. POSIX leaves the accepted socket's status
+    // flags unspecified and Linux happens to clear them, so a server that omits
+    // this line reads fine on Linux and drops connections on macOS. Restore
+    // blocking mode explicitly rather than relying on either behaviour.
+    //
+    // The read timeout below is not a substitute: `SO_RCVTIMEO` only bounds a
+    // *blocking* read, so on an inherited non-blocking socket every read returns
+    // `WouldBlock` immediately instead of waiting for the client's bytes.
+    let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
     let _ = stream.set_nodelay(true);
 
@@ -666,6 +677,42 @@ mod tests {
         let first = SseEvent::named("a", "1").encode();
         assert!(raw.contains(&format!("{:x}\r\nevent: a\ndata: 1\n\n\r\n", first.len())));
         assert!(raw.ends_with("0\r\n\r\n"));
+    }
+
+    /// A client that connects and only then sends its request is still served.
+    ///
+    /// This is the interleaving that made every socket test in this crate flaky
+    /// on macOS CI: the accept loop's listener is non-blocking, BSD-derived
+    /// `accept` hands that flag to the accepted socket, and the connection's
+    /// first read then failed with `WouldBlock` instead of waiting — which
+    /// [`read_request`] reads as "malformed" and answers by closing without a
+    /// byte written. The client saw an empty response, or a reset if its request
+    /// had landed in the receive queue by the time the server closed.
+    ///
+    /// The delay below is what makes the test deterministic rather than what
+    /// makes it pass: it holds the first byte back until the accept has
+    /// certainly happened (`ACCEPT_POLL` is 5ms), so the server is forced
+    /// through the ordering that used to lose the request. Remove the
+    /// `set_nonblocking(false)` in `serve_connection` and this fails every run.
+    #[test]
+    fn a_request_sent_after_the_accept_is_still_served() {
+        let server = MockServer::start(Arc::new(|_req: &Request| Response::text(200, "ok")))
+            .expect("the mock server binds a loopback port");
+        let mut stream = TcpStream::connect(server.addr()).unwrap();
+
+        std::thread::sleep(Duration::from_millis(200));
+
+        stream
+            .write_all(b"GET /late HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        stream.flush().unwrap();
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).unwrap();
+
+        let raw = String::from_utf8(raw).unwrap();
+        assert!(raw.starts_with("HTTP/1.1 200"), "empty or partial: {raw:?}");
+        assert!(raw.ends_with("ok"));
+        assert!(server.wait_for_requests(1, Duration::from_secs(5)));
     }
 
     /// Dropping the server frees the port, so a later test can bind again. The
