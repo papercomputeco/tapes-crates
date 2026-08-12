@@ -1,0 +1,184 @@
+# Publish one crate to crates.io, from a tag that names it.
+#
+# Tags are `<crate>-v<version>` — `tapes-client-v0.1.0`. One crate per tag is
+# the whole point: these three crates version independently, so a release is
+# always a statement about exactly one of them.
+#
+# THE UPLOAD IS CURRENTLY HELD. Every step below runs on a release tag except
+# the final `cargo publish`, which is skipped unless the repository variable
+# `PUBLISH_ENABLED` is set to the string `true`. That variable does not exist
+# yet, so tagging today is a complete rehearsal — tag parsing, the version
+# match against the manifest, every gate, and the packaging — that cannot
+# reach crates.io. Lifting the hold is a deliberate, separate act: create the
+# variable. Removing it re-arms the hold.
+#
+# See docs/releasing.md for the order to release these crates in and why.
+name: Release
+
+on:
+  push:
+    tags:
+      - "tapes-capture-v*"
+      - "tapes-client-v*"
+      - "tapes-harnesses-v*"
+  # Dispatch against the release tag itself (the ref picker lists tags). The
+  # confirmation input has to be retyped to match that tag, so a manual run
+  # started from the wrong ref cannot publish the crate it names.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Retype the release tag exactly (e.g. tapes-client-v0.1.0) to allow the upload"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # Resolve the tag to a crate and a version, and refuse anything that is
+      # not one of this repository's crates. The crate names are matched
+      # longest-prefix rather than split on the last `-v`, because the names
+      # themselves contain hyphens.
+      - name: Resolve crate and version from the tag
+        id: tag
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          crate=""
+          version=""
+          for c in tapes-capture tapes-client tapes-harnesses; do
+            case "${tag}" in
+              "${c}-v"*)
+                crate="${c}"
+                version="${tag#"${c}-v"}"
+                ;;
+            esac
+          done
+          if [ -z "${crate}" ]; then
+            echo "FAIL: ${tag} does not name a crate in this workspace." >&2
+            echo "      Expected <crate>-v<version> for one of: tapes-capture, tapes-client, tapes-harnesses" >&2
+            exit 1
+          fi
+          echo "crate=${crate}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "Tag ${tag} -> crate ${crate}, version ${version}"
+
+      # The tag is a claim about the manifest; this is where the claim is
+      # checked. A tag whose version does not match the crate's manifest is the
+      # single most likely release mistake, and it is the one that would
+      # otherwise publish a version number nobody can find in the source.
+      - name: Tag version matches the manifest
+        run: |
+          set -euo pipefail
+          crate="${{ steps.tag.outputs.crate }}"
+          tagged="${{ steps.tag.outputs.version }}"
+          manifest="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r --arg c "${crate}" '.packages[] | select(.name == $c) | .version')"
+          if [ -z "${manifest}" ] || [ "${manifest}" = "null" ]; then
+            echo "FAIL: ${crate} is not a package in this workspace" >&2
+            exit 1
+          fi
+          if [ "${manifest}" != "${tagged}" ]; then
+            echo "FAIL: tag says ${crate} ${tagged}, manifest says ${manifest}" >&2
+            echo "      Fix the manifest or the tag; do not publish a version the source does not claim." >&2
+            exit 1
+          fi
+          echo "ok: ${crate} ${tagged} matches the manifest"
+
+      # The same gates the branch runs, re-run against the tagged tree. A tag
+      # can point anywhere, including at a commit that never sat on main, so
+      # "CI was green on the branch" is not a statement about these bytes.
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy (all features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test
+        run: cargo test --locked
+      - name: Test (all features)
+        run: cargo test --locked --all-features
+      - name: Contract seal
+        run: make contracts-check
+        env:
+          TAPES_CONTRACT_STRICT: "1"
+      - name: Package every crate and verify it standalone
+        run: cargo package --workspace --locked
+
+      # Whether the upload may proceed, decided in one place so the publish
+      # step's condition is readable and the reason is written into the log
+      # either way.
+      #
+      # Two independent locks, and both must be open:
+      #
+      #   1. The repository variable PUBLISH_ENABLED must be exactly `true`.
+      #      This is the hold. It is absent today, so this job cannot publish
+      #      no matter how it was triggered.
+      #   2. A manual run must retype the tag into the `confirm` input. Tag
+      #      pushes skip this one — pushing a release tag is already the
+      #      deliberate act — but a dispatch is easy to start against the wrong
+      #      ref, so it has to say which release it means.
+      - name: Decide whether the upload is allowed
+        id: gate
+        env:
+          PUBLISH_ENABLED: ${{ vars.PUBLISH_ENABLED }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          allowed=true
+          if [ "${PUBLISH_ENABLED:-}" != "true" ]; then
+            allowed=false
+            echo "HOLD: repository variable PUBLISH_ENABLED is not \`true\` (it is '${PUBLISH_ENABLED:-<unset>}')."
+            echo "      Nothing will be uploaded. Everything above this line ran as a full rehearsal."
+          fi
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "${CONFIRM:-}" != "${GITHUB_REF_NAME}" ]; then
+            allowed=false
+            echo "HOLD: confirmation '${CONFIRM:-<empty>}' does not match the tag '${GITHUB_REF_NAME}'."
+          fi
+          echo "allowed=${allowed}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "## Release ${GITHUB_REF_NAME}"
+            echo
+            echo "- crate: \`${{ steps.tag.outputs.crate }}\`"
+            echo "- version: \`${{ steps.tag.outputs.version }}\`"
+            echo "- gates: passed"
+            if [ "${allowed}" = "true" ]; then
+              echo "- upload: **PROCEEDING** to crates.io"
+            else
+              echo "- upload: **HELD** — nothing was published"
+              echo
+              echo "The hold is the repository variable \`PUBLISH_ENABLED\`; set it to \`true\` to lift it."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      # The only step in this repository that can reach crates.io.
+      #
+      # `tapes-harnesses` depends on `tapes-capture` at a version, so this will
+      # fail for that crate until the required `tapes-capture` release is on
+      # crates.io. That failure is the dependency order enforcing itself and is
+      # the correct outcome — release in the order docs/releasing.md gives.
+      - name: Publish to crates.io
+        if: steps.gate.outputs.allowed == 'true'
+        run: cargo publish --locked -p "${{ steps.tag.outputs.crate }}"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Report the hold
+        if: steps.gate.outputs.allowed != 'true'
+        run: |
+          echo "Release rehearsal for ${GITHUB_REF_NAME} completed. The upload is held;"
+          echo "no crate was published. See the job summary for which lock is closed."

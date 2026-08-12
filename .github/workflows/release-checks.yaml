@@ -1,0 +1,95 @@
+# Publishability, checked on every change rather than at release time.
+#
+# The failure this prevents is quiet: a crate stays publishable only while its
+# manifest metadata is complete, its vendored data files are inside the package
+# rather than merely inside the repository, and the packaged crate still
+# compiles once it is cut loose from the workspace. None of those are visible
+# to `cargo build` or `cargo test`, which see the workspace — so without this
+# job the first person to learn a crate stopped being publishable is whoever is
+# trying to cut a release.
+#
+# It also catches something specific to this repository. Packaged crates do not
+# carry the root manifest's `[patch.crates-io]`, so the verification builds here
+# are the only ones that compile `netsock -> libproc` against the real crates.io
+# release rather than the patched rev. A patch that stopped being a workaround
+# and started being load-bearing would show up here and nowhere else.
+name: Release checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publishable:
+    name: Publishable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The whole-workspace gate, and the only one that covers all three
+      # crates today.
+      #
+      # `--workspace` is load-bearing rather than a convenience: it packages
+      # every crate first and then verifies them against a temporary registry
+      # built from those packages, so `tapes-harnesses` is compiled against the
+      # packaged `tapes-capture` instead of against the path dependency. A
+      # per-crate `cargo package -p tapes-harnesses` cannot do this — it looks
+      # `tapes-capture` up on crates.io, does not find an unpublished crate,
+      # and fails. That is a limitation of the invocation, not a finding about
+      # the crate.
+      #
+      # `--locked` so a lockfile that would have to change to build is a
+      # failure here rather than a surprise during a release.
+      - name: Package every crate and verify it standalone
+        run: cargo package --workspace --locked
+
+      # The upload-preparation path, which `cargo package` does not exercise:
+      # manifest normalisation, the path-to-registry dependency rewrite, and
+      # the registry index lookups a real `cargo publish` performs before it
+      # sends anything. Nothing is uploaded — `--dry-run` stops at the wire.
+      #
+      # Only the two crates with no unpublished sibling can run this. The
+      # `tapes-harnesses` dry run resolves `tapes-capture` from the crates.io
+      # index and fails until that crate has a published release; it is covered
+      # by the `--workspace` gate above, and this step should grow a third line
+      # once `tapes-capture` is on crates.io. Ordering matches the dependency
+      # order in docs/releasing.md.
+      - name: Dry-run publish (tapes-capture)
+        run: cargo publish --dry-run --locked -p tapes-capture
+      - name: Dry-run publish (tapes-client)
+        run: cargo publish --dry-run --locked -p tapes-client
+
+      # A crate whose vendored data is missing from the package is still
+      # publishable in the sense that the tarball builds — these files are
+      # `include_str!`d, so a missing one is a compile error the verification
+      # build above would already catch. This step is here for the failure
+      # that is not caught: the file being present but the list quietly
+      # shrinking, which is what an `exclude` rule or a `.gitignore` edit does.
+      # Cheap, and it names the file rather than leaving a compile error to be
+      # traced back to packaging.
+      - name: Vendored data is inside the packages
+        run: |
+          set -euo pipefail
+          check() {
+            local crate="$1" path="$2"
+            if cargo package --list --locked -p "${crate}" | grep -qxF "${path}"; then
+              echo "ok: ${crate} ships ${path}"
+            else
+              echo "FAIL: ${crate} does not ship ${path}" >&2
+              return 1
+            fi
+          }
+          check tapes-client contracts/tapes-api.yaml
+          check tapes-client contracts/PROVENANCE.md
+          check tapes-capture vendor/tapes-envelope-fixtures/DIGEST
+          check tapes-harnesses assets/codex-app/plugin.json
