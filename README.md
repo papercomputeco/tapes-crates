@@ -78,6 +78,14 @@ repository at `fixtures/envelope/`) and the producer-side oracle in
 corpus the Go parsers test against. `scripts/sync-envelope-fixtures.sh`
 refreshes the copy and detects drift.
 
+The corpus ships a `DIGEST` sealing its case set, and `make corpus-seal`
+recomputes it over the vendored files. Conformance to a copy only proves parity
+if every copy is the same corpus — without the seal, a hand-edit here would
+leave the Rust producer and the Go parsers testing against different bytes with
+both suites green. The seal needs no network and no tapes checkout, so unlike
+the read contract below it has nothing to configure: it either matches or CI is
+red.
+
 ## The read contract
 
 `tapes-client` vendors the published tapes read contract at

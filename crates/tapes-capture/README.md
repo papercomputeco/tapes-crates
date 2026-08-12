@@ -41,6 +41,11 @@ oracle in `src/envelope_fixtures.rs` must stay green against the vendored copy â
 if a change makes it fail, the contract conversation happens in tapes, not by
 editing the fixtures here.
 
+That last rule is enforced, not merely stated: the corpus carries a `DIGEST`
+over its case set, and `tests/envelope_corpus_seal.rs` recomputes it on every
+`cargo test`. Editing a vendored case turns a contract disagreement that would
+have been caught in review into a red seal naming the file.
+
 ## License
 
 Dual-licensed under MIT OR Apache-2.0; see the repository root.

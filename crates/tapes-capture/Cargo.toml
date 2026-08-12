@@ -69,6 +69,10 @@ tokio = { version = "1", features = ["time"] }
 tracing = "0.1"
 
 [dev-dependencies]
+# Recomputes the vendored envelope corpus's DIGEST in `tests/envelope_corpus_seal.rs`.
+# Dev-only and deliberately so: the seal is a statement about the bytes checked
+# into this repository, not a runtime capability, so no consumer inherits it.
+sha2 = "0.10"
 # `test-util` powers `#[tokio::test(start_paused = true)]`, which the retry
 # tests rely on to prove a backoff was paid without any test actually sleeping.
 tokio = { version = "1", features = [

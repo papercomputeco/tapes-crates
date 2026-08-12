@@ -19,6 +19,7 @@ fixtures make their agreement executable: one set of cases both sides test again
 ```
 fixtures/envelope/
   README.md          ← this file
+  DIGEST             ← seals the case set; vendored copies recompute and compare
   cases/*.json       ← one case per file; consumers glob this directory
 ```
 
@@ -62,8 +63,8 @@ Each `cases/*.json` file is one object:
 | `x-tapes-harness-id`                   | `harness_id`                | verbatim; missing/empty → `"unknown"` |
 | `x-tapes-harness-session-id`           | `harness_session_id`        | verbatim |
 | `x-tapes-harness-version`              | `harness_version`           | verbatim |
-| `x-tapes-cwd`                          | `cwd`                       | producer percent-encodes UTF-8; **reader stores it verbatim (does NOT decode)** |
-| `x-tapes-session-name`                 | `name`                      | producer percent-encodes UTF-8 (capped 256 raw bytes); **reader percent-decodes** |
+| `x-tapes-cwd`                          | `cwd`                       | producer percent-encodes UTF-8; **reader percent-decodes**, then applies the control-byte guard |
+| `x-tapes-session-name`                 | `name`                      | producer percent-encodes UTF-8 (capped 256 raw bytes); **reader percent-decodes**, then applies the control-byte guard |
 | `x-tapes-parent-harness-session-id`    | `parent_harness_session_id` | verbatim; **an empty header is dropped by the reader** (omit it) |
 | `x-tapes-harness-metadata`             | `harness_metadata`          | **base64url(no-pad) of a JSON value**, raw ≤ 4 KiB; reader retains any valid JSON, validation requires an **object** |
 | `x-paper-auth-org-id`                  | `org_id`                    | server-trusted (set from a validated JWT claim); UUID or empty |
@@ -89,14 +90,24 @@ The header values are byte-exact and auditable — reproduce them from these rul
 ## Reader behavior the cases pin
 
 The `envelope` in each case is exactly what the reader produces from `headers` — not an
-idealized inverse of the producer. Two spots are deliberately asymmetric and easy to get
-wrong:
+idealized inverse of the producer. Every parser of this corpus must agree on all of it;
+these are the spots that are easy to get wrong:
 
-- **`cwd` is stored verbatim** (still percent-encoded), while **`name` is percent-decoded**.
-  So the non-ASCII / control-byte `cwd` cases are `direction: encode` with a lossy
-  round-trip: `encode_from` holds the logical path, but decoding the header yields the
-  encoded string. (That the reader decodes `name` but not `cwd` is a standing asymmetry
-  worth revisiting in the reader, not in these fixtures.)
+- **Both `cwd` and `name` are percent-decoded**, with the same RFC 3986 path-segment
+  rules (`PathUnescape`, not `QueryUnescape` — the latter would mistranslate a literal
+  `+` into a space). The stored value is the *logical* value; percent-encoding is
+  transport framing that dies at the parser, so `/Users/松本/code` is stored and
+  displayed as itself. A malformed encoding is non-fatal: the raw header value is kept
+  so the row still records something recognisable.
+- **A decoded value carrying control bytes is refused, not stored.** After decoding, if
+  `cwd` or `name` contains any C0 control (`< 0x20`) or DEL (`0x7F`), the parser logs
+  and stores the **empty** string — it never persists the raw bytes. That is why
+  `cwd-control-bytes-escaped` is `direction: encode`: the producer can encode such a
+  path, but no reader will store it, so the case stays lossy and keeps its
+  `encode_from`. Escaping stops a control byte from forging a header *on the wire*; the
+  guard stops it from reaching *storage*. The injection defense therefore lives in
+  validation rather than in representation, which is what lets the stored field stay a
+  logical path instead of an encoded one that every consumer would have to decode.
 - **Non-object metadata is retained, then rejected.** The reader accepts any valid-JSON
   metadata (arrays included); object-ness is enforced by envelope validation, so
   `error-metadata-not-object` is `reject-400`, not a silent drop. Metadata that isn't
@@ -118,3 +129,46 @@ case through `sessionEnvelopeFromHeaders` + `Validate` and asserts the declared 
 / `error`. Keep it green — it is what stops these fixtures from silently drifting from the
 parser. Vendor this directory into other consumers (a small sync script keeps one copy
 authoritative) so every side tests against identical bytes.
+
+## `DIGEST` — what makes "identical bytes" checkable
+
+Conformance to a vendored copy only proves parity if every copy is the same corpus.
+Nothing about vendoring guarantees that: a hand-edit to one copy leaves two
+implementations testing against different bytes while both stay green.
+
+`DIGEST` closes that. It is a single line, `sha256:<hex>`, over the case set:
+
+> for each `cases/*.json`, sorted by base name, feed `"<basename>  <sha256-hex-of-file-bytes>\n"`
+> into a SHA-256; the digest is the hex of that hash.
+
+Deliberately trivial, so a consumer in any language can reimplement it from that
+sentence without a canonical-JSON library. It hashes **raw bytes**, not parsed JSON,
+because the sync script copies bytes — a reformat is drift too. It covers **names as
+well as contents**, so an addition, a deletion, and a rename are all caught rather than
+only an edit to a file that already existed.
+
+Consumers vendor `DIGEST` alongside `cases/` and recompute it in their own test suite.
+A stale or locally-edited copy then fails in the consumer's own CI, with no cross-repo
+checkout needed. `pkg/backfill/envelope_corpus_test.go` is this repo's copy of that
+check, and it prints the new value when the corpus legitimately changes.
+
+## Adding a case
+
+1. Write `cases/<name>.json`. `name` must match the filename — consumers key skips and
+   deviation entries off it. Use the synthetic identities above; never a real org,
+   subject, or session id.
+2. Pick `direction` honestly. `encode` is the lossy direction and **must** carry
+   `encode_from`; `roundtrip` and `decode` must not (it would duplicate `envelope`).
+3. Derive `headers` from the encoding rules above by hand, so the bytes stay auditable.
+4. Fill in `grounding` — the rule the case pins, in behavioral terms. A case that cannot
+   say which rule it pins cannot be reviewed, and the gate rejects it.
+5. Run the corpus gate, copy the new digest it prints into `DIGEST`, and commit both.
+6. Re-sync every vendored copy from the same commit, and land any parser change the new
+   case forces in the same PR — the corpus is the contract, so both halves travel
+   together.
+
+`pkg/backfill/envelope_corpus_test.go` also asserts that the corpus still **covers** the
+rules this README claims, stated as properties rather than case names. Deleting the only
+case that exercises a rule is otherwise invisible: every remaining case passes and the
+contract quietly shrinks. If that gate says a rule is uncovered, add a case rather than
+relaxing the rule.

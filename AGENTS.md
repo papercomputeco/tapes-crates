@@ -61,6 +61,9 @@ tapes repository first, then re-vendoring via
 `scripts/sync-envelope-fixtures.sh`. The oracle in `crates/tapes-capture/src/envelope_fixtures.rs`
 must stay green against the vendored corpus — if your change makes it fail,
 the contract conversation happens in tapes, not by editing the fixtures here.
+Editing them is also futile: the corpus is sealed by a `DIGEST`, recomputed by
+`tests/envelope_corpus_seal.rs` on every `cargo test`, so a local edit turns one
+red oracle into a red oracle and a red seal.
 
 ## The `tapes-client` module layout
 
