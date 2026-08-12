@@ -20,6 +20,19 @@
 //! | `invoke` | [`tapes_client::path`] |
 //! | `error` | [`tapes_client::error`] |
 //! | `transport` | [`tapes_client::transport`] and [`tapes_client::core::methods`] |
+//! | `invoke::call_url` | [`tapes_client::path::call_url`] |
+//! | `invoke::PathMode::RootAbsolute` | [`tapes_client::path::PathMode::Direct`] |
+//! | `invoke::PathMode::UnderBase` | [`tapes_client::path::PathMode::UnderBase`] |
+//!
+//! # The one spelling that changed
+//!
+//! `PathMode` is re-exported rather than redefined, and the merged crate
+//! renamed its default variant: what this crate called `RootAbsolute` is now
+//! [`tapes_client::path::PathMode::Direct`]. The behaviour is identical — it is
+//! still the default, and `call_url` still drops any path prefix the base
+//! carried — but a consumer that spells the variant by name has to write
+//! `Direct` after taking the bump. That is the only source change this shim
+//! cannot absorb; everything else above compiles unchanged.
 //!
 //! The one item that did not survive the move is the `ReadTransport` /
 //! `ReadOperations` pair. It was a second seam describing the same thing as the
