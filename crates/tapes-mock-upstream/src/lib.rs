@@ -25,6 +25,9 @@
 //! * [`ingest`] — the mock a captured turn is posted to, with an envelope
 //!   reader checked against the same vendored fixture corpus the producer side
 //!   is checked against.
+//! * [`recipe`] — one scripted one-shot recipe per registry harness, wrapping
+//!   the real launch recipes rather than restating them.
+//! * [`manifest`] — what a run ran against, including what it skipped and why.
 //!
 //! # Skips are outcomes, not absences
 //!
@@ -41,10 +44,14 @@
 //! http      a small blocking HTTP/1.1 server, and the request/response types
 //! upstream  the provider surfaces, built on `http`
 //! ingest    the turn sink and the envelope reader, built on `http`
+//! recipe    per-harness one-shot launch, built on the real launch recipes
+//! manifest  the version record a run emits
 //! ```
 
 pub mod http;
 pub mod ingest;
+pub mod manifest;
+pub mod recipe;
 pub mod upstream;
 
 use std::time::Duration;
