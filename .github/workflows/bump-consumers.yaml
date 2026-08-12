@@ -306,14 +306,28 @@ jobs:
         env:
           BUMP_TOKEN: ${{ secrets.BUMP_FANOUT_TOKEN }}
           BRANCH: ${{ steps.commit.outputs.branch }}
+          CONSUMER: ${{ matrix.consumer.repo }}
         run: |
           set -euo pipefail
-          cd consumer
+          # The bump target ran consumer-controlled code in the `consumer`
+          # checkout, so everything writable there is untrusted at this point:
+          # a pre-push hook would run during the push, and a url.insteadOf in
+          # .git/config would re-aim the push (and this header) at a host of
+          # the consumer's choosing. So the push never touches that repo's
+          # config or hooks: clone it bare (a clone writes a fresh config and
+          # copies no hooks), then push from the clone to an explicit URL,
+          # with hooks pointed at an empty directory for good measure.
+          staging="$(mktemp -d)"
+          git clone --quiet --bare --no-local consumer "${staging}/push.git"
           auth="$(printf 'x-access-token:%s' "${BUMP_TOKEN}" | base64 -w0)"
           # Masked so a git error that echoes its own arguments cannot print it.
           echo "::add-mask::${auth}"
-          git -c "http.extraheader=AUTHORIZATION: basic ${auth}" \
-            push --force origin "HEAD:refs/heads/${BRANCH}"
+          mkdir "${staging}/nohooks"
+          git -C "${staging}/push.git" \
+            -c "core.hooksPath=${staging}/nohooks" \
+            -c "http.extraheader=AUTHORIZATION: basic ${auth}" \
+            push --force "https://github.com/${CONSUMER}.git" \
+            "refs/heads/${BRANCH}:refs/heads/${BRANCH}"
 
       # `gh` gets the token in its own environment and touches no working tree.
       - name: Open or update the repin PR
