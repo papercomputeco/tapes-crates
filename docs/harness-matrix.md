@@ -61,7 +61,7 @@ place. This is the current state, not an aspiration:
 | `claude` | runs wherever `claude` is installed | runs with a client binary | packaged in the pinned nixpkgs, so it runs in CI |
 | `codex` | runs wherever `codex` is installed | runs with a client binary | packaged in the pinned nixpkgs, so it runs in CI |
 | `opencode` | runs wherever `opencode` is installed | **skips** — `tapesctl` does not list `opencode` among its supported harnesses | packaged in the pinned nixpkgs; the client-side gap is real and visible |
-| `pi` | runs wherever `pi` is installed | runs with a client binary, after the capture plugin is installed into the sandbox | **not** packaged in nixpkgs, so both cells skip in CI |
+| `pi` | runs wherever `pi` is installed | runs with a client binary, after the capture plugin is installed into the sandbox | not in the flake's `matrix` shell, so both cells skip in CI — though the pinned nixpkgs does carry `pi-coding-agent` (see the follow-ups) |
 | `codex-app` | **skips**, always | **skips**, always | a long-lived host a consumer configures rather than starts: no one-shot invocation exists |
 
 In CI the composition column skips entirely: both clients live in other
@@ -299,6 +299,11 @@ Left undone deliberately, rather than sketched:
 - **Exercising each client's own `plugin install`.** The matrix installs a
   capture plugin through this repository's `PluginArtifact::install` so the cell
   stays portable across clients whose installer command lines differ.
-- **`pi` in the per-change matrix**, which needs it packaged or vendored. The
-  drift watch installs it from npm, so its cells do run there — but a nightly
-  watch is not the same guarantee as a cell on every change.
+- **`pi` in the per-change matrix.** The flake's `matrix` shell does not carry it,
+  which is why its cells skip in CI — but the pinned nixpkgs *does* package it as
+  `pi-coding-agent`, so this is now a one-line addition to that shell rather than
+  the packaging problem it was when the shell was written. Doing it would move
+  pi's recorded baseline from a developer machine to the pin, which is a better
+  provenance than the drift watch's registry install and worth taking together.
+  The watch covers pi meanwhile, and a nightly watch is not the same guarantee as
+  a cell on every change.
