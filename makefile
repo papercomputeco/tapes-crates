@@ -16,7 +16,7 @@
 # entirely while being present here.
 
 .PHONY: help build test fmt fmt-check clippy lint check clean sync-fixtures pin-parity \
-	contracts-check corpus-seal
+	contracts-check corpus-seal harness-matrix
 
 # Consumer manifests for `make pin-parity`. Defaults to the GitHub repos, which
 # is what CI compares; override with local checkouts when working in a forest
@@ -79,3 +79,22 @@ contracts-check:	## Verify the vendored tapes read contract against its recorded
 # two deserve different first guesses from whoever reads the failure.
 corpus-seal:	## Verify the vendored envelope fixture corpus against its DIGEST
 	cargo test -p tapes-capture --test envelope_corpus_seal
+
+# The harness regression matrix: real harness binaries, real HTTP, no cluster.
+#
+# Its own target rather than a line in `test` because it behaves differently
+# from every other test here — it launches external binaries, its coverage
+# depends on what is installed, and its output (the table of which cells ran and
+# why the rest did not) is the point rather than a side effect. `--nocapture` is
+# not optional for the same reason: a run whose skip reasons are swallowed
+# reports "ok" while covering nothing.
+#
+# The composition column needs a capture client, which lives in another
+# repository, so its binary is supplied by path:
+#
+#     make harness-matrix TAPESCTL_BIN=../tapesctl/target/debug/tapesctl
+#
+# Without one, the harness-vs-mock cells still run and the composition cells
+# skip with that reason stated.
+harness-matrix:	## Run the harness regression matrix (Tier 1)
+	cargo test -p tapes-mock-upstream --test harness_matrix -- --nocapture
