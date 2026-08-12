@@ -839,6 +839,17 @@ mod tests {
         assert!(!claims("some-claude-like"));
     }
 
+    /// A resolver that names Codex whatever it is handed, so a User-Agent that
+    /// *looks* like Claude's still resolves to another harness.
+    #[derive(Debug)]
+    struct AlwaysCodex;
+
+    impl UserAgentHarness for AlwaysCodex {
+        fn harness_id(&self, _user_agent: &str) -> Option<&'static str> {
+            Some(HARNESS_ID_CODEX)
+        }
+    }
+
     /// A resolver that names a *different* harness must not open the Claude
     /// lane. The gate compares the resolved id rather than merely checking
     /// that something resolved, and this is the difference between the two:
@@ -846,14 +857,6 @@ mod tests {
     /// would be handed to Claude's session-file watcher.
     #[tokio::test(start_paused = true)]
     async fn a_user_agent_naming_another_harness_does_not_take_the_claude_lane() {
-        #[derive(Debug)]
-        struct AlwaysCodex;
-        impl UserAgentHarness for AlwaysCodex {
-            fn harness_id(&self, _user_agent: &str) -> Option<&'static str> {
-                Some(HARNESS_ID_CODEX)
-            }
-        }
-
         let state = empty_state();
         let config = AttributionConfig::new(filter(), AlwaysCodex);
         let facts = RequestFacts {

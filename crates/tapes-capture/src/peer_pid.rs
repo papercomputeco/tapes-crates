@@ -825,21 +825,17 @@ mod tests {
         // Asserting a bare `lookup_owner_once` here was asserting that the
         // documented transient-miss case never happens.
         let deadline = Instant::now() + Duration::from_millis(250);
-        let got = loop {
-            let got = lookup_owner_async(peer).await;
-            if got.pid == Some(me) || Instant::now() >= deadline {
-                break got;
-            }
-        };
+        let mut got = lookup_owner_async(peer).await;
+        while got.pid != Some(me) && Instant::now() < deadline {
+            got = lookup_owner_async(peer).await;
+        }
         assert_eq!(got.pid, Some(me), "async owner lookup missed {peer}");
 
         let deadline = Instant::now() + Duration::from_millis(250);
-        let once = loop {
-            let once = lookup_owner_once(peer);
-            if once.pid == Some(me) || Instant::now() >= deadline {
-                break once;
-            }
-        };
+        let mut once = lookup_owner_once(peer);
+        while once.pid != Some(me) && Instant::now() < deadline {
+            once = lookup_owner_once(peer);
+        }
         assert_eq!(once.pid, Some(me), "single-shot owner lookup missed {peer}");
     }
 
