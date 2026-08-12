@@ -45,14 +45,19 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use tapes_harnesses::harness;
 use tapes_mock_upstream::ingest::HARNESS_ID_UNKNOWN;
 use tapes_mock_upstream::manifest::{Status, VersionManifest, probe, which};
-use tapes_mock_upstream::recipe::{OneShotContext, OneShotRecipe, SCRIPTED_PROMPT, for_harness};
+use tapes_mock_upstream::recipe::{
+    OneShotContext, OneShotRecipe, Pointing, SCRIPTED_PROMPT, Surface, ToleratedExit, for_harness,
+};
 use tapes_mock_upstream::{MockPair, TURN_TIMEOUT};
 
 /// The capture clients this matrix can drive, and the variable naming each
@@ -131,6 +136,83 @@ impl RunResult {
     }
 }
 
+/// How long a pipe reader gets to finish once the process it was reading has
+/// gone.
+///
+/// It ordinarily finishes instantly — the pipe reaches EOF as the last writer
+/// closes. The bound covers the case where the harness left a grandchild holding
+/// the write end, which is a real thing and must not hold a matrix run open
+/// indefinitely. Whatever the reader collected by then is what the cell reports.
+const DRAIN_GRACE: Duration = Duration::from_secs(5);
+
+/// One of a child's pipes, being drained on its own thread.
+///
+/// A child's stdout and stderr must be read *while* it runs, not after it
+/// exits. A pipe holds on the order of 64 KiB; a process that writes past that
+/// blocks inside `write` until somebody reads, and a runner that waits for the
+/// exit first waits forever. Every harness this matrix launches is chatty enough
+/// to reach that, and the symptom is the worst kind: the run reports a timeout,
+/// which reads as a harness that hung when in fact the runner was the one not
+/// listening.
+struct Collected {
+    /// What has been read so far. Shared with the reader thread so the bytes
+    /// are still available if that thread outlives the wait.
+    buffer: Arc<Mutex<Vec<u8>>>,
+    /// The reader, until it is settled.
+    reader: Option<JoinHandle<()>>,
+}
+
+impl Collected {
+    /// Start draining `pipe` immediately, if there is one.
+    fn drain(pipe: Option<impl Read + Send + 'static>) -> Self {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let reader = pipe.map(|pipe| {
+            let sink = Arc::clone(&buffer);
+            std::thread::spawn(move || drain_into(pipe, &sink))
+        });
+        Self { buffer, reader }
+    }
+
+    /// Give the reader a bounded moment to reach EOF, then take what it has.
+    ///
+    /// A reader still running after the grace is holding a pipe some grandchild
+    /// has not closed. It is left to finish into its own buffer and go away with
+    /// the process: joining it would hang the whole matrix on a detail that can
+    /// no longer change the cell's result.
+    fn settle(&mut self) -> String {
+        if let Some(reader) = self.reader.take() {
+            let deadline = Instant::now() + DRAIN_GRACE;
+            while !reader.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if reader.is_finished() {
+                let _ = reader.join();
+            }
+        }
+        self.buffer
+            .lock()
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default()
+    }
+}
+
+/// Read `pipe` to EOF, appending everything it yields to `sink`.
+///
+/// A read error ends the drain the same way EOF does: the pipe is gone either
+/// way, and a reader that spun on the error would burn a core for the rest of
+/// the run.
+fn drain_into(mut pipe: impl Read, sink: &Mutex<Vec<u8>>) {
+    let mut chunk = [0_u8; 8192];
+    while let Ok(read) = pipe.read(&mut chunk) {
+        if read == 0 {
+            break;
+        }
+        if let Ok(mut sink) = sink.lock() {
+            sink.extend_from_slice(&chunk[..read]);
+        }
+    }
+}
+
 /// Run a command with an environment overlay, killing it if it overruns.
 ///
 /// The environment is built from a deliberately narrow base rather than
@@ -138,6 +220,10 @@ impl RunResult {
 /// provider credentials and base-URL overrides straight into the cell — which
 /// would both invalidate the result (a turn that reached a real provider is not
 /// a turn against the mock) and risk spending real money.
+///
+/// Both pipes are drained concurrently for the whole life of the process. See
+/// [`Collected`] for why that is a correctness requirement rather than a
+/// convenience.
 fn run(program: &Path, args: &[String], env: &BTreeMap<String, String>, cwd: &Path) -> RunResult {
     let mut command = Command::new(program);
     command
@@ -168,51 +254,39 @@ fn run(program: &Path, args: &[String], env: &BTreeMap<String, String>, cwd: &Pa
         };
     };
 
+    // Before the first wait, so nothing the child writes can ever be waiting on
+    // a reader that has not started.
+    let mut stdout = Collected::drain(child.stdout.take());
+    let mut stderr = Collected::drain(child.stderr.take());
+
     let deadline = Instant::now() + TURN_TIMEOUT;
-    loop {
+    let (status, timed_out) = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break (status.code(), false),
             Ok(None) if Instant::now() >= deadline => {
                 let _ = child.kill();
-                let output = child.wait_with_output().ok();
-                return RunResult {
-                    status: None,
-                    stdout: output
-                        .as_ref()
-                        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-                        .unwrap_or_default(),
-                    stderr: output
-                        .as_ref()
-                        .map(|o| String::from_utf8_lossy(&o.stderr).into_owned())
-                        .unwrap_or_default(),
-                    timed_out: true,
-                };
+                // Reap it, so the pipes' write ends close and the readers can
+                // reach EOF rather than sitting out their grace.
+                let _ = child.wait();
+                break (None, true);
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(err) => {
                 return RunResult {
                     status: None,
-                    stdout: String::new(),
+                    stdout: stdout.settle(),
                     stderr: format!("wait failed: {err}"),
                     timed_out: false,
                 };
             }
         }
-    }
+    };
 
-    match child.wait_with_output() {
-        Ok(output) => RunResult {
-            status: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            timed_out: false,
-        },
-        Err(err) => RunResult {
-            status: None,
-            stdout: String::new(),
-            stderr: format!("output failed: {err}"),
-            timed_out: false,
-        },
+    RunResult {
+        status,
+        stdout: stdout.settle(),
+        stderr: stderr.settle(),
+        timed_out,
     }
 }
 
@@ -260,7 +334,52 @@ fn harness_vs_mock(recipe: &OneShotRecipe, binary: &Path) -> Outcome {
         ));
     }
 
+    // The second half of the cell. Asserted last so that a harness which failed
+    // *and* sent nothing reports the more useful of the two facts first.
+    if let Some(failure) = unclean_finish(recipe, &result) {
+        return Outcome::Failed(failure);
+    }
+
     Outcome::Passed
+}
+
+/// Did the process finish in a way a cell can accept?
+///
+/// Returns the failure message when it did not. A cell requires *both* halves —
+/// the expected interaction and a clean finish — because a harness that sent its
+/// request and then died has not shown the composition works; it has shown that
+/// its first request was well formed. Accepting the interaction alone is how a
+/// harness that starts crashing after every turn goes on reporting green, which
+/// is precisely the quiet breakage this matrix exists to catch.
+///
+/// A timeout and a death by signal are never acceptable. The only tolerated
+/// finish is an exact non-zero code the recipe names, with its reason — see
+/// [`ToleratedExit`].
+fn unclean_finish(recipe: &OneShotRecipe, result: &RunResult) -> Option<String> {
+    if result.timed_out {
+        return Some(format!(
+            "the expected interaction happened but the process never exited (killed after \
+             {TURN_TIMEOUT:?}); {}",
+            result.summary(),
+        ));
+    }
+    match result.status {
+        Some(0) => None,
+        Some(code) => match recipe.tolerated_exit {
+            Some(tolerated) if tolerated.code == code => None,
+            _ => Some(format!(
+                "the expected interaction happened but the process exited {code}; {}",
+                result.summary(),
+            )),
+        },
+        // No code at all: killed by a signal, which is a crash however tidy the
+        // wire traffic looked.
+        None => Some(format!(
+            "the expected interaction happened but the process exited without a status of its \
+             own; {}",
+            result.summary(),
+        )),
+    }
 }
 
 /// The **harness → CLI → mock** cell.
@@ -419,6 +538,16 @@ fn harness_via_cli(recipe: &OneShotRecipe, harness_binary: &Path, cli: &Path) ->
         ));
     }
 
+    // And the same second half this column's sibling requires. The process here
+    // is the client rather than the harness, but a client that launched a
+    // harness reports the harness's fate in its own exit status, so the recipe's
+    // tolerance is the right one to consult. Without this, the refusal
+    // heuristic above reads as though a non-zero exit stayed a failure while in
+    // fact nothing checked it again.
+    if let Some(failure) = unclean_finish(recipe, &result) {
+        return Outcome::Failed(failure);
+    }
+
     Outcome::Passed
 }
 
@@ -571,39 +700,69 @@ fn the_harness_matrix_holds() {
         });
     }
 
-    let manifest_path = write_manifest(&manifest);
-    print_table(&cells, &manifest, manifest_path.as_deref());
+    let written = manifest_dir().and_then(|dir| write_manifest(&manifest, &dir));
+    print_table(&cells, &manifest, &written);
 
-    let failures: Vec<&Cell> = cells
+    let mut failures: Vec<String> = cells
         .iter()
         .filter(|cell| matches!(cell.outcome, Outcome::Failed(_)))
-        .collect();
-    assert!(
-        failures.is_empty(),
-        "{} matrix cell(s) failed:\n{}",
-        failures.len(),
-        failures
-            .iter()
-            .map(|cell| format!(
+        .map(|cell| {
+            format!(
                 "  {} / {}: {}",
                 cell.column,
                 cell.harness,
-                cell.outcome.detail()
-            ))
-            .collect::<Vec<_>>()
-            .join("\n"),
+                cell.outcome.detail(),
+            )
+        })
+        .collect();
+
+    // A run that could not write its manifest is a failed run. The manifest is
+    // an advertised output of every run and the drift watch's only input, so a
+    // run that finishes without one has produced a green result nobody can date:
+    // "we still work against the current release" and "we still work against
+    // whatever was installed six weeks ago" become the same report. Collapsing
+    // the error into a missing file made that outcome look exactly like a
+    // successful run, which is the failure this file is built to refuse.
+    if let Err(err) = &written {
+        failures.push(format!("  manifest: {err}"));
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} matrix failure(s):\n{}",
+        failures.len(),
+        failures.join("\n"),
     );
 }
 
-/// Write the manifest beside the test binary, and return where it went.
-fn write_manifest(manifest: &VersionManifest) -> Option<PathBuf> {
-    let dir = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf))?;
+/// Where the manifest goes: beside the test binary, which is the directory CI
+/// uploads from.
+fn manifest_dir() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe()
+        .map_err(|err| format!("the test binary's own path is unknown: {err}"))?;
+    exe.parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| format!("{} has no parent directory", exe.display()))
+}
+
+/// Write the manifest into `dir`, and return where it went.
+///
+/// Every failure carries the underlying error rather than collapsing to an
+/// absence: the caller turns this into a red run, and "the manifest is missing"
+/// is not something a reader can act on without knowing whether it was the
+/// serialisation, the directory, or the write that refused.
+fn write_manifest(manifest: &VersionManifest, dir: &Path) -> Result<PathBuf, String> {
     let path = dir.join(MANIFEST_NAME);
-    let json = manifest.to_json().ok()?;
-    std::fs::write(&path, json).ok()?;
-    Some(path)
+    let json = manifest
+        .to_json()
+        .map_err(|err| format!("the manifest could not be serialised: {err}"))?;
+    std::fs::write(&path, json).map_err(|err| {
+        format!(
+            "the manifest could not be written to {}: {err}",
+            path.display()
+        )
+    })?;
+    Ok(path)
 }
 
 /// Print the matrix, the versions it ran against, and every skip reason.
@@ -611,7 +770,7 @@ fn write_manifest(manifest: &VersionManifest) -> Option<PathBuf> {
 /// Printed unconditionally rather than only on failure: the reasons a cell did
 /// not run are the most perishable information a run produces, and a green run
 /// whose coverage nobody can see is how a matrix silently shrinks.
-fn print_table(cells: &[Cell], manifest: &VersionManifest, manifest_path: Option<&Path>) {
+fn print_table(cells: &[Cell], manifest: &VersionManifest, written: &Result<PathBuf, String>) {
     println!("\n=== harness regression matrix (Tier 1) ===\n");
 
     let column_width = cells.iter().map(|c| c.column.len()).max().unwrap_or(10);
@@ -646,8 +805,12 @@ fn print_table(cells: &[Cell], manifest: &VersionManifest, manifest_path: Option
         }
     }
 
-    if let Some(path) = manifest_path {
-        println!("\nmanifest: {}", path.display());
+    match written {
+        Ok(path) => println!("\nmanifest: {}", path.display()),
+        // Beside the table, not only in the panic message: the table is what a
+        // reader scrolls to, and a run whose manifest is missing is a run whose
+        // versions are unrecorded.
+        Err(err) => println!("\nmanifest: NOT WRITTEN — {err}"),
     }
     println!();
 }
@@ -677,4 +840,165 @@ fn the_unknown_sentinel_matches_the_capture_contract() {
         HARNESS_ID_UNKNOWN,
         tapes_capture::envelope::HARNESS_ID_UNKNOWN
     );
+}
+
+// ---------------------------------------------------------------------------
+// The runner's own tests.
+//
+// Everything above launches harnesses; this launches the runner. Its bugs are
+// the expensive kind because they make a cell *look* green — a pass awarded to a
+// harness that died, a stall reported as somebody else's timeout — and they
+// cannot be provoked with a real harness binary. The stand-in below can be asked
+// for either on demand, so they have somewhere to be caught.
+// ---------------------------------------------------------------------------
+
+/// The stand-in harness, built by cargo alongside this test.
+const FAKE_HARNESS: &str = env!("CARGO_BIN_EXE_matrix-fake-harness");
+
+/// A recipe that launches the stand-in instead of a real harness.
+///
+/// It points through [`Pointing::Claude`] deliberately: the stand-in reads the
+/// upstream out of the same environment variable the real Claude launch recipe
+/// writes, so these tests exercise the runner against a genuine plan rather than
+/// against a private arrangement between the test and the fake.
+fn fake_recipe(
+    argv: &'static [&'static str],
+    tolerated_exit: Option<ToleratedExit>,
+) -> OneShotRecipe {
+    OneShotRecipe {
+        harness_id: "matrix-fake-harness",
+        binary: "matrix-fake-harness",
+        version_args: &["--version"],
+        argv,
+        surface: Surface::AnthropicMessages,
+        pointing: Pointing::Claude,
+        sandbox_env: &[],
+        extra_env: &[],
+        unsupported: None,
+        tolerated_exit,
+    }
+}
+
+/// A cell is not a pass just because the request arrived.
+///
+/// The stand-in here does exactly what a broken harness release does: it sends a
+/// well-formed turn to the surface the recipe named, and then dies. Every
+/// interaction assertion holds; the composition does not work. Before the second
+/// half of the cell existed, this was a green cell.
+#[test]
+fn a_harness_that_sends_its_turn_then_fails_is_not_a_pass() {
+    let recipe = fake_recipe(&["--turn-then-exit", "1"], None);
+    match harness_vs_mock(&recipe, Path::new(FAKE_HARNESS)) {
+        Outcome::Failed(reason) => assert!(
+            reason.contains("exited 1"),
+            "the failure must name the exit status, got: {reason}",
+        ),
+        other => panic!("a harness that exited 1 must not report {other:?}"),
+    }
+}
+
+/// And the ordinary path still passes: turn on the expected surface, clean exit.
+#[test]
+fn a_harness_that_sends_its_turn_and_exits_cleanly_passes() {
+    let recipe = fake_recipe(&["--turn-then-exit", "0"], None);
+    match harness_vs_mock(&recipe, Path::new(FAKE_HARNESS)) {
+        Outcome::Passed => {}
+        other => panic!("a clean one-shot turn must pass, got {other:?}"),
+    }
+}
+
+/// A harness that legitimately exits non-zero says so on its own recipe, and
+/// only that code is forgiven.
+///
+/// The point of the exception being per-recipe is that it cannot be reached by
+/// accident: the same stand-in, exiting the same way, is a failure one test
+/// above and a pass here, and the only difference is a reason somebody wrote
+/// down.
+#[test]
+fn a_recipe_may_tolerate_the_one_exit_code_it_names() {
+    let tolerated = Some(ToleratedExit {
+        code: 3,
+        reason: "the stand-in is asked for this exit, to prove the exception is per-recipe",
+    });
+
+    let matching = fake_recipe(&["--turn-then-exit", "3"], tolerated);
+    match harness_vs_mock(&matching, Path::new(FAKE_HARNESS)) {
+        Outcome::Passed => {}
+        other => panic!("the tolerated exit must pass, got {other:?}"),
+    }
+
+    // A different non-zero code is still a failure: the tolerance is for one
+    // stated exit, not for "non-zero is fine here".
+    let other_code = fake_recipe(&["--turn-then-exit", "4"], tolerated);
+    match harness_vs_mock(&other_code, Path::new(FAKE_HARNESS)) {
+        Outcome::Failed(reason) => assert!(reason.contains("exited 4"), "got: {reason}"),
+        other => panic!("an untolerated exit must fail, got {other:?}"),
+    }
+}
+
+/// A harness chatty enough to fill both pipes still completes.
+///
+/// 256 KiB in each direction is comfortably past the ~64 KiB a pipe holds, so a
+/// runner that waits for the exit before reading blocks the child in `write` and
+/// then reports the timeout as the harness's fault. The byte counts are asserted
+/// as well as the exit: draining is only correct if it also keeps what it read.
+#[test]
+fn a_chatty_harness_does_not_stall_the_runner() {
+    const FLOOD: usize = 256 * 1024;
+
+    let sandbox = tempfile::tempdir().unwrap();
+    let result = run(
+        Path::new(FAKE_HARNESS),
+        &["--flood".to_owned(), FLOOD.to_string()],
+        &BTreeMap::new(),
+        sandbox.path(),
+    );
+
+    assert!(
+        !result.timed_out,
+        "a harness that writes {FLOOD} bytes to each pipe and exits must not time out",
+    );
+    assert_eq!(result.status, Some(0));
+    assert_eq!(result.stdout.len(), FLOOD, "stdout was not fully collected");
+    assert_eq!(result.stderr.len(), FLOOD, "stderr was not fully collected");
+}
+
+/// A manifest that cannot be written is reported, not swallowed.
+///
+/// The unwritable destination is a path that is a *file*, which fails the same
+/// way on every platform this runs on and — unlike a read-only directory — still
+/// fails when the tests run as root, which is the ordinary case in CI.
+#[test]
+fn a_manifest_that_cannot_be_written_is_reported() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let blocker = sandbox.path().join("not-a-directory");
+    std::fs::write(&blocker, "").unwrap();
+
+    let error = write_manifest(&VersionManifest::new(), &blocker)
+        .expect_err("writing into a file must not report success");
+    assert!(
+        error.contains(MANIFEST_NAME),
+        "the error must name the file it could not write, got: {error}",
+    );
+}
+
+/// And a manifest that can be written lands where the run says it did, holding
+/// what the run recorded.
+#[test]
+fn a_written_manifest_lands_where_the_run_says_it_did() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut manifest = VersionManifest::new();
+    manifest.record_harness(
+        "claude",
+        Status::Skipped {
+            reason: "a stand-in row".to_owned(),
+        },
+    );
+
+    let path = write_manifest(&manifest, sandbox.path()).unwrap();
+    assert_eq!(path, sandbox.path().join(MANIFEST_NAME));
+
+    let written: VersionManifest =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(written, manifest);
 }

@@ -160,6 +160,29 @@ pub enum Pointing {
     None,
 }
 
+/// A non-zero exit that a harness's one-shot mode produces legitimately.
+///
+/// This exists so that "the harness finished successfully" can be a real
+/// requirement of a matrix cell. A cell asserts two things — the expected
+/// interaction happened, *and* the harness completed — and dropping the second
+/// is how a harness that sends its request and then dies goes on reporting
+/// green. Some harnesses do exit non-zero from a headless mode for reasons that
+/// are not failures; that is a fact about one harness, so it is stated on that
+/// harness's recipe with a reason a reviewer can check, rather than being a
+/// blanket tolerance every cell inherits.
+///
+/// The code is exact. Tolerating "any non-zero" would readmit the whole class:
+/// a harness that started segfaulting would land on the same tolerance as the
+/// documented exit, and nothing would go red.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToleratedExit {
+    /// The one exit code that is not a failure for this harness.
+    pub code: i32,
+    /// Why this harness exits that way, in words a reader can check against the
+    /// harness's own documentation or behaviour.
+    pub reason: &'static str,
+}
+
 /// How to run one registry harness for a single scripted turn.
 #[derive(Debug, Clone)]
 pub struct OneShotRecipe {
@@ -189,6 +212,10 @@ pub struct OneShotRecipe {
     /// Why this harness cannot be launched for a turn, when it cannot. `Some`
     /// makes the cell a visible skip rather than a silent absence.
     pub unsupported: Option<&'static str>,
+    /// The one non-zero exit this harness's one-shot mode is allowed to finish
+    /// with, when it has one. `None` — the ordinary case, and every recipe here
+    /// today — means the cell requires a clean exit.
+    pub tolerated_exit: Option<ToleratedExit>,
 }
 
 /// Claude Code: one environment variable, one headless flag.
@@ -214,6 +241,7 @@ pub const CLAUDE_ONE_SHOT: OneShotRecipe = OneShotRecipe {
         ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
     ],
     unsupported: None,
+    tolerated_exit: None,
 };
 
 /// Codex CLI: a custom provider declared through `-c`, plus `exec`.
@@ -236,6 +264,7 @@ pub const CODEX_ONE_SHOT: OneShotRecipe = OneShotRecipe {
     sandbox_env: &[("CODEX_HOME", "codex")],
     extra_env: &[("OPENAI_API_KEY", SCRIPTED_API_KEY)],
     unsupported: None,
+    tolerated_exit: None,
 };
 
 /// The Codex desktop app: configurable, not launchable.
@@ -253,6 +282,7 @@ pub const CODEX_APP_ONE_SHOT: OneShotRecipe = OneShotRecipe {
          it has no one-shot invocation and no headless mode, so a Tier-1 cell cannot drive it. \
          Its capture path is covered by the lifecycle-hook attribution tests instead.",
     ),
+    tolerated_exit: None,
 };
 
 /// opencode: a planned config document, plus `run`.
@@ -275,6 +305,7 @@ pub const OPENCODE_ONE_SHOT: OneShotRecipe = OneShotRecipe {
     ],
     extra_env: &[("ANTHROPIC_API_KEY", SCRIPTED_API_KEY)],
     unsupported: None,
+    tolerated_exit: None,
 };
 
 /// pi: the gateway environment contract, plus an explicitly loaded extension.
@@ -310,6 +341,7 @@ pub const PI_ONE_SHOT: OneShotRecipe = OneShotRecipe {
     ],
     extra_env: &[("ANTHROPIC_API_KEY", SCRIPTED_API_KEY)],
     unsupported: None,
+    tolerated_exit: None,
 };
 
 /// Every one-shot recipe, one per registry harness.
@@ -692,6 +724,29 @@ mod tests {
                     .iter()
                     .any(|(variable, _)| *variable == "CLAUDE_CONFIG_DIR"),
                 "{} must not relocate CLAUDE_CONFIG_DIR — the attribution lane does not follow it",
+                recipe.harness_id,
+            );
+        }
+    }
+
+    /// A tolerated exit is a stated exception, not a loophole. A `code` of zero
+    /// would be a tolerance for success — meaningless — and an empty reason
+    /// would be a tolerance nobody can review, which is exactly the blanket
+    /// "any exit is fine" this field replaced.
+    #[test]
+    fn a_tolerated_exit_names_a_real_code_and_says_why() {
+        for recipe in RECIPES {
+            let Some(tolerated) = recipe.tolerated_exit else {
+                continue;
+            };
+            assert_ne!(
+                tolerated.code, 0,
+                "{}: a tolerated exit of 0 tolerates success",
+                recipe.harness_id,
+            );
+            assert!(
+                !tolerated.reason.trim().is_empty(),
+                "{}: a tolerated exit must say why",
                 recipe.harness_id,
             );
         }

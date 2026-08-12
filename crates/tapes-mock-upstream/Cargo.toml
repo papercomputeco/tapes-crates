@@ -40,6 +40,18 @@ path = "src/lib.rs"
 name = "tapes-mock-upstream"
 path = "src/bin/tapes-mock-upstream.rs"
 
+# The stand-in harness the matrix runner's own tests drive. It is a binary
+# because that is the only thing the runner can launch: the two runner bugs
+# worth a regression test — a cell that passes a harness which died after
+# sending its request, and a runner that stalls on a harness chatty enough to
+# fill a pipe — are both about launching a *process*, and neither can be asked
+# of a real harness. Cargo hands its path to the integration test as
+# `CARGO_BIN_EXE_matrix-fake-harness`, so the test never guesses at a target
+# directory layout.
+[[bin]]
+name = "matrix-fake-harness"
+path = "src/bin/matrix-fake-harness.rs"
+
 # Deliberately no HTTP framework, no async runtime, and no TLS.
 #
 # The server here is ~300 lines of blocking HTTP/1.1 over `std::net`, and that
