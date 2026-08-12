@@ -21,18 +21,30 @@
 members = ["crates/*"]
 resolver = "3"
 
-# Fields every crate here agrees on. `rust-version`, `repository`, and
-# `description` stay per-crate: they differ, and a crate's MSRV in particular
-# is a promise about that crate, not about the repository.
+# Fields every crate here agrees on. `rust-version`, `description`, and
+# `version` stay per-crate: an MSRV is a promise about one crate rather than
+# about the repository, and so is a version number.
 #
-# `publish` stays false until the first deliberate crates.io release; flip it
-# here, once, together with that release PR.
+# `version` used to live here, and moving it out is what makes per-crate
+# releases expressible at all. Releases are cut one crate at a time, from a
+# `<crate>-v<version>` tag the release workflow checks against that crate's
+# manifest — so a patch to one crate must not renumber the two that did not
+# change, and three crates sharing one number could not describe that.
+#
+# `publish = true` says these crates are publishable; it does not say any
+# commit publishes them. Nothing reaches crates.io without a release tag, and
+# the release workflow holds the upload behind an explicit confirmation on top
+# of that. The flag read `false` before this machinery existed, which had a
+# cost worth naming: `cargo publish --dry-run` refuses to run on a crate
+# marked unpublishable, so the flag meant to defer the first release also
+# disabled the check that keeps a release possible.
 [workspace.package]
-version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-publish = false
+publish = true
 authors = ["Paper Compute"]
+repository = "https://github.com/papercomputeco/tapes-crates"
+homepage = "https://tapes.dev"
 
 # Denied outright rather than warned: these three are how a library crate
 # turns a caller's recoverable error into a process abort, and every crate
