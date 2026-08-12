@@ -19,7 +19,7 @@ rust-version = "1.88"
 license.workspace = true
 publish.workspace = true
 authors.workspace = true
-repository = "https://github.com/papercomputeco/tapes-harnesses"
+repository = "https://github.com/papercomputeco/tapes-crates"
 description = "Shared, open-source client-side harness knowledge for Tapes capture: the harness registry, launch recipes, config patch grammars, plugin artifacts, per-harness session attribution, and transcript discovery."
 
 [lib]

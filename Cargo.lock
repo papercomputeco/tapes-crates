@@ -1487,17 +1487,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tapes-cassette-client"
-version = "0.1.0"
-dependencies = [
- "reqwest",
- "serde_json",
- "snafu",
- "tapes-client",
- "url",
-]
-
-[[package]]
 name = "tapes-client"
 version = "0.1.0"
 dependencies = [
@@ -1533,13 +1522,6 @@ dependencies = [
  "tokio",
  "toml_edit",
  "tracing",
-]
-
-[[package]]
-name = "tapes-read-contract"
-version = "0.1.0"
-dependencies = [
- "tapes-client",
 ]
 
 [[package]]
