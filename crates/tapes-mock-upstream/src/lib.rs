@@ -28,6 +28,8 @@
 //! * [`recipe`] — one scripted one-shot recipe per registry harness, wrapping
 //!   the real launch recipes rather than restating them.
 //! * [`manifest`] — what a run ran against, including what it skipped and why.
+//! * [`record`] — what the matrix last *passed* against, committed to the
+//!   repository, and how a run's manifest stands against it.
 //!
 //! # Skips are outcomes, not absences
 //!
@@ -46,12 +48,14 @@
 //! ingest    the turn sink and the envelope reader, built on `http`
 //! recipe    per-harness one-shot launch, built on the real launch recipes
 //! manifest  the version record a run emits
+//! record    the committed version record a run is compared against
 //! ```
 
 pub mod http;
 pub mod ingest;
 pub mod manifest;
 pub mod recipe;
+pub mod record;
 pub mod upstream;
 
 use std::time::Duration;

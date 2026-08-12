@@ -73,6 +73,64 @@ impl Status {
     }
 }
 
+/// One difference between two manifests.
+///
+/// Structured rather than only rendered, because the same three differences mean
+/// different things depending on what is being compared. Between two *runs*,
+/// [`Change::Stopped`] means a harness fell out of the matrix; between a run and
+/// the committed version record it means this run did not cover a harness the
+/// record knows about, which on a machine without that harness installed is
+/// unremarkable. One comparison, two vocabularies — so the comparison produces
+/// values and each caller supplies its own words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Change {
+    /// The version moved.
+    Moved {
+        /// The participant.
+        name: String,
+        /// What it was.
+        from: String,
+        /// What it is now.
+        to: String,
+    },
+    /// It ran here and not in what it is being compared against.
+    Started {
+        /// The participant.
+        name: String,
+        /// The version it ran at.
+        version: String,
+    },
+    /// It ran in what is being compared against, and not here.
+    Stopped {
+        /// The participant.
+        name: String,
+        /// The version it last ran at.
+        was: String,
+    },
+}
+
+impl Change {
+    /// The participant this change is about.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Moved { name, .. } | Self::Started { name, .. } | Self::Stopped { name, .. } => {
+                name
+            }
+        }
+    }
+
+    /// The run-to-run rendering, as [`VersionManifest::drift_from`] emits it.
+    #[must_use]
+    pub fn to_line(&self) -> String {
+        match self {
+            Self::Moved { name, from, to } => format!("{name}: {from} -> {to}"),
+            Self::Started { name, version } => format!("{name}: now running at {version}"),
+            Self::Stopped { name, was } => format!("{name}: no longer running (was {was})"),
+        }
+    }
+}
+
 /// One row: a harness or a CLI, and what became of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
@@ -149,33 +207,84 @@ impl VersionManifest {
             .collect()
     }
 
-    /// How `self` differs from `previous`, as human-readable lines.
+    /// How `self` differs from `previous`, as structured changes.
     ///
     /// Reports three kinds of change and no others: a version that moved, a
     /// participant that started running, and one that stopped. The third is the
     /// one a naive diff would miss — a harness that drops out of the matrix
     /// produces no failing cell, only a row that quietly became a skip.
+    ///
+    /// Ordered by participant name, so two callers rendering the same comparison
+    /// print it in the same order.
     #[must_use]
-    pub fn drift_from(&self, previous: &Self) -> Vec<String> {
+    pub fn changes_from(&self, previous: &Self) -> Vec<Change> {
         let (before, after) = (previous.versions(), self.versions());
-        let mut lines = Vec::new();
+        let mut changes = Vec::new();
 
         for (name, version) in &after {
             match before.get(name) {
-                Some(old) if old != version => {
-                    lines.push(format!("{name}: {old} -> {version}"));
-                }
+                Some(old) if old != version => changes.push(Change::Moved {
+                    name: name.clone(),
+                    from: old.clone(),
+                    to: version.clone(),
+                }),
                 Some(_) => {}
-                None => lines.push(format!("{name}: now running at {version}")),
+                None => changes.push(Change::Started {
+                    name: name.clone(),
+                    version: version.clone(),
+                }),
             }
         }
         for (name, old) in &before {
             if !after.contains_key(name) {
-                lines.push(format!("{name}: no longer running (was {old})"));
+                changes.push(Change::Stopped {
+                    name: name.clone(),
+                    was: old.clone(),
+                });
             }
         }
+        changes.sort_by(|a, b| a.name().cmp(b.name()));
+        changes
+    }
+
+    /// [`Self::changes_from`], rendered for a run-to-run comparison.
+    #[must_use]
+    pub fn drift_from(&self, previous: &Self) -> Vec<String> {
+        let mut lines: Vec<String> = self
+            .changes_from(previous)
+            .iter()
+            .map(Change::to_line)
+            .collect();
         lines.sort();
         lines
+    }
+
+    /// The harness rows alone, as a manifest.
+    ///
+    /// The comparison against the committed version record is about harnesses
+    /// and nothing else: the record holds no client CLIs, so comparing whole
+    /// manifests would report every developer who supplied a client binary as
+    /// running something unrecorded.
+    #[must_use]
+    pub fn harnesses_only(&self) -> Self {
+        Self {
+            schema: self.schema,
+            harnesses: self.harnesses.clone(),
+            clis: Vec::new(),
+        }
+    }
+
+    /// Why `name` did not run, when the manifest says it did not.
+    #[must_use]
+    pub fn skip_reason(&self, name: &str) -> Option<&str> {
+        self.harnesses
+            .iter()
+            .chain(self.clis.iter())
+            .find(|entry| entry.name == name)
+            .and_then(|entry| match &entry.status {
+                Status::Skipped { reason } => Some(reason.as_str()),
+                Status::Ran { .. } => None,
+            })
     }
 }
 
