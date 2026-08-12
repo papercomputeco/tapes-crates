@@ -107,6 +107,66 @@ repository root verifies it against both that fingerprint and the published
 asset; CI runs it with `TAPES_CONTRACT_STRICT=1`, so a gate that cannot reach
 its input fails rather than reporting a comparison it never made.
 
+## Migrating from `tapes-read-contract` / `tapes-cassette-client`
+
+This crate absorbed both of them. Each name survived for one step as a
+re-export shim so that a consumer pinning it compiled across the move; the
+shims are gone now, and this section is where their item-by-item tables live.
+
+### From `tapes-read-contract`
+
+| was | is |
+| --- | -- |
+| `contract` | `tapes_client::core::contract` |
+| `coverage` | `tapes_client::core::coverage` |
+| `invoke` | `tapes_client::path` |
+| `error` | `tapes_client::error` |
+| `transport` | `tapes_client::transport` and `tapes_client::core::methods` |
+| `invoke::call_url` | `tapes_client::path::call_url` |
+| `invoke::PathMode::RootAbsolute` | `tapes_client::path::PathMode::Direct` |
+| `invoke::PathMode::UnderBase` | `tapes_client::path::PathMode::UnderBase` |
+
+`PathMode`'s default variant was **renamed**: `RootAbsolute` is now `Direct`.
+The behaviour is identical — still the default, still the join that drops any
+path prefix the base carried — so this is one word at each call site, and it is
+the only rename in either table.
+
+The `ReadTransport` / `ReadOperations` pair did not survive the move. It was a
+second seam describing the same thing as the cassette client's, which is
+precisely the duplication the merge exists to remove; its replacement is
+`tapes_client::transport::TapesTransport`, with `tapes_client::core::CoreClient`
+as the call surface over it. Nothing consumed the old pair.
+
+### From `tapes-cassette-client`
+
+| was | is |
+| --- | -- |
+| `cache` | `tapes_client::cassettes::cache` |
+| `command` | `tapes_client::cli` |
+| `discovery` | `tapes_client::cassettes::discovery` |
+| `spec` | `tapes_client::cassettes::spec` |
+| `invoke` | `tapes_client::path` and `tapes_client::cassettes::invoke` |
+| `transport` | `tapes_client::transport` and `tapes_client::http` |
+| `invoke::call_url(base, call)` | `tapes_client::path::call_url(base, call, PathMode::Direct)` |
+
+`call_url` gained its `PathMode` argument because a client mounted under a
+gateway prefix and one addressed at a server's root are not the same join. That
+crate only ever performed the root-absolute one, so `PathMode::Direct`
+reproduces its behaviour exactly.
+
+### The one type that could not be re-exported
+
+`tapes_cassette_client::Error` was preserved verbatim and inert rather than
+aliased to the merged taxonomy, for a reason that is a property of Rust rather
+than a preference: a consumer matching it *exhaustively* — no wildcard arm —
+stops compiling the moment a variant is added or removed, and one taxonomy for
+one API necessarily has both more variants and different ones.
+
+There is now a single `tapes_client::Error`, described under
+[Public seams](#public-seams). A consumer moving across deletes its
+`From<tapes_cassette_client::Error>` implementation and writes one for the
+merged variants — the same work either way, at a time it chooses.
+
 ## License
 
 Dual-licensed under MIT OR Apache-2.0; see the repository root.

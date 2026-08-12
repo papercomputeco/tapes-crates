@@ -38,6 +38,12 @@ sealed at build time, a deployment's cassettes are discovered at runtime. Both
 halves are thin method tables over one shared floor. That is the whole design —
 see [`crates/tapes-client/README.md`](crates/tapes-client/README.md).
 
+`tapes-client` was formed by merging two earlier crates, `tapes-read-contract`
+and `tapes-cassette-client`. A consumer still pinning either name will find the
+item-by-item mapping — including the one variant that was renamed — in that
+same README, under **Migrating from `tapes-read-contract` /
+`tapes-cassette-client`**.
+
 Nothing Paper-specific belongs in any of the three: no auth headers, no
 endpoints, no branding in behaviour. Delivery, auth, and retry live in each
 consumer.
