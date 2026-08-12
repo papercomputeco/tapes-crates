@@ -21,12 +21,14 @@
 //!
 //! ```text
 //! transport ── the seam: one trait, request in, status + bytes out
+//! http ─────── the HTTP engine, with the credential half left to a hook
 //! error ────── one taxonomy: Contract / Transport / ApiStatus / Decode
 //! decode ───── one policy: bytes to document, document to caller's type
 //! page ─────── one cursor convention
 //! path ─────── one join, in the two modes deployments actually need
 //!    │
-//!    ├── core/ ────── the SEALED surface, table from the vendored contract
+//!    ├── core/ ────── the SEALED surface: operation table AND models,
+//!    │                both reduced from the vendored contract
 //!    └── cassettes/ ─ the DISCOVERED surface, table from a live document
 //! ```
 //!
@@ -38,11 +40,22 @@
 //!
 //! # What is not here
 //!
-//! No authentication, no notion of a tenant, no opinion about how a response is
-//! rendered, and — beyond [`decode`]'s policy — no view on whether a response
-//! is typed at all. Each of those is a consumer's, and each consumer's answer
-//! is different. The one transport this crate does ship, [`http::DirectHttp`],
-//! is behind a feature and carries no credential.
+//! No notion of a tenant, and no opinion about how a response is rendered.
+//!
+//! Authentication is *half* here, which is the distinction that matters. The
+//! crate holds no credential and never will — but the HTTP around one is not a
+//! consumer's decision either, and leaving all of it outside meant every
+//! consumer rewrote request building, redirect policy, streaming, and error
+//! mapping to attach one header. [`http::HttpEngine`] owns that half;
+//! [`http::HttpAuth`] is the small trait a consumer writes instead of a whole
+//! transport. [`http::DirectHttp`] is the same engine with no credential at
+//! all, and [`transport::TapesTransport`] is still open to a consumer whose
+//! transport is not HTTP.
+//!
+//! Response *shapes* used to be outside too, and that was the same mistake:
+//! the sealed contract's shapes are published facts, so [`core::models`] holds
+//! them and a gate holds them to the document. A caller that wants a document
+//! rather than a model still says so — see [`decode`].
 //!
 //! It also does not hold the coverage tables. Those describe one client's
 //! surface; see [`core::coverage`] for why sharing them would break the gate.
@@ -83,7 +96,7 @@ pub use crate::cassettes::{
     CacheConfig, Cassette, Discovery, DiscoveryEntry, Location, Method, Param, ReducerConfig,
     Surface,
 };
-pub use crate::core::{CoreClient, CoreSurface, TAPES_API_YAML, ops};
+pub use crate::core::{ContractModel, CoreClient, CoreSurface, TAPES_API_YAML, models, ops};
 
 #[cfg(feature = "direct-http")]
-pub use http::DirectHttp;
+pub use http::{DirectHttp, HttpAuth, HttpEngine, NoAuth, Rejected, Unauthorized};
