@@ -18,6 +18,13 @@
 # --check writes nothing and exits non-zero if the vendored copy differs
 # from upstream, printing the diff. Use it to decide whether a refresh is
 # needed; the plain form performs it.
+#
+# The corpus ships a DIGEST sealing the case set. Both modes recompute it over
+# the cases actually on disk and compare, so a hand-edit to one vendored copy
+# is caught here rather than surviving as two implementations testing against
+# different bytes while both stay green. A refresh whose staged corpus does not
+# match the DIGEST it shipped with is refused outright: the live copy is left
+# untouched rather than replaced with bytes nothing vouches for.
 
 set -euo pipefail
 
@@ -32,6 +39,32 @@ usage() {
     # editing the comment doesn't silently spill code into --help.
     awk 'NR > 1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
     exit "${1:-0}"
+}
+
+# Recompute the corpus seal over a cases/ directory, printing `sha256:<hex>`.
+#
+# Upstream's algorithm, restated rather than imported: for each `cases/*.json`,
+# sorted by base name, feed "<basename>  <sha256-hex-of-file-bytes>\n" into a
+# SHA-256 and hex the result. It is deliberately trivial so every consumer can
+# reimplement it from that one sentence without a canonical-JSON library — this
+# script and the Rust seal test are two such reimplementations, and they agree
+# with upstream's published value or the corpus does not install.
+#
+# It hashes RAW BYTES, not parsed JSON, because this script copies bytes: a
+# reformat is drift too. It covers NAMES as well as contents, so an addition, a
+# deletion, and a rename are each caught rather than only an edit to a file that
+# already existed.
+#
+# LC_ALL=C pins byte-order sorting, matching the reference implementation's
+# sort. Without it the caller's locale decides the order the hashes are fed in,
+# and the same corpus digests differently on two machines.
+corpus_digest() {
+    local cases_dir="$1"
+    local base
+    while IFS= read -r base; do
+        printf '%s  %s\n' "$base" "$(shasum -a 256 "$cases_dir/$base" | awk '{print $1}')"
+    done < <(find "$cases_dir" -maxdepth 1 -type f -name '*.json' -exec basename {} \; |
+        LC_ALL=C sort) | shasum -a 256 | awk '{print "sha256:" $1}'
 }
 
 check_only=false
@@ -58,6 +91,16 @@ if [[ ! -d "$src_dir/cases" ]]; then
     exit 2
 fi
 
+# The seal is not optional. A checkout predating it can still be vendored by
+# hand, but not through this script: silently accepting a corpus with no DIGEST
+# would install bytes the seal test then fails on, and the failure would name
+# the vendored copy rather than the too-old checkout that produced it.
+if [[ ! -f "$src_dir/DIGEST" ]]; then
+    echo "error: no DIGEST at $src_dir/DIGEST" >&2
+    echo "       the corpus has been sealed upstream since 7e3cdef; this checkout predates it" >&2
+    exit 2
+fi
+
 # Pin the commit that last TOUCHED the fixtures, not the checkout's HEAD.
 # HEAD moves for unrelated upstream work, which would churn the recorded SHA
 # in SOURCE.md on every refresh even when not a byte of the corpus changed.
@@ -76,8 +119,28 @@ if $check_only; then
     if ! diff -u "$VENDOR_DIR/README.upstream.md" "$src_dir/README.md"; then
         status=1
     fi
+    if ! diff -u "$VENDOR_DIR/DIGEST" "$src_dir/DIGEST"; then
+        status=1
+    fi
+    # Independent of the diffs above: recompute the seal over the vendored
+    # cases and hold it against the vendored DIGEST. The diffs answer "does
+    # this match upstream"; this answers "does this copy match its own seal",
+    # which is the question the consumer's CI asks when no checkout is around.
+    if [[ -f "$VENDOR_DIR/DIGEST" ]]; then
+        vendored_recomputed="$(corpus_digest "$VENDOR_DIR/cases")"
+        vendored_sealed="$(tr -d '[:space:]' < "$VENDOR_DIR/DIGEST")"
+        if [[ "$vendored_recomputed" != "$vendored_sealed" ]]; then
+            echo >&2
+            echo "error: the vendored corpus does not match its own DIGEST" >&2
+            echo "       sealed:     $vendored_sealed" >&2
+            echo "       recomputed: $vendored_recomputed" >&2
+            echo "       a case here has been hand-edited; re-sync rather than editing in place" >&2
+            status=1
+        fi
+    fi
     if [[ $status -eq 0 ]]; then
         echo "vendored envelope fixtures match $checkout_path @ $upstream_sha"
+        echo "seal verified: $vendored_recomputed"
     else
         echo >&2
         echo "error: vendored envelope fixtures differ from $checkout_path @ $upstream_sha" >&2
@@ -143,6 +206,22 @@ trap 'cleanup; exit 143' TERM
 mkdir -p "$staging/cases"
 cp "${src_cases[@]}" "$staging/cases/"
 cp "$src_dir/README.md" "$staging/README.upstream.md"
+cp "$src_dir/DIGEST" "$staging/DIGEST"
+
+# Verify the seal against what was actually staged, before anything is swapped
+# in. This is the one point where a copy error, a partially-written case, or an
+# upstream DIGEST that never matched its own cases is still cheap to refuse —
+# afterwards the live corpus is already gone. Fail here and the vendored copy is
+# untouched, which is why it runs before the renames rather than after them.
+staged_digest="$(corpus_digest "$staging/cases")"
+upstream_digest="$(tr -d '[:space:]' < "$staging/DIGEST")"
+if [[ "$staged_digest" != "$upstream_digest" ]]; then
+    echo "error: the staged corpus does not match the DIGEST it shipped with" >&2
+    echo "       upstream:   $upstream_digest" >&2
+    echo "       recomputed: $staged_digest" >&2
+    echo "       refusing to install; the vendored copy is left untouched" >&2
+    exit 1
+fi
 # SOURCE.md is authored here, not upstream: carry it across so the swap does
 # not drop it.
 if [[ -f "$VENDOR_DIR/SOURCE.md" ]]; then
@@ -172,6 +251,7 @@ rm -rf "$previous"
 
 echo "Synced $(find "$VENDOR_DIR/cases" -name '*.json' | wc -l | tr -d ' ') cases from $src_dir"
 echo "Upstream SHA: $upstream_sha"
+echo "Seal:         $staged_digest (verified against the corpus as staged)"
 echo
 echo "Now:"
 echo "  1. Record that SHA in $VENDOR_DIR/SOURCE.md."

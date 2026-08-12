@@ -49,6 +49,16 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # The envelope corpus is vendored, so its DIGEST is checked here the way
+      # the read contract's fingerprint is checked in `contract-seal` above.
+      # It rides this job rather than getting its own because, unlike that one,
+      # it is a cargo test and would otherwise pay for a second toolchain and
+      # cache to run a check that finishes instantly. First, so a corpus that
+      # drifted fails before the long clippy runs rather than after them, and
+      # under its own name so the failure reads as "the vendored bytes are
+      # wrong" rather than as one more red test among hundreds.
+      - name: Envelope corpus seal
+        run: make corpus-seal
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
       # `envelope-fixtures` is off by default, so the default run never

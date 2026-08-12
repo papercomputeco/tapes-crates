@@ -16,7 +16,7 @@
 # entirely while being present here.
 
 .PHONY: help build test fmt fmt-check clippy lint check clean sync-fixtures pin-parity \
-	contracts-check
+	contracts-check corpus-seal
 
 # Consumer manifests for `make pin-parity`. Defaults to the GitHub repos, which
 # is what CI compares; override with local checkouts when working in a forest
@@ -66,3 +66,16 @@ pin-parity:	## Assert every consumer pins the same tapes-harnesses revision
 
 contracts-check:	## Verify the vendored tapes read contract against its recorded fingerprint and the pinned release asset
 	scripts/contracts-check.sh
+
+# The sibling seal to `contracts-check`, for the other thing this repo vendors.
+# Both answer "are the copied bytes the right bytes"; they differ only in what
+# they can check against. The read contract is a published release asset, so its
+# gate reaches for the network. The envelope corpus carries its own DIGEST, so
+# this one needs nothing beyond the checkout — which is the whole point of a
+# vendored seal, and why this target has no strict/offline mode to configure.
+#
+# Named separately from `test` even though `cargo test` also runs it: a corpus
+# failure means the vendored bytes are wrong, not that a test regressed, and the
+# two deserve different first guesses from whoever reads the failure.
+corpus-seal:	## Verify the vendored envelope fixture corpus against its DIGEST
+	cargo test -p tapes-capture --test envelope_corpus_seal
