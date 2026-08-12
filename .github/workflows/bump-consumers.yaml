@@ -1,0 +1,243 @@
+# Open a repin PR in every consumer when this crate's main moves.
+#
+# These crates exist so the capture clients share one implementation of harness
+# knowledge, and that sharing is only real while every consumer pins the same
+# revision. Keeping them there was a manual chore — edit each `rev =`, refresh
+# the lockfile, open a PR, twice — done about ten times in nine days, and it
+# went wrong in the ways manual chores do: one consumer bumped and the other
+# forgotten, leaving the two clients running different attribution code with
+# every test in both repos green. `scripts/check-pin-parity.sh` reports that
+# divergence; this workflow is the half that prevents it.
+#
+# The bump itself is NOT implemented here. Each consumer owns a
+# `make bump-harnesses REV=<sha>` target, and this workflow just calls it, so
+# humans and CI run the same command and neither can drift from the other.
+#
+# Reviewed PRs only. Nothing here merges anything: a bump can carry a breaking
+# change to the crates, and whether the consumer is ready is a human call. The
+# consumer's own CI runs on the PR and is the gate.
+#
+# ---------------------------------------------------------------------------
+# REQUIRED SECRET: BUMP_FANOUT_TOKEN — not yet provisioned.
+#
+# The default GITHUB_TOKEN is scoped to this repository alone and cannot check
+# out or open a pull request in another one, so cross-repo fan-out needs a token
+# of its own. Until that secret exists this workflow deliberately no-ops: the
+# guard step below skips the job with a notice rather than failing on every push
+# to main.
+#
+# Provision it as a fine-grained personal access token (or a GitHub App
+# installation token) limited to exactly the consumer repositories listed in the
+# matrix, with the minimum that a branch-and-PR needs:
+#
+#   Repository access: only the consumer repositories (NOT this one)
+#   Permissions:
+#     Contents:      Read and write   (check out, and push the bump branch)
+#     Pull requests: Read and write   (open the PR)
+#     Metadata:      Read             (implied, granted automatically)
+#
+# No org, workflow, or packages scope is needed. The token never touches this
+# repository, so a leak cannot rewrite the crates themselves.
+#
+# One consumer is a private repository today. A public workflow naming it is
+# acceptable for now, and worth revisiting when that changes.
+# ---------------------------------------------------------------------------
+
+name: Bump consumers
+
+on:
+  push:
+    branches: [main]
+  # Manual runs are how the token gets smoke-tested once it is provisioned, and
+  # how a consumer that was skipped or failed gets retried without an empty
+  # commit to main.
+  workflow_dispatch:
+
+# Read-only for the default token: everything this job writes, it writes to
+# another repository through BUMP_FANOUT_TOKEN.
+permissions:
+  contents: read
+
+# Serialized rather than cancel-in-progress: two pushes in quick succession
+# should produce the later revision's PR, and cancelling a half-finished run
+# could leave a pushed branch with no PR opened against it.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Bump ${{ matrix.consumer.repo }}
+    runs-on: ubuntu-latest
+    strategy:
+      # One consumer failing must not hide the other's result — the failure
+      # mode this whole workflow exists to prevent is exactly "one got bumped
+      # and the other did not".
+      fail-fast: false
+      matrix:
+        consumer:
+          - repo: papercomputeco/paper
+          - repo: papercomputeco/tapesctl
+
+    steps:
+      # Secrets cannot be read in a job-level `if:`, so the skip is a step that
+      # every later step keys off. This is what makes the workflow dormant
+      # instead of a recurring red X on main before the token exists.
+      - name: Check the fan-out token is provisioned
+        id: guard
+        env:
+          BUMP_FANOUT_TOKEN: ${{ secrets.BUMP_FANOUT_TOKEN }}
+        run: |
+          if [[ -z "${BUMP_FANOUT_TOKEN}" ]]; then
+            echo "provisioned=false" >>"$GITHUB_OUTPUT"
+            echo "::notice title=Bump fan-out skipped::BUMP_FANOUT_TOKEN is not set; see this workflow's header for the scopes it needs."
+          else
+            echo "provisioned=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      # Full history: the PR body quotes the commit range between the revision
+      # the consumer pins today and the one being shipped, and a shallow clone
+      # cannot resolve the older end of it.
+      - name: Check out the crates repository
+        if: steps.guard.outputs.provisioned == 'true'
+        uses: actions/checkout@v4
+        with:
+          path: crates
+          fetch-depth: 0
+
+      - name: Check out ${{ matrix.consumer.repo }}
+        if: steps.guard.outputs.provisioned == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.consumer.repo }}
+          token: ${{ secrets.BUMP_FANOUT_TOKEN }}
+          path: consumer
+          # Persist so the later `git push` reuses this token rather than the
+          # default one, which has no access to the consumer.
+          persist-credentials: true
+
+      # The consumers' bump target refreshes Cargo.lock, which needs cargo.
+      # Stable rather than each consumer's pinned toolchain: this only resolves
+      # dependencies, and the consumer's own CI compiles the result.
+      - name: Install Rust
+        if: steps.guard.outputs.provisioned == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run the consumer's bump target
+        id: bump
+        if: steps.guard.outputs.provisioned == 'true'
+        env:
+          REV: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd consumer
+
+          # The revision the consumer pins right now, read before the rewrite so
+          # the PR body can describe what is actually changing. Anchored at the
+          # start of a line so the manifests' several prose mentions of these
+          # crates cannot be mistaken for the pin.
+          old_rev="$(
+            awk '
+              /^tapes-[a-z-]+[[:space:]]*=/ && /papercomputeco\/(tapes-crates|tapes-harnesses)/ {
+                if (match($0, /rev[[:space:]]*=[[:space:]]*"[0-9a-fA-F]+"/)) {
+                  line = substr($0, RSTART, RLENGTH)
+                  match(line, /[0-9a-fA-F]+"$/)
+                  print substr(line, RSTART, RLENGTH - 1)
+                  exit
+                }
+              }
+            ' Cargo.toml
+          )"
+          if [[ -z "$old_rev" ]]; then
+            echo "::error::could not read the current tapes pin from ${{ matrix.consumer.repo }}'s Cargo.toml"
+            exit 1
+          fi
+          echo "old_rev=$old_rev" >>"$GITHUB_OUTPUT"
+
+          # A failure here is a real signal, not something to swallow: it is how
+          # a bump that the consumer cannot absorb — a crate renamed or removed
+          # upstream, say — announces that it needs a human, before a PR exists.
+          make bump-harnesses REV="$REV"
+
+          if [[ -z "$(git status --porcelain)" ]]; then
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::${{ matrix.consumer.repo }} already pins $REV."
+          else
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Open the repin PR
+        if: steps.guard.outputs.provisioned == 'true' && steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.BUMP_FANOUT_TOKEN }}
+          REV: ${{ github.sha }}
+          OLD_REV: ${{ steps.bump.outputs.old_rev }}
+          CONSUMER: ${{ matrix.consumer.repo }}
+        run: |
+          set -euo pipefail
+          short="${REV:0:7}"
+
+          # What actually changed upstream, which is the whole reason a reviewer
+          # can judge this PR at all — without it the diff is four opaque SHAs.
+          # `--no-merges` because the range is squash-merged PRs already.
+          cd crates
+          if git rev-parse --verify --quiet "${OLD_REV}^{commit}" >/dev/null; then
+            log="$(git log --oneline --no-merges "${OLD_REV}..${REV}")"
+          else
+            # The old pin can be unreachable — a force-push, or a consumer
+            # pinned to a revision that never landed here. Say so plainly
+            # instead of shipping an empty changelog that reads as "no changes".
+            log="(cannot show the range: ${OLD_REV} is not reachable in this repository)"
+          fi
+          cd ..
+
+          cd consumer
+          # A deterministic branch name per revision, so re-running this
+          # workflow updates the existing PR instead of opening a second one.
+          branch="automation/bump-tapes-crates-${short}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add -A
+          git commit -m ":arrow_up: chore: bump the tapes crates to ${short}"
+          git push --force-with-lease origin "$branch"
+
+          body="$(cat <<EOF
+          Re-points every tapes crates git dependency at \`${REV}\`.
+
+          Opened automatically by the crates repository's \`bump-consumers\`
+          workflow, which runs this repo's own \`make bump-harnesses\` target —
+          the same command you would run by hand.
+
+          Both capture clients are meant to pin the same revision, so this PR has
+          a sibling in the other consumer. Landing only one of them puts the two
+          clients on different harness knowledge while both repos stay green.
+
+          ## Upstream commits (\`${OLD_REV:0:7}..${short}\`)
+
+          \`\`\`
+          ${log}
+          \`\`\`
+
+          Not auto-merged, and not to be merged on the strength of this
+          description: CI on this PR is the gate.
+          EOF
+          )"
+
+          # Update the existing PR when the branch already has one, rather than
+          # failing the run on a re-dispatch.
+          if existing="$(gh pr list --repo "$CONSUMER" --head "$branch" --state open --json number --jq '.[0].number')" &&
+             [[ -n "$existing" ]]; then
+            gh pr edit "$existing" --repo "$CONSUMER" --body "$body"
+            echo "::notice::Updated existing PR #${existing} on ${CONSUMER}."
+          else
+            gh pr create \
+              --repo "$CONSUMER" \
+              --head "$branch" \
+              --title ":arrow_up: chore: bump the tapes crates to ${short}" \
+              --body "$body"
+          fi
+
+# When these crates move to crates.io the shape survives: a version replaces the
+# SHA, and `make bump-harnesses` takes that version instead of a revision.
