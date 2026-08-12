@@ -6,12 +6,12 @@
 
 [package]
 name = "tapes-capture"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 rust-version = "1.88"
-license = "MIT OR Apache-2.0"
-publish = false
-authors = ["Paper Compute"]
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
 repository = "https://github.com/papercomputeco/tapes-harnesses"
 description = "Harness-agnostic capture primitives: the X-Tapes-* envelope producer, the capture-gateway environment contract and launch-nonce protocol, peer-PID lookup, and the peer-trust ancestry check."
 
@@ -79,7 +79,5 @@ tokio = { version = "1", features = [
     "time",
 ] }
 
-[lints.clippy]
-unwrap_used = "deny"
-expect_used = "deny"
-panic = "deny"
+[lints]
+workspace = true

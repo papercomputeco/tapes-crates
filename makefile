@@ -6,13 +6,14 @@
 # pipeline, no cross-compilation, nothing to release except (eventually)
 # crates.io.
 #
-# The root manifest owns the `tapes-harnesses` package and lists every other
-# crate as a member, with `default-members` naming all of them. That is what
-# lets each target below invoke cargo once and still cover the whole
-# repository. The previous shape — one workspace per package, threaded through
-# every target by `--manifest-path` — meant a crate was covered only where
-# somebody remembered to name it, and `cassette-client` was in fact missing
-# from CI entirely while being present here.
+# The root manifest is a workspace and nothing else; every package lives under
+# `crates/` and is matched by the `crates/*` member glob. That is what lets
+# each target below invoke cargo once and still cover the whole repository,
+# including crates added after these targets were written. The older shapes —
+# one workspace per package threaded through every target by `--manifest-path`,
+# then a hand-written `default-members` list — meant a crate was covered only
+# where somebody remembered to name it, and one was in fact missing from CI
+# entirely while being present here.
 
 .PHONY: help build test fmt fmt-check clippy lint check clean sync-fixtures pin-parity \
 	contracts-check

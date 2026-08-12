@@ -1,0 +1,80 @@
+# Dual-licensed under MIT OR Apache-2.0 — see LICENSE-MIT and LICENSE-APACHE
+# at the repository root.
+#
+# `publish` stays false until the first deliberate crates.io release (the flag
+# is set once, at the workspace root); flip it together with that release PR.
+# The crate name `tapes-harnesses` is confirmed available on crates.io
+# (checked 2026-07-29), and `tapes-harness` should be claimed as a stub
+# redirect at the same time.
+#
+# A member of the repository-root workspace like every other crate here. It
+# used to own the root manifest itself, which made the root both a workspace
+# and a package — so `cargo build` at the root meant "this crate" and the
+# other crates needed a `default-members` list to be included at all.
+[package]
+name = "tapes-harnesses"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.88"
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository = "https://github.com/papercomputeco/tapes-harnesses"
+description = "Shared, open-source client-side harness knowledge for Tapes capture: the harness registry, launch recipes, config patch grammars, plugin artifacts, per-harness session attribution, and transcript discovery."
+
+[lib]
+name = "tapes_harnesses"
+path = "src/lib.rs"
+
+# Dependency versions match the consumers, which the attribution modules were
+# extracted from, so a consumer's lockfile does not fork when it takes this
+# crate.
+#
+# The envelope's encoders (`base64`, `percent-encoding`) and the peer-PID
+# lookup's socket table (`netsock`) are gone from this list: both moved with the
+# code that needed them. A dependency that outlives its module is how a crate
+# quietly keeps the right to grow that module back.
+[dependencies]
+arc-swap = "1"
+dirs = "5"
+http = "1"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+# `raw_value` lets the transcript payload embed JSONL records verbatim. The
+# ingest server's dedup key is a content hash of the records array, so
+# re-serializing through `serde_json::Value` (which reorders map keys) would
+# register identical content as a new version on every push.
+serde_json = { version = "1", features = ["raw_value"] }
+snafu = "0.8"
+# The harness-agnostic half of capture: the `X-Tapes-*` envelope producer and
+# its harness-id vocabulary, the gateway/nonce protocol, peer-PID lookup, and
+# the peer-trust ancestry check. The edge is one-way by construction —
+# `tapes-capture` cannot name a harness, so it cannot depend back on this crate,
+# and Cargo now enforces what review used to.
+tapes-capture = { path = "../tapes-capture", version = "0.1.0" }
+time = { version = "0.3", features = ["formatting", "parsing", "serde", "macros"] }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+# Format-preserving TOML editing for the codex config.toml patch grammar. The
+# version matches the consumers' pin so their lockfiles do not fork when they
+# swap an installer onto this crate.
+toml_edit = "0.20"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+# `test-util` powers `#[tokio::test(start_paused = true)]`, which the
+# attribution pipeline's tests rely on: its lanes wait up to 2 s for a
+# session file to appear, and a paused clock proves both that a gated caller
+# returns immediately and that a timeout path is reached — without any test
+# actually sleeping.
+tokio = { version = "1", features = [
+    "macros",
+    "rt",
+    "rt-multi-thread",
+    "sync",
+    "test-util",
+    "time",
+] }
+
+[lints]
+workspace = true

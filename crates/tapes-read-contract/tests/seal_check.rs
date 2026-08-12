@@ -24,8 +24,11 @@ use std::process::{Command, Output};
 /// refuses immediately rather than hanging on a DNS or connect timeout.
 const UNREACHABLE_BASE: &str = "http://127.0.0.1:1/releases/download";
 
+/// The script lives at the repository root, two levels above this crate:
+/// `crates/<crate>/` -> `crates/` -> the root.
 fn script() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
         .join("..")
         .join("scripts")
         .join("contracts-check.sh")

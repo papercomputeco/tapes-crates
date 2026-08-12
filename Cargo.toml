@@ -1,93 +1,43 @@
 # Dual-licensed under MIT OR Apache-2.0 — see LICENSE-MIT and LICENSE-APACHE.
 #
-# `publish` stays false until the first deliberate crates.io release; flip it
-# together with that release PR. The crate name `tapes-harnesses` is confirmed
-# available on crates.io (checked 2026-07-29), and `tapes-harness` should be
-# claimed as a stub redirect at the same time.
-
-# This manifest is the workspace root. Declaring a workspace here is
-# load-bearing even beyond the members below: it stops Cargo from walking up and
-# adopting whatever workspace happens to own the directory this repo was checked
-# out into — a real case, since these crates are vendored into a parent
-# repository whose root manifest is an unrelated workspace. Being adopted would
-# also silently disable the `[patch.crates-io]` block below, because Cargo only
-# honours `patch` at a workspace root, and the libproc pin there is required to
-# cross-compile.
+# This manifest is the workspace root and nothing else: every package in the
+# repository lives under `crates/`, so `members` is a glob and no package can
+# be added without joining the same selection as the rest. A bare `cargo
+# build` / `cargo test` / `cargo clippy` at the root therefore covers the
+# whole repository by construction — the previous shape needed a hand-written
+# `default-members` list naming each crate, and a crate left out of that list
+# silently stopped being tested while still looking like a passing run.
 #
-# `default-members` names every crate, root package included, so a bare
-# `cargo test` / `cargo clippy` at the root covers the whole repository. Without
-# it Cargo selects only the package owning the root manifest, and a member's
-# tests would stop running the moment they were moved into one — silently, and
-# looking exactly like a passing run.
+# Declaring a workspace here is load-bearing beyond listing members: it stops
+# Cargo from walking up and adopting whatever workspace happens to own the
+# directory this repo was checked out into — a real case, since these crates
+# are vendored into a parent repository whose root manifest is an unrelated
+# workspace. Adoption would also silently disable the `[patch.crates-io]`
+# block below, because Cargo honours `patch` only at a workspace root. Each
+# crate used to buy that protection for itself with an empty `[workspace]`
+# table of its own; one real root shields every member at once, and those
+# per-crate tables are gone.
 [workspace]
-members = ["crates/tapes-capture", "cassette-client", "read-contract"]
-default-members = [".", "crates/tapes-capture", "cassette-client", "read-contract"]
+members = ["crates/*"]
+resolver = "3"
 
-[package]
-name = "tapes-harnesses"
+# Fields every crate here agrees on. `rust-version`, `repository`, and
+# `description` stay per-crate: they differ, and a crate's MSRV in particular
+# is a promise about that crate, not about the repository.
+#
+# `publish` stays false until the first deliberate crates.io release; flip it
+# here, once, together with that release PR.
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 publish = false
 authors = ["Paper Compute"]
-repository = "https://github.com/papercomputeco/tapes-harnesses"
-description = "Shared, open-source client-side harness knowledge for Tapes capture: the harness registry, launch recipes, config patch grammars, plugin artifacts, per-harness session attribution, and transcript discovery."
 
-[lib]
-name = "tapes_harnesses"
-path = "src/lib.rs"
-
-# Dependency versions match `platform/paper`, which the attribution modules were
-# extracted from, so paperd's lockfile does not fork when it consumes this crate.
-#
-# The envelope's encoders (`base64`, `percent-encoding`) and the peer-PID
-# lookup's socket table (`netsock`) are gone from this list: both moved with the
-# code that needed them. A dependency that outlives its module is how a crate
-# quietly keeps the right to grow that module back.
-[dependencies]
-arc-swap = "1"
-dirs = "5"
-http = "1"
-libc = "0.2"
-serde = { version = "1", features = ["derive"] }
-# `raw_value` lets the transcript payload embed JSONL records verbatim. The
-# ingest server's dedup key is a content hash of the records array, so
-# re-serializing through `serde_json::Value` (which reorders map keys) would
-# register identical content as a new version on every push.
-serde_json = { version = "1", features = ["raw_value"] }
-snafu = "0.8"
-# The harness-agnostic half of capture: the `X-Tapes-*` envelope producer and
-# its harness-id vocabulary, the gateway/nonce protocol, peer-PID lookup, and
-# the peer-trust ancestry check. The edge is one-way by construction —
-# `tapes-capture` cannot name a harness, so it cannot depend back on this crate,
-# and Cargo now enforces what review used to.
-tapes-capture = { path = "crates/tapes-capture", version = "0.1.0" }
-time = { version = "0.3", features = ["formatting", "parsing", "serde", "macros"] }
-tokio = { version = "1", features = ["rt", "sync", "time"] }
-# Format-preserving TOML editing for the codex config.toml patch grammar. The
-# version matches `platform/paper`'s workspace pin so paperd's lockfile does
-# not fork when it swaps its installer onto this crate.
-toml_edit = "0.20"
-tracing = "0.1"
-
-[dev-dependencies]
-tempfile = "3"
-# `test-util` powers `#[tokio::test(start_paused = true)]`, which the
-# attribution pipeline's tests rely on: its lanes wait up to 2 s for a
-# session file to appear, and a paused clock proves both that a gated caller
-# returns immediately and that a timeout path is reached — without any test
-# actually sleeping.
-tokio = { version = "1", features = [
-    "macros",
-    "rt",
-    "rt-multi-thread",
-    "sync",
-    "test-util",
-    "time",
-] }
-
-[lints.clippy]
+# Denied outright rather than warned: these three are how a library crate
+# turns a caller's recoverable error into a process abort, and every crate
+# here is a library someone else's binary links.
+[workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
@@ -101,9 +51,12 @@ panic = "deny"
 #
 # This rev gates on `CARGO_CFG_TARGET_OS` (the target) and falls back to the
 # bindings libproc already ships for docs.rs — no libclang, no SDK headers.
-# `platform/paper` and `tapesctl` pin the identical rev for the identical
-# reason. Drop all three when a release carries the fix; 0.14.11 is still the
-# newest as of this pin. Upstream: andrewdavidmackenzie/libproc-rs#168.
+# The consumers pin the identical rev for the identical reason. Drop it
+# everywhere when a release carries the fix; 0.14.11 is still the newest as of
+# this pin. Upstream: andrewdavidmackenzie/libproc-rs#168.
+#
+# It lives here and nowhere else: Cargo honours `patch` only at a workspace
+# root, so a copy in a member manifest would be ignored with no diagnostic.
 #
 # Reached via `netsock -> libproc`.
 [patch.crates-io]
