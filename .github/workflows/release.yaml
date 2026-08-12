@@ -21,13 +21,15 @@ on:
       - "tapes-capture-v*"
       - "tapes-client-v*"
       - "tapes-harnesses-v*"
-  # Dispatch against the release tag itself (the ref picker lists tags). The
-  # confirmation input has to be retyped to match that tag, so a manual run
-  # started from the wrong ref cannot publish the crate it names.
+  # Dispatch against the release tag itself — the ref picker lists tags, and
+  # the job refuses to run against anything that is not one. A dispatch runs on
+  # whatever ref the caller chose, so the picker is a convenience and never a
+  # gate; the ref-type assertion below is the gate. On top of it, the
+  # confirmation input has to be retyped to match the tag.
   workflow_dispatch:
     inputs:
       confirm:
-        description: "Retype the release tag exactly (e.g. tapes-client-v0.1.0) to allow the upload"
+        description: "Retype the release tag exactly (e.g. tapes-client-v0.1.0) to allow the upload. Run this from the tag, not from a branch."
         required: true
         type: string
 
@@ -43,21 +45,84 @@ jobs:
     name: Release ${{ github.ref_name }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to full commit SHAs rather than to `@v4` or `@stable`. Those are
+      # mutable refs: whoever can move them chooses what executes on this
+      # runner, and this runner is the one that holds CARGO_REGISTRY_TOKEN a few
+      # steps from here. A commit SHA cannot be repointed, so an upgrade becomes
+      # a visible diff — new SHA, new version comment — instead of something
+      # that happens to a workflow nobody edited.
+      #
+      # `dtolnay/rust-toolchain@v1` makes `toolchain` a required input (the
+      # `stable` branch is the same action with `stable` as the default), so the
+      # toolchain is named here explicitly.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
+          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # A release is a claim about a tag, so the ref has to BE a tag before any
+      # of it means anything.
+      #
+      # Nothing downstream can establish this. `tapes-client-v0.1.0` is a legal
+      # BRANCH name, and a branch by that name satisfies the tag resolver below
+      # (the name parses), satisfies the manifest check (the branch tip carries
+      # a matching manifest), and satisfies the confirmation lock (the operator
+      # retypes the branch name and it matches `github.ref_name`). Every gate
+      # reads the ref's NAME; none of them read its TYPE. A `workflow_dispatch`
+      # started against that branch would therefore publish the branch tip as
+      # the release once the hold is lifted. `workflow_dispatch` runs on
+      # whatever ref the caller picked, so the ref picker offering tags does not
+      # constrain anything.
+      #
+      # Both event types are checked, not just dispatch: a `push` trigger
+      # filtered on `tags:` should only ever deliver a tag, and asserting it
+      # costs one comparison rather than a trusted assumption.
+      #
+      # The tag is then re-resolved through `refs/tags/` and that commit is
+      # checked out explicitly, so the tree every later step gates and packages
+      # is the tag's tree by construction.
+      #
+      # Reading of the cases:
+      #   push, refs/tags/tapes-client-v0.1.0    -> ref_type=tag,    proceeds
+      #   dispatch from tag tapes-client-v0.1.0  -> ref_type=tag,    proceeds
+      #   dispatch from branch tapes-client-v0.1.0 -> ref_type=branch, FAILS here
+      #   dispatch from main                     -> ref_type=branch, FAILS here
+      - name: The ref is a release tag
+        id: ref
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            echo "FAIL: this workflow releases tags, but ${GITHUB_REF_NAME} is a ${GITHUB_REF_TYPE}." >&2
+            echo "      Re-run it against the release tag itself. A branch whose name looks" >&2
+            echo "      like a release tag is still a branch, and its tip is not a release." >&2
+            exit 1
+          fi
+          tag="${GITHUB_REF_NAME}"
+          if ! commit="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}")"; then
+            echo "FAIL: refs/tags/${tag} is not present in this checkout." >&2
+            exit 1
+          fi
+          git checkout --force --detach "${commit}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
+          echo "Releasing refs/tags/${tag} (${commit})"
 
       # Resolve the tag to a crate and a version, and refuse anything that is
       # not one of this repository's crates. The crate names are matched
       # longest-prefix rather than split on the last `-v`, because the names
       # themselves contain hyphens.
+      #
+      # Reads the tag the step above verified rather than the raw ref, so this
+      # step cannot be reached with a ref that was never proven to be a tag.
       - name: Resolve crate and version from the tag
         id: tag
+        env:
+          RELEASE_TAG: ${{ steps.ref.outputs.tag }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          tag="${RELEASE_TAG}"
           crate=""
           version=""
           for c in tapes-capture tapes-client tapes-harnesses; do
@@ -132,11 +197,20 @@ jobs:
       #      pushes skip this one — pushing a release tag is already the
       #      deliberate act — but a dispatch is easy to start against the wrong
       #      ref, so it has to say which release it means.
+      #
+      # Lock 2 is a cross-check on top of the ref-type assertion, not a
+      # substitute for it. It compares two things the operator supplies, so on
+      # its own it only catches a typo: an operator who picked the wrong ref
+      # will happily retype that ref's name and match. What makes a wrong ref
+      # unpublishable is the earlier assertion that the ref is a tag at all.
+      # Mismatching here is a HOLD rather than a failure, so the run still
+      # completes as a rehearsal and the log says which lock stayed shut.
       - name: Decide whether the upload is allowed
         id: gate
         env:
           PUBLISH_ENABLED: ${{ vars.PUBLISH_ENABLED }}
           CONFIRM: ${{ inputs.confirm }}
+          RELEASE_TAG: ${{ steps.ref.outputs.tag }}
         run: |
           set -euo pipefail
           allowed=true
@@ -145,9 +219,9 @@ jobs:
             echo "HOLD: repository variable PUBLISH_ENABLED is not \`true\` (it is '${PUBLISH_ENABLED:-<unset>}')."
             echo "      Nothing will be uploaded. Everything above this line ran as a full rehearsal."
           fi
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "${CONFIRM:-}" != "${GITHUB_REF_NAME}" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "${CONFIRM:-}" != "${RELEASE_TAG}" ]; then
             allowed=false
-            echo "HOLD: confirmation '${CONFIRM:-<empty>}' does not match the tag '${GITHUB_REF_NAME}'."
+            echo "HOLD: confirmation '${CONFIRM:-<empty>}' does not match the tag '${RELEASE_TAG}'."
           fi
           echo "allowed=${allowed}" >> "${GITHUB_OUTPUT}"
           {

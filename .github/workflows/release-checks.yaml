@@ -32,9 +32,15 @@ jobs:
     name: Publishable
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      # Pinned to full commit SHAs for the same reason the release workflow is:
+      # `@v4` and `@stable` are mutable, and this job runs `cargo publish
+      # --dry-run`, which is one flag away from the real thing. `@v1` of the
+      # toolchain action requires `toolchain` to be named, so it is.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # The whole-workspace gate, and the only one that covers all three
       # crates today.
