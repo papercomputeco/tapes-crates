@@ -40,6 +40,17 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# # Why the actions are pinned by commit
+#
+# A tag is a moving pointer the action's owner can repoint at any time, so
+# `@v4` is a promise that whatever runs here today is whatever that repository
+# decides tomorrow. This job runs on `pull_request`, which means it runs code
+# from a fork's branch — pinning by commit is what keeps the *rest* of the job
+# from also being someone else's choice. The trailing comment is the release
+# each commit is the tip of; both are checked against the upstream repository's
+# own tag refs, so a bump means resolving the new tag rather than editing a
+# number.
+
 jobs:
   tier1:
     name: Tier 1 (harness -> mock)
@@ -49,9 +60,9 @@ jobs:
     # the first one already answered.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: cachix/install-nix-action@v27
+      - uses: cachix/install-nix-action@ba0dd844c9180cbf77aa72a116d6fbc515d0e87b # v27
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
@@ -71,10 +82,17 @@ jobs:
       # Uploaded on failure too — a failed run's manifest is the first thing
       # worth reading, because it says which harness versions the failure was
       # against.
+      #
+      # `error` rather than `warn`: the manifest is an advertised output of every
+      # run that got as far as running, and the run itself now fails if it cannot
+      # write one. The only ways to reach this step without the file are a run
+      # that never started (a compile failure, say) or one that died before
+      # emitting it — both already red, and neither worth a second, quieter
+      # signal. A warning here would be the same silence in a different colour.
       - name: Upload the version manifest
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: harness-matrix-manifest
           path: target/debug/deps/harness-matrix-manifest.json
-          if-no-files-found: warn
+          if-no-files-found: error
