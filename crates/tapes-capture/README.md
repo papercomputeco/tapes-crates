@@ -46,6 +46,26 @@ over its case set, and `tests/envelope_corpus_seal.rs` recomputes it on every
 `cargo test`. Editing a vendored case turns a contract disagreement that would
 have been caught in review into a red seal naming the file.
 
+## Stability
+
+This crate is **supported public API**, meant to be depended on directly. So
+are its two siblings — [`tapes-harnesses`](../tapes-harnesses/README.md) (the
+harness knowledge) and [`tapes-client`](../tapes-client/README.md) (the read
+client) — and all three version independently on crates.io.
+
+Pre-1.0, `0.x` versions carry the usual Cargo meaning: a breaking change bumps
+the minor (`0.2.0`), anything compatible bumps the patch (`0.1.1`). What counts
+as breaking is the boundary in the [repository README](../../README.md#the-public-api-boundary),
+not just the signatures: a capture primitive that starts knowing a harness's
+name has broken this crate's promise whether or not anything stops compiling.
+
+The `X-Tapes-*` envelope is the exception worth stating outright, because it is
+not only Rust. It is a cross-language contract that Go parsers read on the other
+side, so an envelope change is a change to something this crate's version number
+cannot describe on its own — it goes through the shared fixture corpus first.
+
+Changes are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## License
 
 Dual-licensed under MIT OR Apache-2.0; see the repository root.

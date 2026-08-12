@@ -1,11 +1,13 @@
 # Dual-licensed under MIT OR Apache-2.0 — see LICENSE-MIT and LICENSE-APACHE
 # at the repository root.
 #
-# `publish` stays false until the first deliberate crates.io release (the flag
-# is set once, at the workspace root); flip it together with that release PR.
-# The crate name `tapes-harnesses` is confirmed available on crates.io
-# (checked 2026-07-29), and `tapes-harness` should be claimed as a stub
-# redirect at the same time.
+# Released on its own `tapes-harnesses-v<version>` tag, so this version moves
+# independently of the sibling crates. It is the top of the dependency order:
+# it requires `tapes-capture` at the version pinned below, so that crate must
+# be on crates.io at or above that version before this one can publish.
+#
+# `tapes-harness` (singular) should be claimed as a stub redirect when this
+# name is first published, so the near-miss cannot be taken by someone else.
 #
 # A member of the repository-root workspace like every other crate here. It
 # used to own the root manifest itself, which made the root both a workspace
@@ -13,14 +15,18 @@
 # other crates needed a `default-members` list to be included at all.
 [package]
 name = "tapes-harnesses"
-version.workspace = true
+version = "0.1.0"
 edition.workspace = true
 rust-version = "1.88"
 license.workspace = true
 publish.workspace = true
 authors.workspace = true
-repository = "https://github.com/papercomputeco/tapes-crates"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
 description = "Shared, open-source client-side harness knowledge for Tapes capture: the harness registry, launch recipes, config patch grammars, plugin artifacts, per-harness session attribution, and transcript discovery."
+keywords = ["tapes", "harness", "coding-agent", "capture", "observability"]
+categories = ["development-tools", "development-tools::debugging"]
 
 [lib]
 name = "tapes_harnesses"
