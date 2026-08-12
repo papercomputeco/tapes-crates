@@ -1,0 +1,92 @@
+# Dual-licensed under MIT OR Apache-2.0 — see LICENSE-MIT and LICENSE-APACHE
+# at the repository root.
+#
+# INTERNAL TEST SUPPORT — NOT A PUBLISHED CRATE, NOT A PUBLIC API.
+#
+# This crate exists to be depended on by this repository's own tests and by a
+# consumer's `[dev-dependencies]`. It ships no production capability, makes no
+# stability promise, and is excluded from the crates.io release the sibling
+# crates are heading for: `publish` is false at the workspace root, and this
+# crate is the one member for which that must never flip.
+#
+# It is deliberately a crate rather than a `#[cfg(test)]` module or a cargo
+# feature on `tapes-harnesses`. See `README.md` beside this file for the full
+# reasoning; the short version is that a mock upstream is only useful to a test
+# that is *not* in the crate under test, and a feature-gated module cannot be
+# reached from an integration test in a sibling crate without making the gate
+# part of that crate's public surface.
+
+[package]
+name = "tapes-mock-upstream"
+version = "0.1.0"
+edition.workspace = true
+rust-version = "1.88"
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository = "https://github.com/papercomputeco/tapes-crates"
+description = "Internal test support: a streaming mock provider upstream and mock ingest, plus the scripted one-shot recipes and runner behind the harness regression matrix. Not published."
+
+[lib]
+name = "tapes_mock_upstream"
+path = "src/lib.rs"
+
+# A thin binary over the library, so the same mock pair a test drives in-process
+# can be run standing up for manual work — `cargo run -p tapes-mock-upstream`,
+# then point a harness at the printed addresses by hand. It carries no logic of
+# its own: everything it does is a library call, which is the property that
+# keeps the manual path and the tested path from drifting.
+[[bin]]
+name = "tapes-mock-upstream"
+path = "src/bin/tapes-mock-upstream.rs"
+
+# The stand-in harness the matrix runner's own tests drive. It is a binary
+# because that is the only thing the runner can launch: the two runner bugs
+# worth a regression test — a cell that passes a harness which died after
+# sending its request, and a runner that stalls on a harness chatty enough to
+# fill a pipe — are both about launching a *process*, and neither can be asked
+# of a real harness. Cargo hands its path to the integration test as
+# `CARGO_BIN_EXE_matrix-fake-harness`, so the test never guesses at a target
+# directory layout.
+[[bin]]
+name = "matrix-fake-harness"
+path = "src/bin/matrix-fake-harness.rs"
+
+# Deliberately no HTTP framework, no async runtime, and no TLS.
+#
+# The server here is ~300 lines of blocking HTTP/1.1 over `std::net`, and that
+# is a choice rather than an accident. A mock that a *real harness binary*
+# parses has to control byte-level SSE framing and, above all, has to actually
+# flush each event separately — the buffered `ResponseTemplate` bodies this
+# replaces put every event in one write, which a proxy tees happily and a real
+# streaming client cannot be trusted to. Reaching for axum/hyper to regain
+# control we would then have to fight is a poor trade for a test-support crate,
+# and it would put an async runtime and ~40 transitive crates into a repository
+# whose entire dependency list is currently 12 lines long.
+#
+# Blocking also means the matrix runner is a plain `#[test]`: no `#[tokio::test]`,
+# no runtime to leak, and a harness subprocess can be waited on directly.
+[dependencies]
+# Envelope header names, the nonce protocol, and the shared fixture corpus the
+# ingest validator checks turns against. `envelope-fixtures` is this crate's
+# whole reason for enabling that feature: the corpus is the oracle.
+tapes-capture = { path = "../tapes-capture", version = "0.1.0", features = [
+    "envelope-fixtures",
+] }
+# The registry. A recipe exists per registry harness, and the matrix runner
+# iterates `REGISTRY` rather than a list written here — so a harness added to
+# the registry shows up in the matrix as a failure to write a recipe, not as a
+# silent absence.
+tapes-harnesses = { path = "../tapes-harnesses", version = "0.1.0" }
+
+base64 = "0.22"
+percent-encoding = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+snafu = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

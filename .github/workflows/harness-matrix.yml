@@ -1,0 +1,98 @@
+# The harness regression matrix, Tier 1: real harness binaries against a mock
+# provider and a mock ingest, on every change, with no cluster.
+#
+# Its own workflow rather than a job on CI, for the same reason it is its own
+# make target: it behaves unlike everything else here. It launches external
+# binaries whose versions move under us, its coverage depends on what the runner
+# has installed, and its useful output is the table of what ran — which belongs
+# in a log a reader goes looking for, not buried in a lint job.
+#
+# # What runs here, and what does not
+#
+# The harnesses come from the `matrix` dev shell, which pulls whatever the pinned
+# nixpkgs packages. Today that is claude-code, codex, and opencode; pi is not
+# packaged, so its cell skips with that stated. Nothing is silently omitted: a
+# harness that is absent produces a named skip in the printed table and in the
+# version manifest the run uploads.
+#
+# The composition column (harness -> client -> mock) does not run here at all.
+# Both capture clients live in other repositories, so a client binary would have
+# to be built from a checkout this workflow does not have. Those cells skip with
+# that reason, and wiring a cross-repository build is deliberately left as
+# follow-up rather than faked with a stale published binary.
+#
+# A pinned container image holding every harness at a known version — which is
+# what would make this reproducible rather than merely current — is also
+# follow-up. Using the nixpkgs pin is the honest intermediate: the versions are
+# whatever that pin carries, and the manifest records exactly what they were.
+
+name: Harness matrix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# # Why the actions are pinned by commit
+#
+# A tag is a moving pointer the action's owner can repoint at any time, so
+# `@v4` is a promise that whatever runs here today is whatever that repository
+# decides tomorrow. This job runs on `pull_request`, which means it runs code
+# from a fork's branch — pinning by commit is what keeps the *rest* of the job
+# from also being someone else's choice. The trailing comment is the release
+# each commit is the tip of; both are checked against the upstream repository's
+# own tag refs, so a bump means resolving the new tag rather than editing a
+# number.
+
+jobs:
+  tier1:
+    name: Tier 1 (harness -> mock)
+    # Linux only, unlike the lint/test matrix. The cells here exercise HTTP and
+    # subprocess launch, neither of which has a per-OS branch in this code — and
+    # a second runner would double the harness downloads to re-answer a question
+    # the first one already answered.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: cachix/install-nix-action@ba0dd844c9180cbf77aa72a116d6fbc515d0e87b # v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # The Rust toolchain comes from the same shell as the harnesses, so the
+      # matrix compiles against the pin `rust-toolchain.toml` names rather than
+      # whatever a separate action installed.
+      - name: Report what the shell provides
+        run: nix develop .#matrix --command bash -c 'rustc --version'
+
+      # `--nocapture` is required, not stylistic: the run's value is the table
+      # of which cells ran and why the rest did not, and a captured run reports
+      # "ok" while showing none of it.
+      - name: Run the matrix
+        run: nix develop .#matrix --command make harness-matrix
+
+      # Uploaded on failure too — a failed run's manifest is the first thing
+      # worth reading, because it says which harness versions the failure was
+      # against.
+      #
+      # `error` rather than `warn`: the manifest is an advertised output of every
+      # run that got as far as running, and the run itself now fails if it cannot
+      # write one. The only ways to reach this step without the file are a run
+      # that never started (a compile failure, say) or one that died before
+      # emitting it — both already red, and neither worth a second, quieter
+      # signal. A warning here would be the same silence in a different colour.
+      - name: Upload the version manifest
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: harness-matrix-manifest
+          path: target/debug/deps/harness-matrix-manifest.json
+          if-no-files-found: error
