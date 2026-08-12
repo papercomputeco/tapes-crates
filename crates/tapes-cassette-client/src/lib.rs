@@ -1,74 +1,60 @@
-//! `tapes-cassette-client` — shared client-side machinery for the generated
-//! tapes cassette surface.
+//! The tapes cassette client — now a re-export of [`tapes_client`].
 //!
-//! A tapes deployment serves *cassettes*: independently built API extensions
-//! that core reverse-proxies under `/v1/cassettes/<name>`. This crate turns
-//! the set a server actually serves into CLI subcommands, so a client can
-//! offer `<cassette> <method>` against a server whose cassettes the binary
-//! has never heard of. Extracted from `tapesctl`, which remains the reference
-//! consumer; the machinery lives here so every capture client generates the
-//! same surface from the same document the same way.
+//! # Why this crate still exists
 //!
-//! # Generated at runtime, not at build time
+//! Everything that was here moved into `tapes-client`, which absorbed this
+//! crate and the read contract so the discovered and sealed halves of the read
+//! surface stop being two implementations of one thing. The name survives only
+//! so that consumers pinning `tapes-cassette-client` keep compiling across the
+//! move; there is no machinery here, and nothing new should be added.
 //!
-//! "Generated" here means *discovered when the process starts*, not *code
-//! emitted by a build script*. That is forced by the contract on both ends:
+//! Consumers should depend on `tapes-client` directly. This shim is deleted
+//! once they have.
 //!
-//! - **The cassette set is deployment configuration.** An operator lists
-//!   cassette OpenAPI URLs (`cassettes = [...]`, `TAPES_CASSETTES`,
-//!   `--cassettes`), and core fetches and admits them at runtime; nothing about
-//!   the set is known to core at *its* build time, let alone to a client's.
-//!   Clients ship as prebuilt binaries, so a compiled-in list would be one
-//!   deployment's cassettes frozen into every user's install — and the users
-//!   most likely to run a custom cassette are exactly the ones a stale list
-//!   would fail.
-//! - **Discovery is shaped for polling clients.** `/v1/cassettes` references
-//!   each OpenAPI document rather than inlining it, and publishes a digest
-//!   precisely so a client can decide whether a fetch is worth making. The
-//!   per-cassette route answers `If-None-Match` with a 304, and keeps serving a
-//!   cached document while the cassette itself is down. None of that machinery
-//!   has a purpose if the consumer is a code generator run once.
-//! - **Build-time generation would put a live server in the build graph.**
-//!   The consumers build under Nix and cross-compile through Dagger; a
-//!   `cargo build` that must reach a running tapes API to emit its CLI is not
-//!   a build that reproduces.
+//! # What moved where
 //!
-//! # The module map
-//!
-//! - [`discovery`] — the serde model of `GET /v1/cassettes`, tolerant of
-//!   fields it does not act on.
-//! - [`spec`] — the reducer from an OpenAPI document to the five things a CLI
-//!   needs per operation. Consumers parameterize it with their reserved flag
-//!   names via [`spec::ReducerConfig`].
-//! - [`cache`] — the per-server on-disk surface cache, named and aged by the
-//!   consumer via [`cache::CacheConfig`] so existing installs' paths and file
-//!   formats do not move.
-//! - [`command`] — clap command synthesis from a surface, and
-//!   [`command::resolve_invocation`] back from a parse. Executing and printing
-//!   stay with the consumer.
-//! - [`invoke`] — [`Call`], and building its URL with per-segment
-//!   percent-encoding.
-//! - [`transport`] — the [`SpecTransport`] seam the cache fetches through, and
-//!   [`DirectHttp`], a no-auth, no-redirect implementation.
-//!
-//! # Failure is not fatal
-//!
-//! Every step degrades instead of failing: no server configured, an
-//! unreachable one, a spec that does not parse — each costs the cassette nouns
-//! and nothing else. A consumer's hand-written surface must keep working on a
-//! machine that cannot reach any tapes server at all.
+//! | was | is |
+//! | --- | -- |
+//! | `cache` | [`tapes_client::cassettes::cache`] |
+//! | `command` | [`tapes_client::cli`] |
+//! | `discovery` | [`tapes_client::cassettes::discovery`] |
+//! | `spec` | [`tapes_client::cassettes::spec`] |
+//! | `invoke` | [`tapes_client::path`] and [`tapes_client::cassettes::invoke`] |
+//! | `transport` | [`tapes_client::transport`] and [`tapes_client::http`] |
 
-pub mod cache;
-pub mod command;
-pub mod discovery;
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
 pub mod error;
-pub mod invoke;
-pub mod spec;
-pub mod transport;
 
-pub use cache::CacheConfig;
-pub use discovery::{Discovery, DiscoveryEntry};
+pub use tapes_client::cassettes::{cache, discovery, spec};
+/// The clap surfaces, under the name this crate gave them.
+pub use tapes_client::cli as command;
+
+pub use tapes_client::cassettes::{CacheConfig, Discovery, DiscoveryEntry};
+pub use tapes_client::cassettes::{Cassette, Location, Method, Param, ReducerConfig, Surface};
+pub use tapes_client::http::DirectHttp;
+pub use tapes_client::transport::{Call, SpecFetch, SpecTransport};
+
 pub use error::{Error, Result};
-pub use invoke::Call;
-pub use spec::{Cassette, Location, Method, Param, ReducerConfig, Surface};
-pub use transport::{DirectHttp, SpecFetch, SpecTransport};
+
+/// Building a call's URL, under the name and arity this crate gave it.
+///
+/// The merged crate's builder takes a [`tapes_client::PathMode`], because a
+/// client mounted under a gateway prefix and one addressed at a server's root
+/// are not the same join. This crate only ever performed the root-absolute one,
+/// so that is what is preserved here.
+pub mod invoke {
+    pub use tapes_client::transport::Call;
+
+    /// Build the URL for one described call against a base.
+    pub fn call_url(base: &url::Url, call: &Call<'_>) -> tapes_client::Result<url::Url> {
+        tapes_client::path::call_url(base, call, tapes_client::PathMode::Direct)
+    }
+}
+
+/// The transport seam, under the module name this crate gave it.
+pub mod transport {
+    pub use tapes_client::http::DirectHttp;
+    pub use tapes_client::transport::{SpecFetch, SpecTransport};
+}

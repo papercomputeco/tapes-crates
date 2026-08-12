@@ -1,17 +1,35 @@
-//! Error type for the cassette-client machinery.
+//! The error type this crate published, retained for compatibility.
 //!
-//! Consumers are expected to wrap these variants in their own error type —
-//! `tapesctl` maps each one onto the CLI error it surfaced before the
-//! extraction, so the user-facing messages there are unchanged. The displays
-//! here mirror those messages so a consumer that passes them through verbatim
-//! reads the same way.
+//! # Why this one type did not become a re-export
+//!
+//! Every other item in this crate is now a re-export of [`tapes_client`], whose
+//! single error taxonomy replaced the two that used to describe one API. This
+//! type is the exception, and the reason is a property of Rust rather than a
+//! design preference: a consumer that matches this enum *exhaustively* — no
+//! wildcard arm — stops compiling the moment a variant is added or removed. The
+//! merged taxonomy necessarily has both more variants and different ones, so
+//! aliasing this name to it would break exactly the consumers this shim exists
+//! to keep working.
+//!
+//! So the enum is preserved verbatim and is **inert**: nothing in this crate or
+//! in `tapes-client` constructs one. The re-exported functions return
+//! [`tapes_client::Error`], and a consumer's `From<tapes_cassette_client::Error>`
+//! implementation compiles but is never reached. That is a deliberate, visible
+//! seam rather than a hidden one — a consumer moving to `tapes-client` deletes
+//! its conversion and writes one for the merged taxonomy, which is the same
+//! work it would have done anyway, at a time it chooses.
+//!
+//! This module is deleted with the rest of the shim.
 
 use snafu::Snafu;
 
 /// Convenience alias defaulting the error to this crate's [`Error`].
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// Errors surfaced by the cassette machinery.
+/// Errors this crate surfaced before its machinery moved.
+///
+/// Deliberately **not** `#[non_exhaustive]`: it was not, and a consumer
+/// matching it without a wildcard is relying on that.
 #[derive(Debug, Snafu)]
 #[snafu(module, visibility(pub(crate)))]
 pub enum Error {
@@ -27,9 +45,7 @@ pub enum Error {
     #[snafu(display("the tapes URL cannot be used as a base for API routes"))]
     NotABase,
 
-    /// The HTTP client itself could not be constructed. Requests error out
-    /// rather than fall back to a client with different (redirect-following)
-    /// behavior.
+    /// The HTTP client itself could not be constructed.
     #[snafu(display("could not initialize the HTTP client"))]
     ClientInit,
 
@@ -66,10 +82,7 @@ pub enum Error {
         detail: &'static str,
     },
 
-    /// Discovery named an OpenAPI document somewhere other than on this
-    /// server. Refused rather than followed: `Url::join` treats an absolute
-    /// URL as a replacement, so honouring it would fetch a spec from a host
-    /// the user never named.
+    /// Discovery named an OpenAPI document somewhere other than on this server.
     #[snafu(display("cassette discovery named a non-relative OpenAPI path {path:?}"))]
     SpecPath {
         /// What discovery published.
@@ -84,8 +97,7 @@ pub enum Error {
         method: String,
     },
 
-    /// A cassette noun parsed but is not on the surface. Only reachable if the
-    /// surface changed between building the parser and dispatching.
+    /// A cassette noun parsed but is not on the surface.
     #[snafu(display("no cassette named {name:?} is served here"))]
     UnknownCassette {
         /// The noun that was invoked.
@@ -110,16 +122,14 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    /// `--body` was not JSON. Checked before sending so the failure names the
-    /// quoting mistake rather than arriving as a cassette's schema error.
+    /// `--body` was not JSON.
     #[snafu(display("--body is not valid JSON"))]
     InvalidBody {
         /// Underlying JSON failure.
         source: serde_json::Error,
     },
 
-    /// The parsed body could not be re-rendered for sending. Only reachable
-    /// if serde_json emits a value it cannot serialize back.
+    /// The parsed body could not be re-rendered for sending.
     #[snafu(display("could not render the request body"))]
     RenderBody {
         /// Underlying JSON failure.

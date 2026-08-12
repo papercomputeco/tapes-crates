@@ -1,47 +1,61 @@
-//! The tapes read contract, and the machinery that drives requests from it.
+//! The tapes read contract — now a re-export of [`tapes_client`].
 //!
-//! # What this crate is
+//! # Why this crate still exists
 //!
-//! The tapes read API is a *published contract*: sealed in the tapes repository
-//! (`api/CONTRACT`) and attached to releases as an OpenAPI document. Clients do
-//! not build against the tapes working tree — they build against a published
-//! release asset. This crate vendors that asset once, so the system holds one
-//! copy rather than one per client, and turns it into requests:
+//! Everything that was here moved into `tapes-client`, which absorbed this
+//! crate and the cassette client so the sealed and discovered halves of the
+//! read surface stop being two implementations of one thing. The name survives
+//! only so that consumers pinning `tapes-read-contract` keep compiling across
+//! the move; there is no code here, and nothing new should be added.
 //!
-//! - [`contract`] — the vendored document, reduced to an operation table;
-//!   resolve an operation by its `operationId`, route values by the location
-//!   the document declared for each, and refuse a parameter it never declared.
-//! - [`invoke`] — the URL builder, in the two path modes a root-mounted server
-//!   and a gateway-prefixed one respectively need.
-//! - [`transport`] — the seam a consumer plugs its own HTTP client into, and
-//!   the generic call surface over it.
-//! - [`coverage`] — the gate that fails a build when a contract bump adds an
-//!   operation the client neither exposes nor deliberately allow-lists.
+//! Consumers should depend on `tapes-client` directly. This shim is deleted
+//! once they have.
 //!
-//! # What this crate is not
+//! # What moved where
 //!
-//! It has no HTTP client, no authentication, no notion of a tenant, and no
-//! opinion about how a response is rendered — or, beyond the policy recorded in
-//! [`transport`], about whether a response is typed at all. Every one of those
-//! is a consumer's, and each consumer's answer is different.
+//! | was | is |
+//! | --- | -- |
+//! | `contract` | [`tapes_client::core::contract`] |
+//! | `coverage` | [`tapes_client::core::coverage`] |
+//! | `invoke` | [`tapes_client::path`] |
+//! | `error` | [`tapes_client::error`] |
+//! | `transport` | [`tapes_client::transport`] and [`tapes_client::core::methods`] |
+//! | `invoke::call_url` | [`tapes_client::path::call_url`] |
+//! | `invoke::PathMode::RootAbsolute` | [`tapes_client::path::PathMode::Direct`] |
+//! | `invoke::PathMode::UnderBase` | [`tapes_client::path::PathMode::UnderBase`] |
 //!
-//! It also does not hold the coverage tables. Those describe one client's
-//! surface; see [`coverage`] for why sharing them would break the gate.
+//! # The one spelling that changed
+//!
+//! `PathMode` is re-exported rather than redefined, and the merged crate
+//! renamed its default variant: what this crate called `RootAbsolute` is now
+//! [`tapes_client::path::PathMode::Direct`]. The behaviour is identical — it is
+//! still the default, and `call_url` still drops any path prefix the base
+//! carried — but a consumer that spells the variant by name has to write
+//! `Direct` after taking the bump. That is the only source change this shim
+//! cannot absorb; everything else above compiles unchanged.
+//!
+//! The one item that did not survive the move is the `ReadTransport` /
+//! `ReadOperations` pair. It was a second seam describing the same thing as the
+//! cassette client's, which is precisely the duplication the merge exists to
+//! remove; its replacement is [`tapes_client::transport::TapesTransport`], with
+//! [`tapes_client::core::CoreClient`] as the call surface over it. Nothing
+//! consumed the old pair, so nothing is re-exported under the old names rather
+//! than a shim that would have to lie about the shape.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-pub mod contract;
-pub mod coverage;
-pub mod error;
-pub mod invoke;
-pub mod transport;
+pub use tapes_client::core::{contract, coverage};
+pub use tapes_client::error;
+/// The URL builder, under the name this crate gave it.
+pub use tapes_client::path as invoke;
 
-pub use contract::{CoreSurface, TAPES_API_YAML, call_for, call_for_with_body, core, ops};
-pub use error::{Error, Result};
-pub use invoke::{PathMode, call_url};
-pub use transport::{ReadOperations, ReadTransport};
+pub use tapes_client::core::{
+    CoreSurface, TAPES_API_YAML, call_for, call_for_with_body, core, ops,
+};
+pub use tapes_client::error::{Error, Result};
+pub use tapes_client::path::{PathMode, call_url};
 
-// Re-exported so a consumer naming a `Call` does not have to depend on the
-// cassette crate directly just to spell the type this one hands it.
-pub use tapes_cassette_client::Call;
+// Re-exported so a consumer naming a `Call` does not have to depend on another
+// crate directly just to spell the type this one hands it.
+pub use tapes_client::transport::Call;

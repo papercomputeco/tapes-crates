@@ -22,7 +22,7 @@ license.workspace = true
 publish.workspace = true
 authors.workspace = true
 repository = "https://github.com/papercomputeco/tapes-crates"
-description = "The vendored tapes read contract and the machinery that drives requests from it: operation lookup, parameter routing, URL construction, and the operation-coverage gate."
+description = "Compatibility shim: the tapes read contract moved into tapes-client. Depend on tapes-client instead."
 
 [lib]
 name = "tapes_read_contract"
@@ -31,33 +31,8 @@ path = "src/lib.rs"
 # Dependency versions match the consumers, so their lockfiles do not fork when
 # they consume this crate.
 [dependencies]
-# The OpenAPI reducer and the `Call` type. The read contract and the cassette
-# surface deliberately share one reducer — two document sources, one reading of
-# OpenAPI — so this crate layers on the cassette client rather than copying it.
-tapes-cassette-client = { path = "../tapes-cassette-client", version = "0.1.0" }
-# reqwest appears only in the streaming half of the transport seam, whose
-# return type is a live response. Built WITHOUT any compression feature,
-# matching the consumers: the transport hands back the server's bytes as sent.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-# `DeserializeOwned` is the bound on the generic response target; the derive
-# feature is for consumers' models, not this crate's, but the dev-tests below
-# exercise a typed instantiation and so need it too.
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-# serde_yaml is archived upstream, but it is what both consumers already read
-# the vendored contract with, and this crate must parse the same bytes the same
-# way. Replacing it is a change to make in one place, later, on purpose.
-serde_yaml = "0.9"
-snafu = "0.8"
-url = "2"
-
-[dev-dependencies]
-# The seal check's negative controls point its checkout fallback at an empty
-# directory, so a tapes checkout beside the repository cannot make them pass
-# for the wrong reason.
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-wiremock = "0.6"
+# Everything this crate publishes now lives there; see src/lib.rs.
+tapes-client = { path = "../tapes-client", version = "0.1.0" }
 
 [lints]
 workspace = true

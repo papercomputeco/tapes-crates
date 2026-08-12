@@ -10,7 +10,7 @@
 //! build from is the vendored one in `contracts/tapes-api.yaml`, pinned by
 //! fingerprint (see `contracts/PROVENANCE.md`).
 //!
-//! Both feed [`tapes_cassette_client::spec::reduce_methods`]. What used to be a
+//! Both feed [`crate::cassettes::spec::reduce_methods`]. What used to be a
 //! set of hand-written URL builders in each client is a lookup into this
 //! surface: the verb, the path template, and the set of declared parameters all
 //! come from the contract bytes, and a request naming a parameter the contract
@@ -24,16 +24,16 @@
 
 use std::sync::LazyLock;
 
+use crate::cassettes::spec::{self, Location, Method, ReducerConfig};
+use crate::transport::Call;
 use serde_json::Value;
 use snafu::OptionExt;
-use tapes_cassette_client::Call;
-use tapes_cassette_client::spec::{self, Location, Method, ReducerConfig};
 
 use crate::error::{Result, error};
 
 /// The vendored read-API contract, byte-for-byte what
 /// `contracts/tapes-api.yaml` holds.
-pub const TAPES_API_YAML: &str = include_str!("../contracts/tapes-api.yaml");
+pub const TAPES_API_YAML: &str = include_str!("../../contracts/tapes-api.yaml");
 
 /// Operation ids of the vendored contract, named once so client methods,
 /// coverage tables, and tests cannot drift apart on a string.
@@ -73,7 +73,7 @@ impl CoreSurface {
     /// configuration.
     ///
     /// The configuration only shapes the *presentation* names
-    /// ([`tapes_cassette_client::spec::Param::flag`]); wire names and
+    /// ([`crate::cassettes::spec::Param::flag`]); wire names and
     /// locations, which is all [`call_for`] reads, are the document's
     /// regardless. A consumer that renders this surface on a command line
     /// passes its reserved flags here; one that only calls operations can use

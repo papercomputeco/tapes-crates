@@ -22,7 +22,7 @@ license.workspace = true
 publish.workspace = true
 authors.workspace = true
 repository = "https://github.com/papercomputeco/tapes-harnesses"
-description = "Shared client-side machinery for the generated tapes cassette surface: discovery, OpenAPI reduction, the on-disk surface cache, clap command synthesis, and the no-auth HTTP transport."
+description = "Compatibility shim: the tapes cassette client moved into tapes-client. Depend on tapes-client instead."
 
 [lib]
 name = "tapes_cassette_client"
@@ -31,30 +31,21 @@ path = "src/lib.rs"
 # Dependency versions match `tapesctl`, which this machinery was extracted
 # from, so the consumer's lockfile does not fork when it consumes this crate.
 [dependencies]
-# `string` lets a Command/Arg be named by an owned String rather than only by
-# a `&'static str`. The generated cassette surface is built from a document
-# fetched at runtime, so every one of its names is owned; without this
-# feature that surface cannot be expressed at all.
-clap = { version = "4", features = ["string"] }
-dirs = "5"
-http = "1"
-# reqwest is built WITHOUT any compression feature on purpose, matching the
-# consumers: the transport must hand back the server's bytes as sent.
+# Everything this crate published now lives there; see src/lib.rs. The `cli`
+# and `direct-http` features are named explicitly rather than inherited,
+# because a consumer of this shim was compiling against a crate that had both
+# unconditionally.
+tapes-client = { path = "../tapes-client", version = "0.1.0", features = [
+  "cli",
+  "direct-http",
+] }
+# The remaining direct dependencies exist only for the retained error enum
+# (src/error.rs) and the one URL helper whose arity this crate pins. They go
+# when the shim does.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 snafu = "0.8"
-tracing = "0.1"
 url = "2"
-
-[dev-dependencies]
-# The tests pin tapesctl's decorator shape, whose `--tapes-url` falls back to
-# an environment variable; `env` is a test-only need, the library itself never
-# reads one through clap.
-clap = { version = "4", features = ["env", "string"] }
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-wiremock = "0.6"
 
 [lints]
 workspace = true
