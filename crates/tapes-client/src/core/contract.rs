@@ -60,6 +60,34 @@ pub mod ops {
     pub const SEED_DEMO: &str = "seedDemo";
     /// `GET /v1/cassettes`
     pub const LIST_CASSETTES: &str = "listCassettes";
+    /// `PATCH /v1/sessions/{id}`
+    pub const UPDATE_SESSION: &str = "updateSession";
+    /// `DELETE /v1/sessions/{id}`
+    pub const DELETE_SESSION: &str = "deleteSession";
+    /// `GET /v1/sessions/export`
+    pub const EXPORT_SESSIONS: &str = "exportSessions";
+    /// `GET /v1/sessions/{id}/skills`
+    pub const LIST_SESSION_SKILLS: &str = "listSessionSkills";
+    /// `GET /v1/stats`
+    pub const GET_STATS: &str = "getStats";
+    /// `GET /v1/skills`
+    pub const LIST_SKILLS: &str = "listSkills";
+    /// `POST /v1/skills`
+    pub const CREATE_SKILL: &str = "createSkill";
+    /// `GET /v1/skills/{id}`
+    pub const GET_SKILL: &str = "getSkill";
+    /// `PUT /v1/skills/{id}`
+    pub const UPDATE_SKILL: &str = "updateSkill";
+    /// `DELETE /v1/skills/{id}`
+    pub const DELETE_SKILL: &str = "deleteSkill";
+    /// `POST /v1/skills/{id}/duplicate`
+    pub const DUPLICATE_SKILL: &str = "duplicateSkill";
+    /// `GET /v1/skills/{id}/versions`
+    pub const LIST_SKILL_VERSIONS: &str = "listSkillVersions";
+    /// `POST /v1/skills/{id}/versions`
+    pub const PUBLISH_SKILL: &str = "publishSkill";
+    /// `POST /v1/skills/generate`
+    pub const GENERATE_SKILL: &str = "generateSkill";
 }
 
 /// The core read surface, reduced from the vendored contract.
@@ -464,6 +492,20 @@ mod tests {
             ops::SEARCH_SPANS,
             ops::SEED_DEMO,
             ops::LIST_CASSETTES,
+            ops::UPDATE_SESSION,
+            ops::DELETE_SESSION,
+            ops::EXPORT_SESSIONS,
+            ops::LIST_SESSION_SKILLS,
+            ops::GET_STATS,
+            ops::LIST_SKILLS,
+            ops::CREATE_SKILL,
+            ops::GET_SKILL,
+            ops::UPDATE_SKILL,
+            ops::DELETE_SKILL,
+            ops::DUPLICATE_SKILL,
+            ops::LIST_SKILL_VERSIONS,
+            ops::PUBLISH_SKILL,
+            ops::GENERATE_SKILL,
         ] {
             assert!(surface.method(id).is_ok(), "{id:?} did not resolve");
         }

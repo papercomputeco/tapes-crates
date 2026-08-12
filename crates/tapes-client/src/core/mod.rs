@@ -10,6 +10,8 @@
 //! - [`contract`] — the vendored document, reduced to an operation table.
 //! - [`coverage`] — the gate that fails a build when a contract bump adds an
 //!   operation the client neither exposes nor deliberately allow-lists.
+//! - [`models`] — the document's response and request shapes as Rust types,
+//!   held to it by a gate of their own ([`models::coverage`]).
 //! - [`methods`] — the call surface over a [`crate::transport::TapesTransport`].
 //!
 //! This module is one half of a symmetry: [`crate::cassettes`] is the same
@@ -22,6 +24,8 @@
 pub mod contract;
 pub mod coverage;
 pub mod methods;
+pub mod models;
 
 pub use contract::{CoreSurface, TAPES_API_YAML, call_for, call_for_with_body, core, ops};
 pub use methods::CoreClient;
+pub use models::ContractModel;
