@@ -13,6 +13,12 @@ for whether something belongs in this repository at all.
 
 ## The public API boundary
 
+**All three crates are supported public API.** There is no internal-only crate
+here, and none of them is a private helper that happens to be published:
+`tapes-capture` is the capture protocol, `tapes-harnesses` is the harness
+knowledge, `tapes-client` is the read client. Each is meant to be depended on
+directly, on its own version, and each is versioned against the promise below.
+
 Each crate owns one question. The boundaries below are the contract this
 repository publishes — a change that moves a responsibility across one of these
 lines is a breaking change even when every signature still compiles.
@@ -50,14 +56,28 @@ consumer.
 
 ## Publishing
 
-Not yet published. These crates are consumed by git pin today, and every
-manifest carries `publish = false` from the workspace root.
+Consumed by git pin today. crates.io is where they are going, and the machinery
+to get them there is in place — the manifests are publishable, every PR proves
+they have stayed that way, and the upload itself is held.
 
-The intent is crates.io, under semantic versioning — which is why the boundary
-table above is written as a contract rather than as a description of where
-files currently sit. When the first release happens, `publish` flips once at
-the root, together with that release PR, and the version numbers start meaning
-something to people who are not in this repository.
+Each crate is released on its own version and its own `<crate>-v<version>` tag.
+They version independently: a fix to the read client is not a reason to
+renumber the capture protocol.
+
+**Semantics, pre-1.0.** While these crates are `0.x`, versions carry the usual
+Cargo meaning — a breaking change bumps the minor (`0.2.0`), anything
+compatible bumps the patch (`0.1.1`). The boundary table above is what
+"breaking" is measured against, which is why it is written as a contract rather
+than as a description of where files currently sit.
+
+Only one dependency edge exists — `tapes-harnesses` requires `tapes-capture` —
+so `tapes-capture` publishes first whenever both move, and `tapes-client` is
+free of the ordering entirely.
+[`docs/releasing.md`](docs/releasing.md) has the order, the tag scheme, the
+gates that keep publishability from rotting between releases, and the hold:
+the release workflow runs end to end on a release tag but stops short of
+`cargo publish` until the repository variable `PUBLISH_ENABLED` is set to
+`true`. Tagging today is a rehearsal that cannot reach crates.io.
 
 ## Adding a harness
 

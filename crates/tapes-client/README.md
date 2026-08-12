@@ -167,6 +167,29 @@ There is now a single `tapes_client::Error`, described under
 `From<tapes_cassette_client::Error>` implementation and writes one for the
 merged variants — the same work either way, at a time it chooses.
 
+## Stability
+
+This crate is **supported public API**, meant to be depended on directly. So
+are its two siblings — [`tapes-capture`](../tapes-capture/README.md) (the
+capture protocol) and [`tapes-harnesses`](../tapes-harnesses/README.md) (the
+harness knowledge) — and all three version independently on crates.io. This one
+sits on neither side of the repository's single dependency edge, so its releases
+are ordered against nothing.
+
+Pre-1.0, `0.x` versions carry the usual Cargo meaning: a breaking change bumps
+the minor (`0.2.0`), anything compatible bumps the patch (`0.1.1`). What counts
+as breaking is the boundary in the [repository README](../../README.md#the-public-api-boundary),
+not just the signatures: authentication, tenancy, transport, and rendering are
+outside this crate by design, and growing one of them here would break the
+promise while compiling cleanly.
+
+`Error` is `#[non_exhaustive]`, so a new variant is an additive change — match
+it with a wildcard arm. The sealed surface moves when the vendored contract
+under `contracts/` is refreshed, which can add or change operations without a
+line of Rust changing; those refreshes are versioned like any other change.
+
+Changes are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## License
 
 Dual-licensed under MIT OR Apache-2.0; see the repository root.

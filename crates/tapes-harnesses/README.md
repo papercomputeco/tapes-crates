@@ -44,6 +44,28 @@ Start at `src/harness.rs`, then follow
 root — it covers the registry declaration, when a launch recipe is needed, which
 attribution strategy applies, and what the tapes deriver needs on its side.
 
+## Stability
+
+This crate is **supported public API**, meant to be depended on directly. So
+are its two siblings — [`tapes-capture`](../tapes-capture/README.md) (the
+capture protocol) and [`tapes-client`](../tapes-client/README.md) (the read
+client) — and all three version independently on crates.io.
+
+Pre-1.0, `0.x` versions carry the usual Cargo meaning: a breaking change bumps
+the minor (`0.2.0`), anything compatible bumps the patch (`0.1.1`). What counts
+as breaking is the boundary in the [repository README](../../README.md#the-public-api-boundary),
+not just the signatures: knowledge that stops being harness-specific belongs in
+`tapes-capture`, and moving it is a break here even when nothing stops
+compiling.
+
+Adding a harness to the registry is additive, and it is the change most worth
+reading about — consumers derive their supported-agent lists from that registry
+rather than hard-coding one, so a new entry appears in their surface without
+their doing anything. This crate also requires `tapes-capture` at a version, so
+an upgrade may carry one; the changelog says when it does.
+
+Changes are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## License
 
 Dual-licensed under MIT OR Apache-2.0; see the repository root.
