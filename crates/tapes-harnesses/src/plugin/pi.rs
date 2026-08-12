@@ -310,14 +310,15 @@ mod tests {
                 lines.len() >= 2,
                 "{identifier} is declared but never used; this test would pass vacuously"
             );
-            for line in lines {
-                for token in sensitive {
-                    assert!(
-                        !line.contains(token),
-                        "{identifier} reaches {token:?} on {line:?}; a display string \
-                         must not touch the capture path"
-                    );
-                }
+            for (line, token) in lines
+                .iter()
+                .flat_map(|line| sensitive.iter().copied().map(move |token| (line, token)))
+            {
+                assert!(
+                    !line.contains(token),
+                    "{identifier} reaches {token:?} on {line:?}; a display string \
+                     must not touch the capture path"
+                );
             }
         }
     }
