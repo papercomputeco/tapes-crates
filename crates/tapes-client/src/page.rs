@@ -157,7 +157,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_walk_follows_cursors_to_the_end() {
-        let pages = vec![
+        let pages = [
             (None, r#"{"items":[1,2],"next_cursor":"c1"}"#),
             (Some("c1"), r#"{"items":[3],"next_cursor":"c2"}"#),
             (Some("c2"), r#"{"items":[4],"next_cursor":null}"#),
