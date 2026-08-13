@@ -99,3 +99,11 @@ jobs:
           check tapes-client contracts/PROVENANCE.md
           check tapes-capture vendor/tapes-envelope-fixtures/DIGEST
           check tapes-harnesses assets/codex-app/plugin.json
+          # Each README is `include_str!`d as its crate's documentation, which
+          # makes it a source file rather than repository decoration: a package
+          # without it does not compile. `readme = "README.md"` gets it included
+          # today, so this is here for the day somebody adds an `exclude` rule
+          # and learns about it from a rustdoc error instead.
+          check tapes-capture README.md
+          check tapes-client README.md
+          check tapes-harnesses README.md
