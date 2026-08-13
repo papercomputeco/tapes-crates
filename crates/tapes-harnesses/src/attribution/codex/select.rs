@@ -96,31 +96,61 @@ pub trait CodexHookEvidence: std::fmt::Debug + Send + Sync {
 #[non_exhaustive]
 pub enum CodexSelection {
     /// Lifecycle evidence and the request named the same live rollout.
-    HookExact { session_id: String },
+    HookExact {
+        /// The rollout both agreed on.
+        session_id: String,
+    },
     /// A child-shaped request joined its own transcript, and lifecycle
     /// evidence independently named the same parent/child pair.
     HookSubagentExact {
+        /// The child thread's own rollout id.
         session_id: String,
+        /// The root session the child belongs to, as both the transcript and
+        /// the lifecycle evidence reported it.
         parent_session_id: String,
     },
     /// A child-shaped request joined its own transcript, on transcript
     /// lineage alone.
     ChildTranscriptExact {
+        /// The child thread's own rollout id.
         session_id: String,
+        /// The root session the child's transcript names. No second source
+        /// corroborated it — that is what separates this from
+        /// [`Self::HookSubagentExact`].
         parent_session_id: String,
     },
     /// The launch marker matched exactly one live rollout file.
-    MarkerUnique { session_id: String },
+    MarkerUnique {
+        /// The rollout the marker named.
+        session_id: String,
+    },
     /// The marker matched several files of ONE session (rollout rotation);
     /// the most recently modified won.
-    MarkerNewest { session_id: String },
+    MarkerNewest {
+        /// The session all the matched files belong to. Which file won decided
+        /// nothing about identity — they were already one session, so the tie
+        /// break chose a file rather than a candidate.
+        session_id: String,
+    },
     /// The calling process held exactly one live rollout open.
-    PeerPidUnique { session_id: String },
+    PeerPidUnique {
+        /// The rollout that process had open.
+        session_id: String,
+    },
     /// The calling process held several files of ONE session open; the most
     /// recently modified won.
-    PeerPidNewest { session_id: String },
+    PeerPidNewest {
+        /// The session all the open files belong to, on the same reasoning as
+        /// [`Self::MarkerNewest`].
+        session_id: String,
+    },
     /// The unmarked recency fallback resolved a single live session.
-    RecentUnique { session_id: String },
+    RecentUnique {
+        /// The only live session in the window. The weakest evidence the ladder
+        /// accepts, and it is accepted only when there is nothing to confuse it
+        /// with.
+        session_id: String,
+    },
     /// No rung produced a session — including because a rung refused an
     /// ambiguous set rather than guess.
     #[default]

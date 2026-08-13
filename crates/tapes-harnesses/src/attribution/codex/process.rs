@@ -1,9 +1,16 @@
 //! Process-local helpers for Codex transcript attribution.
 //!
-//! Codex JSONL transcripts are not PID-indexed, so the daemon cannot do
+//! Codex JSONL transcripts are not PID-indexed, so a capture client cannot do
 //! the Claude-style `<pid>.json` lookup. Once the accepted loopback socket
 //! identifies the calling PID, this module inspects that process's open
 //! files for Codex transcript JSONL paths.
+//!
+//! The capability is per-OS and the absence of it is not an error. Linux reads
+//! `/proc/<pid>/fd`; macOS asks `libproc`. Everywhere else there is no
+//! unprivileged way to ask, so the lookup answers empty — which a caller must
+//! treat as "no evidence" and never as "no match". That distinction is the
+//! whole contract of this module: the Codex lane has weaker rungs to fall
+//! through to, and turning silence into a negative would disable them.
 
 use std::path::{Path, PathBuf};
 
@@ -17,6 +24,29 @@ fn session_open_by_pid(pid: i32, path: &Path) -> bool {
         .any(|link| link == target)
 }
 
+/// Codex transcript files the process `pid` currently holds open.
+///
+/// This is the strongest evidence available in the Codex lane. A rollout is not
+/// PID-indexed, so there is no file to look up by process id — but a Codex
+/// process writing a rollout has that rollout open, and the peer-PID lookup
+/// already named the process. Reading its open files turns "which of these
+/// candidates is it?" into a direct answer.
+///
+/// Filters to paths that end in `.jsonl` and sit somewhere beneath a `sessions`
+/// directory, which is deliberately loose: `$CODEX_HOME` moves the tree, and a
+/// stricter shape would silently return nothing on a relocated home rather than
+/// fail visibly.
+///
+/// # Platform behaviour
+///
+/// **Returns an empty vector on every platform except Linux and macOS** — not
+/// because nothing is open, but because there is no unprivileged way to
+/// enumerate another process's file descriptors. Callers must read empty as "no
+/// evidence" and fall through to the weaker rungs of [`super::select`]; reading
+/// it as "no match" would refuse every Codex attribution on those platforms.
+///
+/// An unreadable descriptor table — the process exited mid-call, or is not
+/// ours — is also empty, and means the same thing.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn open_jsonl_sessions_by_pid(pid: i32) -> Vec<PathBuf> {
     open_files_by_pid(pid)
@@ -129,6 +159,29 @@ fn session_open_by_pid(_pid: i32, _path: &Path) -> bool {
     false
 }
 
+/// Codex transcript files the process `pid` currently holds open.
+///
+/// This is the strongest evidence available in the Codex lane. A rollout is not
+/// PID-indexed, so there is no file to look up by process id — but a Codex
+/// process writing a rollout has that rollout open, and the peer-PID lookup
+/// already named the process. Reading its open files turns "which of these
+/// candidates is it?" into a direct answer.
+///
+/// Filters to paths that end in `.jsonl` and sit somewhere beneath a `sessions`
+/// directory, which is deliberately loose: `$CODEX_HOME` moves the tree, and a
+/// stricter shape would silently return nothing on a relocated home rather than
+/// fail visibly.
+///
+/// # Platform behaviour
+///
+/// **Returns an empty vector on every platform except Linux and macOS** — not
+/// because nothing is open, but because there is no unprivileged way to
+/// enumerate another process's file descriptors. Callers must read empty as "no
+/// evidence" and fall through to the weaker rungs of [`super::select`]; reading
+/// it as "no match" would refuse every Codex attribution on those platforms.
+///
+/// An unreadable descriptor table — the process exited mid-call, or is not
+/// ours — is also empty, and means the same thing.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn open_jsonl_sessions_by_pid(_pid: i32) -> Vec<PathBuf> {
     Vec::new()

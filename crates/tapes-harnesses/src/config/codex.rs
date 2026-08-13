@@ -357,7 +357,10 @@ pub enum CodexConfigError {
     /// The config text is not valid TOML. Every entry point here surfaces this
     /// rather than rewriting a file it could not parse.
     #[snafu(display("could not parse codex config.toml"))]
-    Parse { source: toml_edit::TomlError },
+    Parse {
+        /// The TOML parse failure, which names the offending line and column.
+        source: toml_edit::TomlError,
+    },
 
     /// A key the patch must write through is present but not a standard
     /// table (for example `model_providers = 3`, or an inline
@@ -365,7 +368,12 @@ pub enum CodexConfigError {
     /// from refuses these identically rather than restructuring the user's
     /// document.
     #[snafu(display("codex config key `{key}` is not a table"))]
-    NotATable { key: String },
+    NotATable {
+        /// The dotted key whose existing value blocked the patch — for example
+        /// `model_providers`. Named so a consumer can tell the user which line
+        /// of their own config to look at.
+        key: String,
+    },
 }
 
 fn require_provider_id(provider_id: &str) -> Result<&str, CodexConfigError> {

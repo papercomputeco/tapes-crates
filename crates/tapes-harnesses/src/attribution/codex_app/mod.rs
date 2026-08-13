@@ -150,9 +150,17 @@ pub enum LifecycleEvent {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SessionStartSource {
+    /// A session the user began fresh.
     Startup,
+    /// An earlier session picked up again. The session id is the original's,
+    /// so a resumed session is not a new one to attribute.
     Resume,
+    /// The user cleared the conversation. Codex keeps the session and starts
+    /// the context over, which is why this is a start event at all.
     Clear,
+    /// Codex compacted the context and restarted the session around the
+    /// summary. Same session, same id — the boundary is Codex's, not the
+    /// user's.
     Compact,
 }
 
@@ -304,8 +312,17 @@ pub fn parse_observation(input: &[u8]) -> Result<LifecycleObservation, ParseObse
 #[non_exhaustive]
 pub enum ParseObservationError {
     /// The input was not a recognised lifecycle event payload.
+    ///
+    /// Covers both malformed JSON and well-formed JSON naming an event or a
+    /// field spelling this crate does not allowlist. The two are deliberately
+    /// one variant: a hook payload this crate cannot fully interpret must not
+    /// be partially believed, and telling a caller *which* kind of
+    /// uninterpretable it was would invite exactly that.
     #[snafu(display("hook input is not a recognised Codex lifecycle event"))]
-    Parse { source: serde_json::Error },
+    Parse {
+        /// The decode failure underneath.
+        source: serde_json::Error,
+    },
 }
 
 #[cfg(test)]

@@ -60,6 +60,7 @@
 //! `tapes` is a different repository entirely — the server whose ingest reads
 //! these headers back, and the authoring home of the fixture corpus vendored
 //! here.
+#![warn(missing_docs)]
 
 pub mod envelope;
 pub mod gateway;

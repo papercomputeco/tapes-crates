@@ -90,6 +90,7 @@
 //! There is no `tapes-harness` crate — the singular spelling is reserved as a
 //! stub redirect so the near-miss cannot be claimed by someone else. `tapes` is
 //! a different repository entirely: the server a capture client ships to.
+#![warn(missing_docs)]
 
 pub mod attribution;
 pub mod config;
