@@ -15,11 +15,11 @@
 //! Three consumers share this grammar, which is why it lives here rather than
 //! in any one of them:
 //!
-//! * **paper's codex integration installer** (`paperctl integrations codex`),
-//!   whose `merge_codex_config` this module is ported from;
+//! * **a closed-source codex integration installer**, whose config merge this
+//!   module is ported from;
 //! * **tapesctl's codex-app desktop-capture slice**, where the app cannot
 //!   take `-c` overrides and capture requires the same `config.toml` patch
-//!   the paper installer writes;
+//!   that installer writes;
 //! * **a future opencode installer**, which will add an analogous
 //!   `config/opencode.rs` beside [`codex`] when opencode grows a persistent
 //!   install path.
@@ -39,9 +39,9 @@
 //!
 //! Functions here are pure over TOML text — no filesystem, no environment, no
 //! default paths. The consumer reads the config file, calls the grammar, and
-//! owns the write (paper writes atomically via a temp file and compares
-//! before/after to decide whether a restart notice is due; that policy stays
-//! with paper).
+//! owns the write. One installer writes atomically via a temp file and compares
+//! before/after to decide whether a restart notice is due; that policy is
+//! deployment knowledge and stays with the consumer.
 
 pub mod codex;
 

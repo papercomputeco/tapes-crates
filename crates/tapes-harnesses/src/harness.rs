@@ -465,9 +465,9 @@ impl crate::attribution::pipeline::UserAgentHarness for RegistryUserAgents {
 /// The harnesses a consumer can launch, in registry order.
 ///
 /// This is the list each consumer's `start` command should offer, derived
-/// rather than restated: paper's `SUPPORTED_AGENTS` and tapesctl's harness
-/// argument both come from here, so a harness added to [`REGISTRY`] appears in
-/// both without either being edited.
+/// rather than restated: a closed-source client's supported-agent list and
+/// tapesctl's harness argument both come from here, so a harness added to
+/// [`REGISTRY`] appears in both without either being edited.
 #[must_use]
 pub fn supported_agents() -> Vec<&'static str> {
     REGISTRY

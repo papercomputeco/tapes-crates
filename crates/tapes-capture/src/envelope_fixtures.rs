@@ -46,10 +46,11 @@
 //!
 //! ### What is compared
 //!
-//! Only the `x-tapes-*` headers. `x-paper-auth-org-id` / `x-paper-auth-subject`
-//! appear in every case's header set but are **server-trusted**: the cloud edge
-//! sets them from validated JWT claims. The producer must not emit them, and the
-//! test asserts that it doesn't.
+//! Only the `x-tapes-*` headers. Every case's header set also carries the
+//! server-trusted identity headers of the deployment that authored the corpus
+//! (`x-paper-auth-org-id` / `x-paper-auth-subject`): an authenticating edge sets
+//! those from validated credential claims, so a producer must never forge them.
+//! The test asserts that this producer emits none of them.
 //!
 //! The metadata header is compared as *decoded JSON*, not as a base64 string.
 //! JSON key ordering is not part of the contract, so byte-comparing the encoded
@@ -98,7 +99,9 @@ pub struct FixtureCase {
     /// [`FixtureCase::direction`].
     pub direction: String,
     /// The complete header set for the case, including the server-trusted
-    /// `x-paper-auth-*` headers a producer must never emit.
+    /// identity headers a producer must never emit — an authenticating edge
+    /// sets those, and the corpus carries the spelling its authoring deployment
+    /// uses.
     pub headers: BTreeMap<String, String>,
     /// The envelope the headers correspond to.
     pub envelope: FixtureEnvelope,

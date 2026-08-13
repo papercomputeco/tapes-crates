@@ -7,8 +7,8 @@
 //! resolves to a message `uuid` inside the parent session's transcript.
 //!
 //! The cwd-to-directory-name encoding is "replace `/` with `-`"; for
-//! example, cwd `/Users/matt/git/paper-forest/groves/sessions` becomes
-//! `-Users-matt-git-paper-forest-groves-sessions`.
+//! example, cwd `/Users/alice/src/acme/server` becomes
+//! `-Users-alice-src-acme-server`.
 //!
 //! The scan is bounded to ~25 ms wall-clock. On timeout, missing
 //! transcript, or no `parentUuid`, we return `None` and the request
@@ -25,8 +25,8 @@ use serde::Deserialize;
 use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
-/// Wall-clock budget for fork-parent discovery. paperd MUST bound the
-/// scan: if it takes more than ~25 ms, log a warning and proceed
+/// Wall-clock budget for fork-parent discovery. A capture client MUST bound
+/// the scan: if it takes more than ~25 ms, log a warning and proceed
 /// *without* attaching the parent header.
 ///
 /// 25 ms is empirically below the visual-flinch threshold on the warm
@@ -51,7 +51,7 @@ fn discovery_semaphore() -> &'static Arc<Semaphore> {
     SEM.get_or_init(|| Arc::new(Semaphore::new(FORK_PARENT_CONCURRENCY)))
 }
 
-/// Bytes of the child transcript paperd reads to find the first user
+/// Bytes of the child transcript read to find the first user
 /// message. The first user message lands within the first record or
 /// two of every `.jsonl` we've inspected; 2 KiB covers that head with
 /// margin while keeping the read bounded.
@@ -82,8 +82,8 @@ const HEAD_BYTES: usize = 2 * 1024;
 ///   disk) doesn't hold a blocking-pool thread past the budget.
 ///
 /// A `Semaphore` caps total in-flight scans so a burst of cold cache
-/// requests cannot saturate the blocking pool and starve other
-/// `spawn_blocking` users in paperd.
+/// requests cannot saturate the blocking pool and starve the calling
+/// client's other `spawn_blocking` users.
 pub async fn discover_parent(cwd: &str, sid: &str) -> Option<String> {
     let Some(projects_dir) = projects_dir_for(cwd) else {
         debug!("fork-parent: no home dir; skipping");

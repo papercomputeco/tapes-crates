@@ -2,9 +2,9 @@
 //!
 //! Codex is the hardest of the three harnesses to capture, because pointing it
 //! at a proxy means declaring a whole custom *model provider* rather than
-//! overriding one URL. Ported from paper's `cli/start.rs` `launch_args` Codex arm
-//! and `resolve_codex_auth`, with the Go `cmd/tapes/start` codex knowledge folded
-//! into the documentation below.
+//! overriding one URL. Ported from a daemon client's Codex launch arm and its
+//! auth resolution, with the Go `cmd/tapes/start` codex knowledge folded into
+//! the documentation below.
 //!
 //! # Why a custom provider instead of `OPENAI_BASE_URL`
 //!
@@ -79,7 +79,7 @@ pub const OPENAI_API_BASE_ENV: &str = "OPENAI_API_BASE";
 /// decompress it, so every capture recipe must turn this off.
 const FEATURE_DISABLE_COMPRESSION: &str = "features.enable_request_compression=false";
 
-/// The wire protocol a Paper/Tapes-routed codex provider speaks.
+/// The wire protocol a capture-routed codex provider speaks.
 const WIRE_API: &str = "responses";
 
 /// How the launched Codex authenticates to its provider through the capture
@@ -133,9 +133,9 @@ impl CodexRecipe {
     /// the attribution header (see
     /// [`with_attribution_header`](Self::with_attribution_header)), which is how
     /// a capture proxy tells two concurrent `codex` processes apart on one
-    /// loopback endpoint. Generating it — paper appends a UUID to a stable
-    /// prefix — is left to the consumer so this crate needs no UUID dependency
-    /// and no opinion about the prefix.
+    /// loopback endpoint. Generating it — one consumer appends a UUID to a
+    /// stable prefix — is left to the consumer so this crate needs no UUID
+    /// dependency and no opinion about the prefix.
     pub fn new(endpoint: ProxyEndpoint, auth: CodexAuth, provider_id: impl Into<String>) -> Self {
         Self {
             endpoint,
@@ -305,8 +305,8 @@ pub fn codex_auth_file() -> Option<PathBuf> {
 /// escaping diverges from TOML's string escaping for broader Unicode — so those
 /// inputs are rejected rather than mis-encoded.
 ///
-/// Adapted from paper's `toml_key_ascii`, which asserted the same precondition
-/// with `debug_assert!`. This crate denies panics, so the invariant becomes a
+/// Adapted from a consumer's TOML key quoter, which asserted the same
+/// precondition with `debug_assert!`. This crate denies panics, so it becomes a
 /// typed error — which is also the better contract: the input is a caller-
 /// supplied header name, i.e. data, and data should not be able to trip an
 /// assertion.
@@ -400,12 +400,11 @@ mod tests {
 
     /// The full API-key-mode argument vector, in order.
     ///
-    /// Carried over from paper's
-    /// `launch_args_prefixes_codex_config_and_preserves_passthrough` — same
-    /// expected arguments, minus the passthrough tail, which is now the
-    /// consumer's to append (see [`LaunchPlan::args`]). Order is asserted
-    /// exactly because codex's `-c` pairs are positional on the command line and
-    /// paper's own test pins the same sequence.
+    /// Carried over from the ported launch arm's argument test — same expected
+    /// arguments, minus the passthrough tail, which is now the consumer's to
+    /// append (see [`LaunchPlan::args`]). Order is asserted exactly because
+    /// codex's `-c` pairs are positional on the command line, and the test this
+    /// came from pinned the same sequence.
     #[test]
     fn plan_emits_the_api_key_provider_config_in_order() {
         let plan = api_key_recipe().plan().unwrap();
@@ -437,8 +436,7 @@ mod tests {
     /// ChatGPT mode swaps the two credential knobs for `requires_openai_auth`
     /// and must not mention `env_key` at all.
     ///
-    /// Carried over from paper's
-    /// `launch_args_chatgpt_mode_uses_codex_route_and_openai_auth`.
+    /// Carried over from the ported launch arm's ChatGPT-mode test.
     #[test]
     fn plan_emits_the_chatgpt_provider_config_in_order() {
         let plan = CodexRecipe::new(
@@ -563,8 +561,9 @@ mod tests {
     }
 
     /// An attribution header with bytes TOML quoting cannot represent is refused
-    /// at plan time. paper guarded this with a `debug_assert!`, which would have
-    /// been a release-build silent mis-encode.
+    /// at plan time. The code this was ported from guarded it with a
+    /// `debug_assert!`, which would have been a release-build silent
+    /// mis-encode.
     #[test]
     fn plan_rejects_an_unrepresentable_attribution_header() {
         for bad in ["X-Café-Attribution", "X-Bad\u{7f}Header"] {
@@ -587,8 +586,7 @@ mod tests {
     /// to ChatGPT; a set-but-blank key counts as absent because that is how
     /// codex reads `env_key`.
     ///
-    /// Carried over verbatim from paper's
-    /// `resolve_codex_auth_prefers_api_key_then_chatgpt`.
+    /// Carried over verbatim from the ported auth-resolution test.
     #[test]
     fn resolve_codex_auth_prefers_api_key_then_chatgpt() {
         let mut env: HashMap<OsString, OsString> = HashMap::new();

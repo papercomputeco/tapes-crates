@@ -2,10 +2,10 @@
 //! Tapes capture.
 //!
 //! This crate is the single home for everything a capture client needs to know
-//! about a coding-agent harness on the client side. It is consumed by both
-//! `tapesctl` (open) and paperd (closed), so ingest parity between
-//! `tapesctl start` and `paper start` is **structural, not policed** — the same
-//! code runs in both.
+//! about a coding-agent harness on the client side. It is consumed by
+//! `tapesctl` and by closed-source daemon clients alike, so ingest parity
+//! between two clients' `start` commands is **structural, not policed** — the
+//! same code runs in both.
 //!
 //! Exactly three places hold harness knowledge; this crate is one of them (the
 //! deriver and the envelope spec/fixtures are the other two). It owns these
@@ -33,9 +33,9 @@
 //! - [`transcript`] — discovering and packaging harness transcripts for the
 //!   `POST /v1/ingest/transcript` lane.
 //!
-//! [`attribution`] is extracted from paperd's `proxy::session::*` — the code
-//! that validated peer-PID attribution and fork-parent discovery against real
-//! Claude and Codex traffic.
+//! [`attribution`] is extracted from a daemon client's proxy session layer —
+//! the code that validated peer-PID attribution and fork-parent discovery
+//! against real Claude and Codex traffic.
 //!
 //! # What is *not* here
 //!
@@ -56,18 +56,18 @@
 //! the producer now asks for a `tapes_capture::HarnessSession` instead of
 //! naming any harness's session type.
 //!
-//! [`launch`] is extracted from paper's `cli/start.rs` per-agent env/config
+//! [`launch`] is extracted from a daemon client's per-agent env/config
 //! injection, with the Go `tapes start` opencode/codex knowledge folded in —
-//! including opencode, which paper never supported. Its recipes are pure: they
-//! plan argv, environment, and config documents, and the consumer owns process
-//! spawning and cleanup.
+//! including opencode, which that client never supported. Its recipes are pure:
+//! they plan argv, environment, and config documents, and the consumer owns
+//! process spawning and cleanup.
 //!
-//! [`transcript`] is extracted from paperd's transcript uploader — its
+//! [`transcript`] is extracted from the same client's transcript uploader — its
 //! discovery/packaging half, the push trigger, and the ingest payload shape —
-//! and adds a startup sweep of the transcript tree, which closes paperd's own
-//! gap: a session that began and ended while the daemon was down is never
-//! re-registered by live traffic, so its fork skeleton was previously lost.
-//! Delivery, auth, and retry stay in each client.
+//! and adds a startup sweep of the transcript tree, which closes a gap every
+//! daemon client has: a session that began and ended while the daemon was down
+//! is never re-registered by live traffic, so its fork skeleton was previously
+//! lost. Delivery, auth, and retry stay in each client.
 
 pub mod attribution;
 pub mod config;

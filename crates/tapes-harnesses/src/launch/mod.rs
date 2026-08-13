@@ -2,8 +2,9 @@
 //!
 //! A launch recipe knows how to run one harness so its LLM traffic is directed
 //! through a capture proxy endpoint — parameterized by that endpoint, never
-//! Paper-specific. Ported from paper's `cli/start.rs` (per-agent env/config)
-//! and the Go opencode/codex config injection in tapes' `cmd/tapes/start/`.
+//! specific to one consumer. Ported from a daemon client's per-agent env/config
+//! injection and the Go opencode/codex config injection in tapes'
+//! `cmd/tapes/start/`.
 //!
 //! # Recipes are pure
 //!
@@ -13,7 +14,7 @@
 //! file, creates a temporary directory, or reads the user's home. The consumer
 //! owns all of that, and therefore owns cleanup.
 //!
-//! This matters because the two consumers differ. paperd launches through a
+//! This matters because consumers differ. A daemon client launches through a
 //! `tokio::process::Command` and keeps the parent alive so its tracing
 //! subscriber stays attached; the Go `tapes start` shelled out and registered a
 //! PID with its own daemon. Neither process model belongs in shared harness
@@ -36,10 +37,12 @@
 //!
 //! So a recipe never constructs a route: the consumer hands it a fully
 //! qualified [`ProxyEndpoint`] that already names whatever backend or provider
-//! segment its proxy expects. paperd passes
-//! `http://127.0.0.1:51539/v1/anthropic/anthropic-transparent`; a standalone
-//! client passes whatever its own proxy serves. The recipe only knows that
-//! Claude will append `/v1/messages` to it.
+//! segment its proxy expects. A daemon client listening on loopback passes
+//! something shaped like
+//! `http://127.0.0.1:<port>/v1/anthropic/anthropic-transparent`; a client whose
+//! proxy serves a flat root passes `http://127.0.0.1:<port>`. Both are the
+//! consumer's to choose — the recipe only knows that Claude will append
+//! `/v1/messages` to whatever it is given.
 //!
 //! # What is deliberately *not* here
 //!
@@ -52,13 +55,14 @@
 //!   loads the globally installed copy or a per-launch one. Until it does,
 //!   pi is [`crate::harness::LaunchSupport::ConsumerOwned`].
 //! * **Credential loading.** Which API key to hand a harness, and where it is
-//!   stored, is a consumer concern: paperd passes the user's own credential
-//!   through untouched, while the Go CLI read its own credential store. Recipes
-//!   accept an already-resolved key and only know *where the harness expects
-//!   it*.
-//! * **Harness discovery and dispatch.** Resolving a binary on `PATH`, deciding
-//!   which names are supported, and mapping a user-typed spelling to a recipe
-//!   stay with the consumer for now; a shared registry is tracked separately.
+//!   stored, is a consumer concern: a daemon client may pass the user's own
+//!   credential through untouched, while the Go CLI read its own credential
+//!   store. Recipes accept an already-resolved key and only know *where the
+//!   harness expects it*.
+//! * **Process discovery.** Resolving a harness binary on `PATH` and spawning
+//!   it stay with the consumer. Name resolution no longer does: mapping a
+//!   user-typed spelling to a harness is [`crate::harness::find`], and the set
+//!   of names a consumer should offer is [`crate::harness::supported_agents`].
 
 pub mod claude;
 pub mod codex;
@@ -214,8 +218,7 @@ mod tests {
     /// when missing. Stripping a trailing slash matters because the harness
     /// appends `/v1/messages`; `http://x:1//v1/...` is a 404 in some setups.
     ///
-    /// Carried over from paper's
-    /// `proxy_base_url_handles_schemes_and_trailing_slash`.
+    /// Carried over from the ported launcher's base-URL normalisation test.
     #[test]
     fn proxy_endpoint_handles_schemes_and_trailing_slash() {
         assert_eq!(
@@ -233,8 +236,8 @@ mod tests {
     }
 
     /// Repeated trailing slashes and surrounding whitespace both normalise away.
-    /// paper's helper only ever saw a control-socket value; a standalone client
-    /// may read this from a config file or a flag.
+    /// The helper this came from only ever saw a control-socket value; a
+    /// standalone client may read this from a config file or a flag.
     #[test]
     fn proxy_endpoint_normalises_repeated_slashes_and_whitespace() {
         assert_eq!(

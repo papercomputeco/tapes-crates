@@ -21,8 +21,8 @@
 //!
 //! This lives in the shared crate for the same reason [`crate::peer_pid`]
 //! does: it is one half of the trust decision both capture clients make.
-//! `tapesctl start` and paperd each launch a harness, each accept loopback
-//! connections claiming to be it, and each must answer the identical question
+//! Every capture client launches a harness, accepts loopback
+//! connections claiming to be it, and must answer the identical question
 //! with the identical walk — a divergence here would mean an envelope one
 //! client refuses is one the other files a session under.
 //!

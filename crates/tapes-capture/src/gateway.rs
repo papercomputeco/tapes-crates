@@ -104,7 +104,7 @@ pub fn split_provider_route(path: &str) -> Option<(&str, &str)> {
 /// ancestry check ([`crate::peer_trust`]) cannot tell the harness
 /// apart from the harness's *own subprocesses* — a command run by a shell tool
 /// is a descendant of the launched PID too, and could otherwise stamp another
-/// session's envelope. The launching consumer (tapesctl, paperd) generates a
+/// session's envelope. The launching consumer generates a
 /// fresh secret per capture, sets it in this variable for the harness process,
 /// and requires it echoed back before believing any envelope. The value must
 /// never be logged, forwarded upstream, or included in captured output.

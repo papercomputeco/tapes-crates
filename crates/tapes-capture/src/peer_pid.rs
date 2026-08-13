@@ -1,6 +1,6 @@
 //! Per-OS "which PID owns this TCP loopback connection" lookup.
 //!
-//! The proxy listens on `127.0.0.1:51539` and accepts TCP connections;
+//! A capture proxy listens on a loopback port and accepts TCP connections;
 //! every accept hands back the peer's `(addr, port)` 4-tuple from
 //! kernel state. The Claude process on the other end of that connection
 //! has the matching socket in its FD table. The lookup answers:
@@ -13,8 +13,8 @@
 //! a PID costs differently per platform:
 //!
 //! * Linux — `NETLINK_INET_DIAG` lists sockets (with inodes and UID) cheaply,
-//!   but mapping an inode back to a PID means walking `/proc/<pid>/fd`. paperd
-//!   runs unprivileged, so a *system-wide* walk (what
+//!   but mapping an inode back to a PID means walking `/proc/<pid>/fd`. A
+//!   capture client runs unprivileged, so a *system-wide* walk (what
 //!   `netsock::get_sockets` does internally) hits `EACCES` on every process
 //!   we don't own and floods the log. We instead enumerate sockets with
 //!   [`netsock::iter_sockets_without_processes`] (no walk) and read only a
@@ -108,7 +108,7 @@ fn cache() -> &'static Mutex<HashMap<SocketAddr, CacheEntry>> {
 
 /// Look up which of `candidates` owns the loopback TCP socket whose
 /// peer endpoint is `peer`. The peer is the *agent's* side of the
-/// connection (the client socket on the Claude process); paperd's
+/// connection (the client socket on the Claude process); a proxy's
 /// `accept` returns that 4-tuple directly.
 ///
 /// Returns `Self::pid = None` when no candidate matches (caller falls
@@ -856,8 +856,8 @@ mod tests {
     /// Manual benchmark. Run with:
     ///
     /// ```text
-    /// cargo test -p paper-daemon --release \
-    ///     proxy::session::peer_pid::tests::bench_lookup_microseconds \
+    /// cargo test -p tapes-capture --release --lib \
+    ///     peer_pid::tests::bench_lookup_microseconds \
     ///     -- --ignored --nocapture
     /// ```
     ///

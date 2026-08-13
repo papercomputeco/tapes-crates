@@ -2,11 +2,11 @@
 //!
 //! Attribution is how a captured harness session acquires a real identity —
 //! session id, fork parent, cwd, and the acting subject — rather than a
-//! synthetic root hash. This module is the extracted form of paperd's
-//! `proxy::session::*`, which validated peer-PID attribution and fork-parent
-//! discovery against real Claude and Codex traffic; it now backs both
-//! `tapesctl start` and `paper start`, so the two capture paths attribute
-//! identically by construction rather than by review.
+//! synthetic root hash. This module is the extracted form of a daemon client's
+//! proxy session layer, which validated peer-PID attribution and fork-parent
+//! discovery against real Claude and Codex traffic; it now backs every client's
+//! `start` path, so those capture paths attribute identically by construction
+//! rather than by review.
 //!
 //! # Layout
 //!

@@ -7,16 +7,16 @@
 //! carries them. This module is the client-side half every capture client needs:
 //!
 //! * [`files`] — discovery of a session's upload set and JSONL→records
-//!   conversion. Extracted verbatim from paperd, which mirrors the Go reference
-//!   client, so every client produces byte-identical upload sets for the same
-//!   on-disk state.
+//!   conversion. Extracted verbatim from a daemon client, which mirrors the Go
+//!   reference client, so every client produces byte-identical upload sets for
+//!   the same on-disk state.
 //! * [`trigger`] — the push state machine: 30 s quiescence, 5 min periodic safety
 //!   net, and a final push on harness exit.
 //! * [`payload`] — the ingest payload shape, a cross-language contract with the
 //!   Go server.
 //! * [`sweep`] — a startup scan of the transcript tree, which finds sessions that
 //!   ended while the client was not running. New here rather than moved: it closes
-//!   a gap in paperd's registry-driven discovery.
+//!   a gap in any purely registry-driven discovery.
 //! * [`codex_anchors`] — Codex's counterpart for the fork skeleton alone. Codex
 //!   writes no per-session transcript tree; the spawn edge lives in its rollout
 //!   files as `sub_agent_activity` records, and this module derives the anchor
@@ -30,11 +30,12 @@
 //!
 //! **Delivery, auth, and retry.** The HTTP call, the request timeout, the response
 //! parsing, the credential — and the failure backoff schedule — differ per client,
-//! and auth differs most of all: paperd rides its own `X-Paper-Auth` channel so
-//! the Paper cloud edge admits the request, which is explicitly not part of the
-//! tapes contract. So does each client's notion of *which* sessions to track:
-//! paperd's registry is fed by its proxy's per-request attribution, and a
-//! standalone client will have a different hook.
+//! and auth differs most of all: a client fronted by its own cloud edge rides a
+//! bespoke auth header of its own so that edge admits the request, and no such
+//! header is part of the tapes contract. So does each client's notion of *which*
+//! sessions to track: a daemon client's registry is fed by its proxy's
+//! per-request attribution, and a standalone client will have a different
+//! hook.
 //!
 //! # Why the eager design is safe
 //!

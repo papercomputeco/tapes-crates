@@ -43,8 +43,9 @@ pub const HARNESS_ID_UNKNOWN: &str = "unknown";
 /// An envelope as a reader recovers it from headers.
 ///
 /// Field-for-field the modelled half of the fixture corpus's `envelope` object.
-/// The server-trusted `x-paper-auth-*` headers are deliberately absent: they are
-/// not a producer's to emit and not a client's to be believed about.
+/// The server-trusted identity headers the corpus also carries are deliberately
+/// absent: they are not a producer's to emit and not a client's to be believed
+/// about.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Envelope {
     /// The harness that produced the turn, or [`HARNESS_ID_UNKNOWN`].

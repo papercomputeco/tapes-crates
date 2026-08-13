@@ -4,8 +4,8 @@
 //! than in a capture client: the ladder below, its bounded wait, and the order
 //! of its rungs were validated against real Codex traffic — including
 //! sub-thread families, cold watchers, and the desktop app — and a second
-//! implementation would drift in ways only a parity corpus would catch. Both
-//! `tapesctl start codex` and `paper start codex` reach it through
+//! implementation would drift in ways only a parity corpus would catch. Every
+//! client's `start codex` path reaches it through
 //! [`crate::attribution::attribute`].
 //!
 //! # The ladder

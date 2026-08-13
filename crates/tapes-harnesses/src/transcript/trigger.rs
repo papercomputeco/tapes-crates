@@ -1,6 +1,6 @@
 //! The per-session push trigger.
 //!
-//! Extracted from paperd's `transcript_upload::uploader`. A client evaluates
+//! Extracted from a daemon client's transcript uploader. A client evaluates
 //! every tracked session on a timer and asks [`decide`] whether to push that
 //! session's transcript files now. Three things can trigger a push:
 //!
@@ -163,7 +163,7 @@ mod tests {
         }
     }
 
-    /// Carried over from paperd's `decide_clean_session_never_pushes`.
+    /// Carried over from the uploader's clean-session test.
     #[test]
     fn clean_session_never_pushes() {
         let input = TriggerInput {
@@ -176,7 +176,7 @@ mod tests {
         assert_eq!(decide(&TriggerPolicy::default(), &input), None);
     }
 
-    /// Carried over from paperd's `decide_quiescence_fires_after_idle_window`.
+    /// Carried over from the uploader's quiescence-window test.
     #[test]
     fn quiescence_fires_after_idle_window() {
         let policy = TriggerPolicy::default();
@@ -193,8 +193,7 @@ mod tests {
         assert_eq!(decide(&policy, &busy), None);
     }
 
-    /// Carried over from paperd's
-    /// `decide_periodic_fires_for_never_quiescent_session`.
+    /// Carried over from the uploader's periodic-push test.
     #[test]
     fn periodic_fires_for_never_quiescent_session() {
         let input = TriggerInput {
@@ -208,7 +207,7 @@ mod tests {
         );
     }
 
-    /// Carried over from paperd's `decide_exit_outranks_timers`.
+    /// Carried over from the uploader's exit-precedence test.
     #[test]
     fn exit_outranks_timers() {
         let input = TriggerInput {
@@ -222,7 +221,7 @@ mod tests {
         );
     }
 
-    /// Carried over from paperd's `decide_backoff_gates_everything`.
+    /// Carried over from the uploader's backoff-gate test.
     #[test]
     fn backoff_gates_everything() {
         let input = TriggerInput {
@@ -297,9 +296,9 @@ mod tests {
         );
     }
 
-    /// The default policy is the one paperd shipped: 30 s quiescence, 5 min
-    /// periodic. Pinned so adopting the crate's default cannot silently
-    /// re-tune a consumer's push latency.
+    /// The default policy is the one the extracted uploader shipped: 30 s
+    /// quiescence, 5 min periodic. Pinned so adopting the crate's default
+    /// cannot silently re-tune a consumer's push latency.
     #[test]
     fn default_policy_matches_the_shipped_thresholds() {
         let policy = TriggerPolicy::default();

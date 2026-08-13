@@ -65,8 +65,8 @@ pub type Snapshot = Arc<ArcSwap<WatcherSnapshot>>;
 /// snapshot owner drops.
 ///
 /// MUST be called from within a tokio runtime — the watcher is a
-/// `tokio::spawn`. The paperd shell sets up the runtime before
-/// `ProxyServer::run` so the only caller (`ProxyServer::new`) is fine.
+/// `tokio::spawn`. A daemon client that builds its proxy server inside the
+/// runtime it later serves on satisfies this without doing anything extra.
 ///
 /// `sessions_dir` is typically `~/.claude/sessions/` per
 /// [`super::session::default_sessions_dir`]; tests pass a
@@ -339,8 +339,8 @@ mod tests {
     /// The periodic scan must not run on a tokio worker. [`scan`] does
     /// directory iteration plus a `read(2)` per session file; inline on
     /// a worker it stalls every other future that worker owns for the
-    /// duration of the scan — on paperd that is the request-forwarding
-    /// path the attribution exists to serve.
+    /// duration of the scan — in a proxying client that is the
+    /// request-forwarding path the attribution exists to serve.
     ///
     /// The setup makes that observable without timing heuristics: one
     /// worker thread, and a FIFO named `<pid>.json` in the sessions dir

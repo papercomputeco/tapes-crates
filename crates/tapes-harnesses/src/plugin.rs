@@ -415,7 +415,7 @@ mod tests {
         );
     }
 
-    /// **The PCC-1125 property.** pi loads every file in its extension
+    /// **The one-artifact property.** pi loads every file in its extension
     /// directory into one process, so two clients installing "their" copy is
     /// two readers contending over one launch's nonce and over the same
     /// provider registrations — and the loser registers anyway, unattributed.
@@ -448,10 +448,11 @@ mod tests {
     }
 
     /// **The migration, and the half without which the fix reaches nobody.**
-    /// Every user who ran an older `paper` has `paper-gateway.ts` sitting in
-    /// pi's extension directory. Writing the new file next to it leaves two
-    /// extensions loaded and the bug exactly as it was — with the fix installed,
-    /// which is worse than not shipping it. So installing removes it.
+    /// Every user who ran a client from before the assets were unified has that
+    /// client's branded extension sitting in pi's directory. Writing the new
+    /// file next to it leaves two extensions loaded and the bug exactly as it
+    /// was — with the fix installed, which is worse than not shipping it. So
+    /// installing removes the superseded names.
     #[test]
     fn installing_the_pi_extension_removes_a_superseded_branded_copy() {
         let home = tempfile::tempdir().unwrap();
@@ -644,8 +645,8 @@ mod tests {
     /// nobody sets — a silently uncaptured session, not a build failure.
     ///
     /// Pinned as the whole `const … = "…";` declaration rather than as a
-    /// substring. A per-product namespacing of these names was the shape of an
-    /// earlier attempt at PCC-1125, and a `contains` accepts an asset that
+    /// substring. Per-product namespacing of these names was the shape of an
+    /// earlier attempt at the same fix, and a `contains` accepts an asset that
     /// keeps such a name *alongside* the shared one — which is a launcher and
     /// an extension agreeing on a variable nobody else sets.
     #[test]

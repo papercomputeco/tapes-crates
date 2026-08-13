@@ -1,9 +1,9 @@
 //! Claude Code launch recipe.
 //!
 //! Claude Code is the simplest harness to capture: it reads one environment
-//! variable for its API base URL and appends its own path to it. Ported from
-//! paper's `cli/start.rs` `apply_env` Claude arm, which agrees byte-for-byte
-//! with the Go `tapes start claude` arm in `cmd/tapes/start/start.go` — both set
+//! variable for its API base URL and appends its own path to it. Ported from a
+//! daemon client's Claude launch arm, which agrees byte-for-byte with the Go
+//! `tapes start claude` arm in `cmd/tapes/start/start.go` — both set
 //! `ANTHROPIC_BASE_URL` and nothing else. Two independent implementations
 //! reaching the same one-liner is the strongest evidence available that this is
 //! the whole contract.
@@ -66,9 +66,8 @@ mod tests {
     /// The recipe sets exactly `ANTHROPIC_BASE_URL` to the endpoint verbatim,
     /// adds no arguments, and writes no files.
     ///
-    /// Carried over from paper's
-    /// `run_with_snapshot_launches_with_anthropic_base_url`, which asserted the
-    /// same env var against the same route-qualified URL through the launcher
+    /// Carried over from the ported launch arm's base-URL test, which asserted
+    /// the same env var against the same route-qualified URL through a launcher
     /// fixture. Here the assertion is on the plan directly.
     #[test]
     fn plan_sets_anthropic_base_url_and_nothing_else() {
