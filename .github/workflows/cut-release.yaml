@@ -143,16 +143,21 @@ jobs:
           # normalises to a caret requirement; strip the operator to get the
           # version the manifest names.
           version="${req#^}"
-          code="$(curl -sS -o /dev/null -w '%{http_code}' \
+          # This check is advisory, so a crates.io outage must land in the
+          # warning branch rather than failing the step under `set -e` — a
+          # curl that cannot connect at all reports as "unreachable".
+          if ! code="$(curl -sS -o /dev/null -w '%{http_code}' \
             -A "tapes-crates cut-release workflow (github.com/${GITHUB_REPOSITORY})" \
-            "https://crates.io/api/v1/crates/tapes-capture/${version}")"
+            "https://crates.io/api/v1/crates/tapes-capture/${version}")"; then
+            code="unreachable"
+          fi
           if [ "${code}" = "200" ]; then
             echo "ok: tapes-capture ${version} is live on crates.io"
           else
-            echo "::warning::tapes-capture ${version} is not live on crates.io (HTTP ${code}). The tapes-harnesses publish will fail until it is — release tapes-capture first."
+            echo "::warning::tapes-capture ${version} is not live on crates.io (${code}). The tapes-harnesses publish will fail until it is — release tapes-capture first."
             {
               echo "> [!WARNING]"
-              echo "> \`tapes-harnesses\` requires \`tapes-capture ${version}\`, and crates.io returned HTTP ${code} for it."
+              echo "> \`tapes-harnesses\` requires \`tapes-capture ${version}\`, and crates.io answered ${code} for it."
               echo "> The publish will fail until that release is live. This cut proceeds anyway:"
               echo "> the publish enforces the order; this is early notice."
             } >> "${GITHUB_STEP_SUMMARY}"
