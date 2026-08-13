@@ -9,9 +9,9 @@ If yes it belongs here; if no it belongs in
 [`tapes-capture`](https://github.com/papercomputeco/tapes-crates/blob/main/crates/tapes-capture/README.md), which this crate depends on and
 which may never depend back.
 
-Consumed by `tapesctl` and by Paper Compute's `paper`/`paperd`, so the two
-clients launch and attribute sessions with the same code rather than with two
-implementations kept in agreement by review.
+Consumed by `tapesctl` and by closed-source daemon clients alike, so every
+client launches and attributes sessions with the same code rather than with
+separate implementations kept in agreement by review.
 
 ## Public seams
 
