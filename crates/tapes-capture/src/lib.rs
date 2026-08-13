@@ -39,7 +39,8 @@
 //! [`envelope`] documents the producer. The contract it implements is
 //! documented beside the fixture corpus that seals it, in
 //! `vendor/tapes-envelope-fixtures/SOURCE.md`, and the parts a parser author
-//! needs are summarised in [`envelope::fixtures`] — including the rule that
+//! needs are summarised in `envelope::fixtures` (present with the
+//! `envelope-fixtures` feature; docs.rs builds it) — including the rule that
 //! makes several vendored copies one corpus:
 //!
 //! * The corpus is vendored into **every** implementation of the contract, in
