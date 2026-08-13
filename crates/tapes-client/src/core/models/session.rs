@@ -277,12 +277,19 @@ impl ContractModel for SessionTracesResponse {
 /// absent is nothing to update (a 400), while an explicit null or an empty
 /// string clears the rename back to the auto-derived title.
 ///
+/// So the field is an [`Option`] that is omitted when unset, or the type could
+/// not express the distinction it documents: a `None` that still serialized
+/// would arrive as the empty string and clear a user's rename, which is the
+/// one thing this body must not do by accident.
+///
 /// Models the contract's `sessionUpdateRequest` schema.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionUpdateRequest {
-    /// The contract's `display_name`.
-    pub display_name: String,
+    /// The contract's `display_name`. `None` sends nothing;
+    /// `Some(String::new())` clears the rename.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 impl ContractModel for SessionUpdateRequest {

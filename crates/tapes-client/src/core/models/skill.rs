@@ -240,29 +240,40 @@ impl ContractModel for CreateSkillRequest {
 /// The PUT /v1/skills/:slug body — all fields optional;
 /// only present fields are applied onto the existing record.
 ///
+/// Every field is an [`Option`] that is omitted from the wire when unset,
+/// because "only present fields are applied" makes an absent field the *only*
+/// way to say "leave this one alone". A body that spelled all six every time
+/// would turn a one-field rename into a five-field erasure: the server would
+/// dutifully apply the empty content, the empty description, and the empty tag
+/// list it was sent.
+///
 /// Models the contract's `updateSkillRequest` schema.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UpdateSkillRequest {
     /// The contract's `content`.
-    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
 
     /// The contract's `description`.
-    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 
     /// The contract's `name`.
-    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 
     /// The contract's `tags`.
-    #[serde(deserialize_with = "super::null_default")]
-    pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
 
     /// The contract's `type`.
-    #[serde(rename = "type")]
-    pub type_: String,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub type_: Option<String>,
 
     /// The contract's `visibility`.
-    pub visibility: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
 }
 
 impl ContractModel for UpdateSkillRequest {
@@ -309,10 +320,17 @@ impl ContractModel for GenerateSkillRequest {
 
 /// The optional authoring hints on a generate request.
 ///
-/// Models the contract's `GenerateSkillRequestHint` schema.
+/// Part of a request body, so it is constructible: not `non_exhaustive`, and
+/// every field public. The whole point of the type is that a caller fills one
+/// in — a hint nobody outside this crate could set would leave
+/// [`GenerateSkillRequest::hint`] permanently at its default.
+///
+/// Models the inline `hint` object of the contract's `generateSkillRequest`
+/// schema, which the document declares in place rather than as a schema of its
+/// own — so the [`super::coverage`] gate holds these fields through
+/// [`GenerateSkillRequest`] rather than registering them separately.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-#[non_exhaustive]
 pub struct GenerateSkillRequestHint {
     /// The contract's `description`.
     pub description: String,

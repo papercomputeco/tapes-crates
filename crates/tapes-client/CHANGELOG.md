@@ -32,6 +32,10 @@ touched, and a change to which features are on by default, since `cli` and
   parameter structs for the operations that take parameters. `CoreClient`'s
   named methods return them; `list_all_sessions` / `list_all_skills` follow
   `next_cursor` to the end through the crate's one pagination convention.
+  Request bodies are a caller's to build — nested components included — and the
+  partial-update bodies (`UpdateSkillRequest`, `SessionUpdateRequest`) omit
+  what a caller leaves unset, so a one-field update applies that field and
+  leaves the rest of the record alone.
 - **A schema-coverage gate** (`core::models::coverage`), the shape-level sibling
   of the operation gate. It synthesises a document from each schema, decodes and
   re-encodes it through the registered model, and reports by path anything the

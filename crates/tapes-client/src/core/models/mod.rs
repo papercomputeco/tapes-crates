@@ -39,6 +39,21 @@
 //! - **Response models are [`non_exhaustive`], request models are not.** A
 //!   response is the server's to grow; a request body is the caller's to build,
 //!   and a body nobody outside this crate could construct would be useless.
+//!   This holds for the *components* of a request body too — an inner struct
+//!   marked `non_exhaustive` makes its fields unreachable just as surely as
+//!   marking the outer one would, and leaves a caller with nothing but
+//!   `Default`. A test outside the crate constructs every request body by
+//!   struct literal, which is the only place the marker's effect is visible.
+//! - **A request field whose absence means something is an [`Option`] that is
+//!   omitted.** The partial-update bodies are the reason: the server applies
+//!   the properties a `PUT`/`PATCH` body carries and leaves the rest alone, so
+//!   a model that always serialized every field would turn every one-field
+//!   update into a wipe of the others. `#[serde(skip_serializing_if =
+//!   "Option::is_none")]` is what makes an unset field genuinely absent from
+//!   the bytes rather than present and empty. Where absence carries no
+//!   distinct meaning — a create body, whose fields land on a fresh record —
+//!   the field stays plain, because an `Option` there would be ceremony
+//!   without a distinction behind it.
 //!
 //! # What is deliberately not typed further
 //!
@@ -131,6 +146,8 @@ where
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use serde_json::json;
 
@@ -166,6 +183,82 @@ mod tests {
         assert_eq!(session.id, "s-1");
         assert!(session.harness_metadata.is_empty());
         assert_eq!(session.rollup, SessionRollup::default());
+    }
+
+    #[test]
+    fn a_one_field_update_sends_exactly_that_field() {
+        // The failure this pins: `updateSkillRequest` is applied property by
+        // property, so a body that spelled all six would rename the skill and
+        // erase its content, description, tags, type, and visibility in the
+        // same call.
+        let rename = UpdateSkillRequest {
+            name: Some("gum glow charm".to_owned()),
+            ..Default::default()
+        };
+        let sent = serde_json::to_value(&rename).unwrap();
+
+        assert_eq!(sent, json!({"name": "gum glow charm"}));
+    }
+
+    #[test]
+    fn an_empty_partial_update_sends_an_empty_document() {
+        // Nothing set means nothing said — not six empty properties, which is
+        // the same erasure spelled with a default constructor.
+        assert_eq!(
+            serde_json::to_value(UpdateSkillRequest::default()).unwrap(),
+            json!({}),
+        );
+        assert_eq!(
+            serde_json::to_value(SessionUpdateRequest::default()).unwrap(),
+            json!({}),
+        );
+    }
+
+    #[test]
+    fn a_rename_body_tells_clearing_apart_from_not_touching() {
+        // The contract gives the two states different outcomes — an absent
+        // field is a 400 (nothing to update), an empty one clears the rename
+        // back to the auto-derived title — so the type has to be able to say
+        // both, and say them differently.
+        let clear = SessionUpdateRequest {
+            display_name: Some(String::new()),
+        };
+        let untouched = SessionUpdateRequest::default();
+
+        assert_eq!(
+            serde_json::to_value(&clear).unwrap(),
+            json!({"display_name": ""}),
+        );
+        assert_eq!(serde_json::to_value(&untouched).unwrap(), json!({}));
+    }
+
+    #[test]
+    fn a_present_but_empty_update_field_still_reaches_the_wire() {
+        // The other half of the rule: omitting is what `None` means, and an
+        // explicitly emptied field must not be mistaken for one. Clearing a
+        // skill's tag list is a legitimate edit.
+        let untag = UpdateSkillRequest {
+            tags: Some(Vec::new()),
+            ..Default::default()
+        };
+
+        assert_eq!(serde_json::to_value(&untag).unwrap(), json!({"tags": []}));
+    }
+
+    #[test]
+    fn a_notification_frame_carries_no_id() {
+        // JSON-RPC reads a present id as "answer me", so an empty-string id
+        // would make every notification a request awaiting a response.
+        let notification = McpRequest {
+            id: None,
+            jsonrpc: "2.0".to_owned(),
+            method: "notifications/initialized".to_owned(),
+            params: BTreeMap::new(),
+        };
+        let sent = serde_json::to_value(&notification).unwrap();
+
+        assert_eq!(sent.get("id"), None, "got: {sent}");
+        assert_eq!(sent["method"], "notifications/initialized");
     }
 
     #[test]

@@ -722,6 +722,45 @@ mod tests {
     }
 
     #[test]
+    fn an_omittable_field_still_has_to_carry_its_property() {
+        // The partial-update bodies omit an unset field from the wire, which is
+        // exactly what a dropped property looks like to the round trip. So the
+        // gate has to keep telling the two apart, and this is where that is
+        // pinned: the model below carries one of `updateSkillRequest`'s six
+        // properties as an omittable `Option` and simply lacks the rest. The
+        // one it models is populated by the sample and survives; the five it
+        // does not are reported by name, exactly as a model with five plain
+        // missing fields would be.
+        #[derive(Debug, Default, Serialize, Deserialize)]
+        #[serde(default)]
+        struct HalfAnUpdate {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            name: Option<String>,
+        }
+        impl ContractModel for HalfAnUpdate {
+            const SCHEMA: &'static str = "updateSkillRequest";
+        }
+
+        let report = report(&[Entry::of::<HalfAnUpdate>()], UNMODELLED).unwrap();
+        for dropped in ["content", "description", "tags", "type", "visibility"] {
+            assert!(
+                report.disagreements.iter().any(|problem| {
+                    problem.contains(&format!("updateSkillRequest.{dropped}"))
+                        && problem.contains("not carried by the model")
+                }),
+                "{dropped} was dropped by the model and should have been reported; got: {report:?}",
+            );
+        }
+        assert!(
+            !report
+                .disagreements
+                .iter()
+                .any(|problem| problem.contains("updateSkillRequest.name")),
+            "an Option field the sample populates is carried, not missing; got: {report:?}",
+        );
+    }
+
+    #[test]
     fn a_model_that_mistypes_a_field_is_reported_as_a_decode_failure() {
         #[derive(Debug, Default, Serialize, Deserialize)]
         #[serde(default)]

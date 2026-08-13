@@ -300,7 +300,12 @@ parameter builders with the `*Params` structs. Two things to expect:
 
 - Response models are `#[non_exhaustive]`: decode them, do not construct them.
   Request bodies (`CreateSkillRequest`, `SessionUpdateRequest`, …) are yours to
-  build and are not marked.
+  build and are not marked, down to their nested components.
+- The partial-update bodies carry `Option` fields, and an unset one is absent
+  from the bytes rather than sent empty. That is what makes
+  `UpdateSkillRequest { name: Some(..), ..Default::default() }` a rename
+  instead of a rename plus the erasure of everything it did not mention — the
+  server applies the properties the body carries and leaves the rest alone.
 - Timestamps and enumerable strings stay `String`. The contract declares them
   that way, and a typed decode that rejected an unparseable timestamp — or an
   unfamiliar `status` — would blank a whole page over an additive change.

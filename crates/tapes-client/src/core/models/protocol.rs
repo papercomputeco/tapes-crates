@@ -34,8 +34,12 @@ impl ContractModel for ErrorResponse {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct McpRequest {
-    /// ID correlates a response with this request. Absent on notifications.
-    pub id: String,
+    /// ID correlates a response with this request. `None` is a notification,
+    /// and is omitted from the wire rather than sent as an empty string —
+    /// JSON-RPC reads a present id as "answer me", so a notification that
+    /// carried one would not be a notification.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 
     /// The protocol version, always "2.0".
     pub jsonrpc: String,
