@@ -142,6 +142,19 @@ pub const HARNESS_ID_CODEX_APP: &str = "codex-app";
 /// from, rather than the launch recipe spelling its own.
 pub const HARNESS_ID_OPENCODE: &str = "opencode";
 
+/// Client-side request capture cap, in wire bytes: the largest request body a
+/// capture client (tapesctl's proxy peek, any future standalone recorder)
+/// should retain for capture before degrading to forward-only.
+///
+/// 32 MiB matches the gateway side of the same contract — the Anthropic
+/// Messages request ceiling Paper commits to forwarding
+/// (`ProviderMaxRequestBytes` in tko, `MaxDecodedRequestBytes` in tapes
+/// ingest). Client capture sized below the gateway's would silently record
+/// less than the platform captures for the same traffic; sized above it, the
+/// extra bytes describe requests the provider rejects anyway. Capture-only:
+/// forwarding must never gate on this value.
+pub const REQUEST_CAPTURE_CAP: usize = 32 * 1024 * 1024;
+
 /// Maximum total budget across all `X-Tapes-*` headers.
 /// Metadata is dropped first when the budget is exceeded; the other
 /// headers are small (UUIDs and paths) and stay.
@@ -795,6 +808,16 @@ mod tests {
         );
         assert!(!is_hop_by_hop("Content-Type"));
         assert!(!is_hop_by_hop("X-Paper-Auth"));
+    }
+
+    #[test]
+    fn request_capture_cap_matches_the_gateway_contract() {
+        // 32 MiB is the provider request ceiling the gateway commits to
+        // (tko ProviderMaxRequestBytes / tapes ingest MaxDecodedRequestBytes).
+        // A consumer wiring its peek cap to this constant captures exactly
+        // what the platform captures; if the contract retunes, this pin
+        // forces the change to be deliberate on the client side too.
+        assert_eq!(REQUEST_CAPTURE_CAP, 32 * 1024 * 1024);
     }
 
     #[test]
