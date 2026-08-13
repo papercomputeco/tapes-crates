@@ -1,4 +1,9 @@
-# Adding a harness
+---
+title: Adding a harness
+description: Teaching the crates about a new coding agent — the registry declaration, the launch recipe decision, the bar a new attribution lane must clear, and what breaks when the registry changes.
+sidebar:
+  order: 5
+---
 
 This crate is client-side harness knowledge: how to launch a coding agent
 under a capture proxy, how to work out which session a request belongs to,
