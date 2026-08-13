@@ -45,7 +45,12 @@ until a consumer resolves against crates.io.
    `tapes-capture` dependency version in `crates/tapes-harnesses/Cargo.toml`.
 4. Land that as a normal PR. `cargo package --workspace --locked` runs on it
    like it runs on every PR.
-5. Tag the merge commit `<crate>-v<version>` and push the tag.
+5. Dispatch the **Cut Release** workflow (`.github/workflows/cut-release.yaml`)
+   from `main`, choosing the crate. It reads the version the manifest already
+   carries at main's tip, refuses a tag that already exists, and pushes
+   `<crate>-v<version>` pointing at that tip — so the tag matches the manifest
+   by construction, which is the mistake hand-typed tags invite. Tagging by
+   hand remains the fallback:
 
 ```bash
 git tag tapes-client-v0.1.0

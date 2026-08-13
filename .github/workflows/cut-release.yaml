@@ -1,0 +1,213 @@
+# Cut a release tag for one crate, from the version already landed on main.
+#
+# This workflow computes nothing. The manifest is the source of truth for a
+# crate's version, and the version bump lands as a reviewed PR before any
+# release exists — so by the time a tag is cut, the only decision left is
+# WHICH crate to release. This job reads that crate's version out of the
+# manifest at main's tip and pushes the matching `<crate>-v<version>` tag.
+# Everything that gates a release — the version match, fmt, clippy, tests, the
+# contract seal, packaging, the publish hold — lives in release.yaml, which
+# runs on the tag this job pushes. A tag is a claim the release workflow
+# verifies; this job only makes the claim, and makes it match the manifest by
+# construction.
+#
+# See docs/releasing.md for the release order and the manual tagging fallback.
+name: Cut Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      crate:
+        description: "The crate to cut a release tag for"
+        required: true
+        type: choice
+        options:
+          - tapes-capture
+          - tapes-client
+          - tapes-harnesses
+
+# The tag push below authenticates with a GitHub App token, not GITHUB_TOKEN,
+# so this workflow itself needs no write access at all.
+permissions:
+  contents: read
+
+jobs:
+  cut:
+    name: Cut ${{ inputs.crate }} release tag
+    # Named rather than `ubuntu-latest` because a step below runs `cargo
+    # metadata` with no toolchain-install step: the ubuntu-24.04 image ships a
+    # stable Rust toolchain, and naming the image makes that assumption a
+    # visible pin instead of a property `latest` could drift away from.
+    runs-on: ubuntu-24.04
+    steps:
+      # Pinned to full commit SHAs rather than to `@v4` or `@v2`. Those are
+      # mutable refs: whoever can move them chooses what executes on this
+      # runner, and this runner is the one that holds an App token able to
+      # push tags a few steps from here. A commit SHA cannot be repointed, so
+      # an upgrade becomes a visible diff — new SHA, new version comment —
+      # instead of something that happens to a workflow nobody edited.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # A release tag is a statement about main. A dispatch runs on whatever
+      # ref the caller picked, and the ref picker is a convenience rather than
+      # a gate — so the gate is here. Cutting a tag from a feature branch
+      # would tag a tip that never passed review as main, and release.yaml
+      # cannot catch that: it verifies the tag against the tagged TREE, not
+      # against where the tagged commit sits.
+      - name: The ref is main
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "FAIL: release tags are cut from main, but this run is on ${GITHUB_REF_NAME} (${GITHUB_REF})." >&2
+            echo "      Re-run the dispatch with main selected as the ref." >&2
+            exit 1
+          fi
+          echo "Cutting from main at ${GITHUB_SHA}"
+
+      # `cargo metadata` rather than grepping the manifest: it reads the
+      # version the way every consumer of the manifest reads it, so
+      # `version.workspace = true`, unusual key ordering, or a stray
+      # `version` under a different table cannot produce a wrong answer the
+      # way a line-oriented grep can.
+      - name: Read the crate version from the manifest
+        id: version
+        env:
+          CRATE: ${{ inputs.crate }}
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r --arg c "${CRATE}" '.packages[] | select(.name == $c) | .version')"
+          if [ -z "${version}" ] || [ "${version}" = "null" ]; then
+            echo "FAIL: ${CRATE} is not a package in this workspace." >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${CRATE}-v${version}" >> "${GITHUB_OUTPUT}"
+          echo "${CRATE} is at ${version}; the tag will be ${CRATE}-v${version}"
+
+      # A tag that already exists means this version was already cut, and the
+      # right response is a refusal rather than a silent no-op or a forced
+      # move: an existing release tag may already have a release run behind
+      # it, and repointing it would detach that run from the bytes it
+      # verified. The shallow checkout carries no tags, so they are fetched
+      # explicitly — that keeps the local `git tag` below from silently
+      # shadowing an existing name — and origin is then asked directly as the
+      # authority. `git ls-remote --exit-code` exits 0 when the ref exists and
+      # 2 when it does not — the 2 is the good case here, and any OTHER exit
+      # is a network or auth failure that must not be read as "absent".
+      - name: The tag does not already exist
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch origin 'refs/tags/*:refs/tags/*'
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "FAIL: refs/tags/${TAG} already exists." >&2
+            echo "      This version has already been cut. Bump the manifest before cutting again." >&2
+            exit 1
+          fi
+          set +e
+          git ls-remote --exit-code origin "refs/tags/${TAG}" >/dev/null
+          rc=$?
+          set -e
+          case "${rc}" in
+            0)
+              echo "FAIL: refs/tags/${TAG} already exists on origin." >&2
+              echo "      This version has already been cut. Bump the manifest before cutting again." >&2
+              exit 1
+              ;;
+            2)
+              echo "ok: ${TAG} exists neither locally nor on origin"
+              ;;
+            *)
+              echo "FAIL: git ls-remote exited ${rc}; could not establish whether ${TAG} exists." >&2
+              exit 1
+              ;;
+          esac
+
+      # The one dependency edge: `tapes-harnesses` requires `tapes-capture` at
+      # a pinned version, and that version must already be live on crates.io
+      # for the publish to resolve. The publish itself enforces this — a
+      # wrong-order release fails at `cargo publish`, harming nothing — so
+      # this check is early notice, not a gate: it WARNS when the required
+      # `tapes-capture` is not live and lets the cut proceed. crates.io
+      # rejects requests with a blank User-Agent, hence the explicit one.
+      - name: Warn if the required tapes-capture is not on crates.io
+        if: inputs.crate == 'tapes-harnesses'
+        run: |
+          set -euo pipefail
+          req="$(cargo metadata --format-version 1 \
+            | jq -r '.packages[] | select(.name == "tapes-harnesses")
+                     | .dependencies[] | select(.name == "tapes-capture") | .req')"
+          # The requirement is declared as a bare version, which cargo
+          # normalises to a caret requirement; strip the operator to get the
+          # version the manifest names.
+          version="${req#^}"
+          # This check is advisory, so a crates.io outage must land in the
+          # warning branch rather than failing the step under `set -e` — a
+          # curl that cannot connect at all reports as "unreachable".
+          if ! code="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -A "tapes-crates cut-release workflow (github.com/${GITHUB_REPOSITORY})" \
+            "https://crates.io/api/v1/crates/tapes-capture/${version}")"; then
+            code="unreachable"
+          fi
+          if [ "${code}" = "200" ]; then
+            echo "ok: tapes-capture ${version} is live on crates.io"
+          else
+            echo "::warning::tapes-capture ${version} is not live on crates.io (${code}). The tapes-harnesses publish will fail until it is — release tapes-capture first."
+            {
+              echo "> [!WARNING]"
+              echo "> \`tapes-harnesses\` requires \`tapes-capture ${version}\`, and crates.io answered ${code} for it."
+              echo "> The publish will fail until that release is live. This cut proceeds anyway:"
+              echo "> the publish enforces the order; this is early notice."
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      # An App token rather than GITHUB_TOKEN, and not for scope: a tag pushed
+      # with the workflow's own GITHUB_TOKEN does not trigger other workflows
+      # (GitHub suppresses recursion), so release.yaml would never run on the
+      # tag and the cut would produce a release nobody verifies. The App's
+      # push is an ordinary external push, which triggers normally.
+      - name: Mint the App token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.PAPER_COMPUTE_CO_BOT_APP_ID }}
+          private-key: ${{ secrets.PAPER_COMPUTE_CO_BOT_PRIVATE_KEY }}
+
+      # A lightweight tag is enough: release.yaml re-resolves the name through
+      # `refs/tags/` and checks out the resolved commit explicitly, so nothing
+      # downstream reads tag-object metadata. The push URL carries the token,
+      # so it must never be echoed or written to the remote config.
+      - name: Create and push the tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git tag "${TAG}" "${GITHUB_SHA}"
+          git push "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "refs/tags/${TAG}"
+          echo "Pushed refs/tags/${TAG} at ${GITHUB_SHA}"
+
+      - name: Summary
+        env:
+          CRATE: ${{ inputs.crate }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Cut ${TAG}"
+            echo
+            echo "- crate: \`${CRATE}\`"
+            echo "- version: \`${VERSION}\`"
+            echo "- tag: \`${TAG}\`"
+            echo "- target: \`${GITHUB_SHA}\` (main tip at dispatch)"
+            echo
+            echo "The release workflow now runs against this tag; the upload publishes"
+            echo "only when the repository variable \`PUBLISH_ENABLED\` is \`true\`."
+            echo
+            echo "Release order: \`tapes-capture\` before \`tapes-harnesses\`;"
+            echo "\`tapes-client\` is independent. See docs/releasing.md."
+          } >> "${GITHUB_STEP_SUMMARY}"
