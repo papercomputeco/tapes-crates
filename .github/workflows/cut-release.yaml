@@ -46,7 +46,14 @@ jobs:
       # push tags a few steps from here. A commit SHA cannot be repointed, so
       # an upgrade becomes a visible diff — new SHA, new version comment —
       # instead of something that happens to a workflow nobody edited.
+      # `persist-credentials: false` is load-bearing: checkout otherwise
+      # stores its own read-only GITHUB_TOKEN as a git extraheader, and that
+      # header outranks the credentials in a push URL — so the tag push would
+      # authenticate as github-actions[bot] and be refused, no matter which
+      # token the push step supplies.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       # A release tag is a statement about main. A dispatch runs on whatever
       # ref the caller picked, and the ref picker is a convenience rather than
