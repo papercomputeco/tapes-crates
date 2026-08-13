@@ -4,20 +4,20 @@ The client-side Rust crates for [Tapes](https://tapes.dev): what a coding-agent
 harness needs in order to run under capture, what capture puts on the wire, and
 how a client reads the results back.
 
-Three crates, one workspace. They are consumed by `tapesctl` (open source) and
-by Paper Compute's `paper` CLI and `paperd` daemon, which is the point: parity
-between `tapesctl start` and `paper start` is **structural, not policed**,
-because the same code runs in both. A behaviour that lives here cannot differ
-between clients; a behaviour that lives in a client can, and that is the test
-for whether something belongs in this repository at all.
+Three published crates and one internal test-support crate, in one workspace.
+They are consumed by `tapesctl` and by closed-source clients alike, which is the
+point: parity between two clients' `start` commands is **structural, not
+policed**, because the same code runs in both. A behaviour that lives here
+cannot differ between clients; a behaviour that lives in a client can, and that
+is the test for whether something belongs in this repository at all.
 
 ## The public API boundary
 
-**All three crates are supported public API.** There is no internal-only crate
-here, and none of them is a private helper that happens to be published:
-`tapes-capture` is the capture protocol, `tapes-harnesses` is the harness
-knowledge, `tapes-client` is the read client. Each is meant to be depended on
-directly, on its own version, and each is versioned against the promise below.
+**All three published crates are supported public API.** None of them is a
+private helper that happens to be published: `tapes-capture` is the capture
+protocol, `tapes-harnesses` is the harness knowledge, `tapes-client` is the read
+client. Each is meant to be depended on directly, on its own version, and each
+is versioned against the promise below.
 
 Each crate owns one question. The boundaries below are the contract this
 repository publishes — a change that moves a responsibility across one of these
@@ -50,9 +50,25 @@ item-by-item mapping — including the one variant that was renamed — in that
 same README, under **Migrating from `tapes-read-contract` /
 `tapes-cassette-client`**.
 
-Nothing Paper-specific belongs in any of the three: no auth headers, no
-endpoints, no branding in behaviour. Delivery, auth, and retry live in each
+Nothing specific to one consumer belongs in any of the three: no auth headers,
+no endpoints, no branding in behaviour. Delivery, auth, and retry live in each
 consumer.
+
+### The fourth crate
+
+The repository contains a fourth crate, `tapes-mock-upstream`. It is internal
+test support — a streaming mock provider upstream, a mock ingest server, and the
+scripted recipes behind the harness regression matrix — and it is never
+released: the release workflow accepts tags for the three published crates only,
+and the crate itself sets `publish = false`. It is a crate rather than a test
+module because the matrix launches real harness binaries *through*
+`tapes-harnesses` rather than inside it, and an integration test in a sibling
+crate can only reach items the tested crate exports — so a feature gate would
+have made a mock HTTP server part of `tapes-harnesses`' public surface, and
+feature unification would then link it into consumers' production builds.
+Consumers who want it for their own tests take it as a git dependency under
+`[dev-dependencies]`; it makes no stability promise. The reasoning is in
+[`crates/tapes-mock-upstream/README.md`](crates/tapes-mock-upstream/README.md).
 
 ## Publishing
 

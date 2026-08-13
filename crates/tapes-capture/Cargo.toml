@@ -21,6 +21,23 @@ description = "Harness-agnostic capture primitives: the X-Tapes-* envelope produ
 keywords = ["tapes", "capture", "observability", "telemetry", "agent"]
 categories = ["development-tools::debugging", "network-programming", "encoding"]
 
+# docs.rs renders with default features unless told otherwise, and
+# `envelope-fixtures` is off by default and must stay that way. Without this
+# block the fixture reader — public, documented, and the thing the README tells
+# a consumer to enable — would not appear on the crate's documentation at all.
+#
+# This changes only what docs.rs builds. A consumer's feature resolution is
+# untouched: `all-features` here is not a default anywhere else.
+#
+# `--cfg docsrs` is set so that a later opt-in to rustdoc's `doc_cfg` can mark
+# gated items with an "available on crate feature ..." badge. Nothing reads the
+# cfg today: `doc_cfg` is still unstable, and this workspace pins stable, so an
+# attribute depending on it could not be built or checked here. Until it can be,
+# the gating is stated in prose on the gated module itself.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [lib]
 name = "tapes_capture"
 path = "src/lib.rs"

@@ -36,7 +36,7 @@
 //!   model that errored on one would let a single empty projection blank an
 //!   entire page. Scalars stay strict: the contract declares no nullable
 //!   scalar, so a null in one is a real disagreement worth surfacing.
-//! - **Response models are [`non_exhaustive`], request models are not.** A
+//! - **Response models are `#[non_exhaustive]`, request models are not.** A
 //!   response is the server's to grow; a request body is the caller's to build,
 //!   and a body nobody outside this crate could construct would be useless.
 //!   This holds for the *components* of a request body too — an inner struct

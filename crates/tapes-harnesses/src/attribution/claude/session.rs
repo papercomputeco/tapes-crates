@@ -1,7 +1,7 @@
 //! Verbatim shape of `~/.claude/sessions/<pid>.json`.
 //!
 //! The Claude harness writes one of these files per active `claude`
-//! process. paperd reads them to map a peer PID (from
+//! process. A capture client reads them to map a peer PID (from
 //! [`tapes_capture::peer_pid::lookup`]) into the session-identifying metadata
 //! that goes onto the outbound `X-Tapes-*` envelope.
 //!
@@ -32,8 +32,8 @@ pub struct ClaudeSessionFile {
     /// Cross-checked against the filename (`<pid>.json`); a mismatch
     /// would indicate a stale file from a crashed harness.
     pub pid: i64,
-    /// Stable session identifier; for Claude, a UUID. This is the value
-    /// paperd attaches as `X-Tapes-Harness-Session-Id`.
+    /// Stable session identifier; for Claude, a UUID. This is the value a
+    /// capture client attaches as `X-Tapes-Harness-Session-Id`.
     pub session_id: String,
     /// Working directory of the `claude` process at start. Attached as
     /// `X-Tapes-Cwd` and used to find the transcript file for

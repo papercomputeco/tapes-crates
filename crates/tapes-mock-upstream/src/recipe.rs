@@ -194,7 +194,7 @@ pub struct OneShotRecipe {
     /// manifest's input.
     pub version_args: &'static [&'static str],
     /// The argv that runs one non-interactive turn. Exactly one element must be
-    /// [`PROMPT_SLOT`], which is replaced by the prompt.
+    /// the prompt slot sentinel, which is replaced by the prompt.
     pub argv: &'static [&'static str],
     /// The upstream surface the turn lands on.
     pub surface: Surface,

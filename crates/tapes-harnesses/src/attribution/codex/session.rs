@@ -61,8 +61,25 @@ pub fn rollout_id(headers: &HeaderMap) -> Option<&str> {
     })
 }
 
+/// One Codex rollout's `session_meta` row, as read off disk.
+///
+/// This is the identity model for the Codex lane. Read it with [`read`]; the
+/// two id fields below are the distinction everything else depends on, and
+/// getting them the wrong way round attributes every subagent turn to its
+/// parent.
+///
+/// Every field except [`Self::session_id`], [`Self::timestamp`], and
+/// [`Self::path`] is optional, because a rollout written by an older Codex
+/// simply omits keys. An absent field is "not stated", never "empty" — the
+/// disambiguation policy in [`super::select`] treats the two differently.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexSessionFile {
+    /// This rollout's own id, from `session_meta.payload.id`.
+    ///
+    /// For a root rollout it is also the session id Codex sends on the wire.
+    /// For a subagent rollout it is the *thread's* id, and the session the user
+    /// started is [`Self::root_session_id`] instead — see that field for why
+    /// the two are not interchangeable.
     pub session_id: String,
     /// Root Codex session that owns this thread, when the rollout names one.
     ///
@@ -82,14 +99,53 @@ pub struct CodexSessionFile {
     /// `payload.source.subagent`. `None` for a root rollout, and also for a
     /// subagent whose source names no kind in a shape we recognise.
     pub subagent_kind: Option<String>,
+    /// When Codex started this rollout, from `session_meta.payload.timestamp`.
+    ///
+    /// The rollout's *own* claim about its start, which is what makes it usable
+    /// for ordering candidates: it does not move when the file is later
+    /// appended to, unlike [`Self::modified_at`].
     pub timestamp: OffsetDateTime,
+    /// The transcript file's mtime, or `None` when it could not be read.
+    ///
+    /// This is the liveness signal — a rollout Codex is still writing to has a
+    /// recent one — which is a different question from when the session began.
+    /// Both are needed: [`super::select`] narrows by liveness and orders by
+    /// start.
     pub modified_at: Option<OffsetDateTime>,
+    /// Working directory Codex was launched in, when the rollout records one.
     pub cwd: Option<String>,
+    /// Which Codex front end wrote the rollout (`codex-tui`, for instance).
+    ///
+    /// Reported as-is. It is the same value the harness sends as envelope
+    /// metadata, so a consumer can cross-check the two.
     pub originator: Option<String>,
+    /// The Codex version string that wrote this rollout.
     pub cli_version: Option<String>,
+    /// The `source` value flattened to a string.
+    ///
+    /// Codex writes either a bare string (`"cli"`) or an object describing a
+    /// subagent spawn. Both are flattened here for reporting;
+    /// [`Self::subagent_kind`] is the structured read of the same value, and it
+    /// is the one to branch on.
     pub source: Option<String>,
+    /// What started this thread — `"user"` for a root rollout, `"subagent"` for
+    /// a spawned one.
+    ///
+    /// A rollout whose lineage fields happen to match a request but which does
+    /// not declare itself a subagent here is a resumed or forked session rather
+    /// than a spawned thread, which is a distinction the child-shape join in
+    /// [`crate::attribution`] depends on.
     pub thread_source: Option<String>,
+    /// The model provider id Codex was launched against.
+    ///
+    /// Set by whatever configured the launch, so it is how a capture client
+    /// separates a session running through *its* proxy from one the user is
+    /// running against something else. Compare it with
+    /// [`Self::has_model_provider`] rather than by equality — see
+    /// [`crate::attribution::CodexProviderFilter`] for why the match is
+    /// exact-or-suffixed.
     pub model_provider: Option<String>,
+    /// Absolute path of the transcript file this was read from.
     pub path: PathBuf,
 }
 

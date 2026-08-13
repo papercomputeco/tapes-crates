@@ -1,7 +1,7 @@
 //! The transcript-lane wire payload.
 //!
-//! Extracted from paperd's `transcript_upload::client`, minus the HTTP call. The
-//! shape is a cross-language contract with tapes' Go server
+//! Extracted from a daemon client's transcript uploader, minus the HTTP call.
+//! The shape is a cross-language contract with tapes' Go server
 //! (`ingest.TranscriptPayload` / `pkg/sessions.IngestEnvelope`) and the Go
 //! reference client (`pkg/backfill/transcript_upload.go`):
 //!
@@ -32,15 +32,15 @@
 //! `transcript:<sid>:<agent|main>:<sha256(records)[..8]>`, so re-pushing
 //! unchanged files answers `{"deduped": true}` and grown files append a new
 //! version. That is what makes the eager trigger in [`super::trigger`] and
-//! sweep-on-start in [`super::sweep`] safe.
+//! sweep-on-start in [`super::sweep`](mod@super::sweep) safe.
 //!
 //! # What stays with the client
 //!
 //! Delivery: the HTTP client, the request timeout, the response and dedup-flag
-//! parsing, and above all **auth**. paperd rides its own `X-Paper-Auth` channel
-//! so the Paper cloud edge admits the request; a standalone client authenticates
-//! differently or not at all. None of that is harness knowledge, and the
-//! `X-Paper-Auth` header in particular is explicitly not part of the tapes
+//! parsing, and above all **auth**. A client fronted by its own cloud edge rides
+//! a bespoke auth header of its own so that edge admits the request; a
+//! standalone client authenticates differently or not at all. None of that is
+//! harness knowledge, and no such consumer-private header is part of the tapes
 //! contract.
 
 use serde::Serialize;
@@ -56,7 +56,8 @@ pub const INGEST_PATH: &str = "/v1/ingest/transcript";
 /// A client's own session registry will carry more than this (a pid to watch,
 /// bookkeeping for backoff); this is the subset that reaches the wire. Kept
 /// owned rather than borrowed so a client can build one from a swept transcript
-/// (see [`super::sweep`]) as easily as from a live registry entry.
+/// (see [`super::sweep`](mod@super::sweep)) as easily as from a live registry
+/// entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptSession {
     /// Which harness produced it — `claude` today. Should match the
@@ -70,10 +71,14 @@ pub struct TranscriptSession {
     pub harness_version: Option<String>,
     /// Working directory the harness ran in, when known.
     pub cwd: Option<String>,
-    /// Organization id, or empty. paperd leaves this empty deliberately: its
-    /// `paper_org_id` is a WorkOS id (`org_…`) that the server's envelope
-    /// validation rejects (it requires a UUID), and the wire-capture path derives
-    /// org identity from the JWT at the edge rather than from this envelope.
+    /// Organization id, or empty.
+    ///
+    /// The server's envelope validation requires a UUID here, so a client whose
+    /// own organization identifier is some other shape leaves this empty
+    /// deliberately rather than sending a value that would be rejected. That is
+    /// not a loss: on a deployment with an authenticating edge, the wire-capture
+    /// path derives org identity from the validated credential rather than from
+    /// this envelope.
     pub org_id: String,
     /// Acting subject, or empty. A standalone client conventionally sets
     /// `local:<os-username>`; on the platform the cloud edge stamps it from
@@ -254,8 +259,8 @@ mod tests {
     /// same inputs: empty-string identity fields present, agent fields absent,
     /// records verbatim.
     ///
-    /// Carried over from paperd's `main_payload_matches_go_client_shape` — same
-    /// expected bytes.
+    /// Carried over from the extracted uploader's shape test — same expected
+    /// bytes.
     #[test]
     fn main_payload_matches_go_client_shape() {
         let session = session();
@@ -269,7 +274,7 @@ mod tests {
         );
     }
 
-    /// Carried over from paperd's `subagent_payload_carries_fork_metadata`.
+    /// Carried over from the extracted uploader's fork-metadata test.
     #[test]
     fn subagent_payload_carries_fork_metadata() {
         let session = session();
@@ -287,7 +292,7 @@ mod tests {
     /// Missing `meta.json` degrades to empty strings; Go's `omitempty` drops
     /// them and so must we.
     ///
-    /// Carried over from paperd's `subagent_payload_omits_empty_meta_fields`.
+    /// Carried over from the extracted uploader's empty-meta test.
     #[test]
     fn subagent_payload_omits_empty_meta_fields() {
         let session = session();
@@ -303,8 +308,9 @@ mod tests {
     }
 
     /// A caller that *does* have identity to declare gets it on the wire — the
-    /// standalone-client case paperd never exercised. The fields stay present
-    /// either way, which is what the Go server's non-`omitempty` decode expects.
+    /// standalone-client case the extracted uploader never exercised. The fields
+    /// stay present either way, which is what the Go server's non-`omitempty`
+    /// decode expects.
     #[test]
     fn identity_fields_are_always_present_and_carry_a_subject_when_set() {
         let session = TranscriptSession::new("claude", "sid").with_auth_subject("local:alice");

@@ -7,7 +7,8 @@
 //!
 //! Ported from the Go `tapes start opencode` arm in `cmd/tapes/start/start.go`
 //! (`configureOpenCode`, `configureOpenCodeProvider`, `openCodeProviderMetas`,
-//! `loadUserOpenCodeConfig`). paper never supported opencode, so unlike
+//! `loadUserOpenCodeConfig`). The daemon client this crate also draws from never
+//! supported opencode, so unlike
 //! [`super::claude`] and [`super::codex`] this recipe has a single upstream
 //! implementation — the knowledge here is a port, not a reconciliation of two.
 //!

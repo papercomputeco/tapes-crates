@@ -1,71 +1,39 @@
-//! One client for the whole tapes read surface.
+#![doc = include_str!("../README.md")]
 //!
-//! # What this crate is
+//! # Module map
 //!
-//! A tapes deployment answers two kinds of question. Some operations are a
-//! *published contract*: sealed in the tapes repository, attached to releases
-//! as an OpenAPI document, and known to a client at build time. Others belong
-//! to *cassettes* — independently built API extensions that core
-//! reverse-proxies, whose set is deployment configuration and is therefore
-//! discovered when a process starts.
+//! The README above is the manual: the design rule, the two surfaces, the
+//! feature table, how to authenticate, and the migration tables from the two
+//! crates this one absorbed. This is the same set of seams as links.
 //!
-//! They are different facts about a server, and they used to be different
-//! crates. That was the mistake this crate corrects. The two surfaces need the
-//! same things — send a request, read a status, decode a body, follow a cursor,
-//! join a path onto a base — and each answer that got written twice drifted:
-//! two error vocabularies for one API, two spellings of a URL failure, a
-//! non-success status that was rich on one side and absent on the other, and a
-//! conditional fetch that one path could not express at all.
+//! **The floor**, one implementation each and shared by both surfaces:
+//! [`transport`] (the seam), [`error`] (one taxonomy), [`decode`] (one policy),
+//! [`page`] (one cursor convention), [`path`] (one join, two modes).
 //!
-//! # The shape
+//! **The two surfaces:** [`core`] is the sealed contract — [`core::contract`]
+//! reduces the vendored document to an operation table, [`core::coverage`]
+//! gates operations, [`core::models`] holds the shapes with
+//! [`core::models::coverage`] gating them, and [`core::CoreClient`] is the call
+//! surface. [`cassettes`] is the discovered equivalent.
 //!
-//! ```text
-//! transport ── the seam: one trait, request in, status + bytes out
-//! http ─────── the HTTP engine, with the credential half left to a hook
-//! error ────── one taxonomy: Contract / Transport / ApiStatus / Decode
-//! decode ───── one policy: bytes to document, document to caller's type
-//! page ─────── one cursor convention
-//! path ─────── one join, in the two modes deployments actually need
-//!    │
-//!    ├── core/ ────── the SEALED surface: operation table AND models,
-//!    │                both reduced from the vendored contract
-//!    └── cassettes/ ─ the DISCOVERED surface, table from a live document
-//! ```
+//! **Behind features:** [`cli`] synthesizes clap commands from a discovered
+//! surface; [`http`] is the HTTP engine plus [`http::HttpAuth`], the credential
+//! hook that replaced whole-transport implementations.
 //!
-//! **The design rule:** [`core`] and [`cassettes`] are thin method tables.
-//! Everything that could drift lives once in the floor above them. A sealed
-//! call and a discovered call go through the identical pipeline; the only
-//! difference is where the operation table came from. When that stops being
-//! true, the crate has stopped doing its job.
+//! Two gates are easy to conflate and fail differently. [`core::coverage`]
+//! gates *operations*: it fails a build when a contract bump adds an operation
+//! the client neither exposes nor allow-lists. [`core::models::coverage`] gates
+//! *shapes*: it synthesises a document from each schema, round-trips it through
+//! the model, and names by path anything the model drops. An operation gap is a
+//! call you cannot make; a shape gap is a field you silently lose.
 //!
-//! # What is not here
+//! # Names
 //!
-//! No notion of a tenant, and no opinion about how a response is rendered.
-//!
-//! Authentication is *half* here, which is the distinction that matters. The
-//! crate holds no credential and never will — but the HTTP around one is not a
-//! consumer's decision either, and leaving all of it outside meant every
-//! consumer rewrote request building, redirect policy, streaming, and error
-//! mapping to attach one header. [`http::HttpEngine`] owns that half;
-//! [`http::HttpAuth`] is the small trait a consumer writes instead of a whole
-//! transport. [`http::DirectHttp`] is the same engine with no credential at
-//! all, and [`transport::TapesTransport`] is still open to a consumer whose
-//! transport is not HTTP.
-//!
-//! Response *shapes* used to be outside too, and that was the same mistake:
-//! the sealed contract's shapes are published facts, so [`core::models`] holds
-//! them and a gate holds them to the document. A caller that wants a document
-//! rather than a model still says so — see [`decode`].
-//!
-//! It also does not hold the coverage tables. Those describe one client's
-//! surface; see [`core::coverage`] for why sharing them would break the gate.
-//!
-//! # Features
-//!
-//! - `cli` (default) — the generated clap surfaces. A consumer embedding this
-//!   in a GUI takes `--no-default-features` and never compiles clap.
-//! - `direct-http` (default) — [`http::DirectHttp`], an unauthenticated
-//!   transport for one tapes server.
+//! The repository is `tapes-crates`; this crate is one of its four members.
+//! `tapes` is a different repository entirely — the server this client reads
+//! from. Note also that [`core`](mod@crate::core) is a module here as well as a
+//! Rust crate, and that [`cassettes::invoke`](mod@crate::cassettes::invoke)
+//! names both a module and a function inside it.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

@@ -10,8 +10,8 @@
 //! * **The hook command line.** Each hook runs an executable that receives
 //!   the lifecycle payload on stdin and reports it to the consumer's local
 //!   runtime. Which executable, and how it is located without depending on
-//!   the app's `PATH`, is deployment knowledge — the branded launcher script
-//!   paper ships is exactly the part that cannot live here.
+//!   the app's `PATH`, is deployment knowledge — the branded launcher script a
+//!   consumer ships is exactly the part that cannot live here.
 //! * **The plugin's identity.** The name, description, and developer strings
 //!   Codex shows the user must say who is actually asking for hook trust.
 //!
@@ -19,7 +19,8 @@
 //! the event set are crate-owned (and pinned against the attribution module's
 //! event list), while the command and identity are slots the consumer fills
 //! through [`render_hooks_manifest`] and [`render_plugin_manifest`]. Both
-//! installers — paper's today, a tapesctl installer later — render the same
+//! installers — a closed-source one today, a tapesctl installer later — render
+//! the same
 //! bytes around their own strings, which is the same anti-drift bargain the
 //! pi asset struck, adapted to a plugin that cannot be vendor-complete.
 //!

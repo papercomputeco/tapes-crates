@@ -34,11 +34,11 @@
 //! # Why this is here rather than in a client
 //!
 //! Every line above is a statement about Codex's own on-disk format, and it was
-//! true of exactly one client for as long as only paperd read rollouts. A
+//! true of exactly one client for as long as only one client read rollouts. A
 //! standalone capture of the same Codex session then reconstructed into a
-//! *flatter* tree than the platform capture of it — the open-source path
-//! observably capturing less than the commercial one for the same harness. The
-//! derivation belongs wherever both clients can reach it, which is here.
+//! *flatter* tree than that client's capture of it — two capture paths
+//! observably disagreeing about the same harness. The derivation belongs
+//! wherever every client can reach it, which is here.
 //!
 //! # Where it sits
 //!

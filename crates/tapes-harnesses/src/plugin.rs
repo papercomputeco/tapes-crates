@@ -70,6 +70,36 @@
 //! is nothing to collide with. Per-consumer variable names buy nothing once the
 //! second copy is gone, and cost a launcher that can set a variable its
 //! installed asset does not read.
+//!
+//! ## All seven variables
+//!
+//! The contract is split across two crates, and this is the only place that
+//! lists it whole — a consumer wiring up a launch needs every row. The split is
+//! the crate boundary doing its job: the first four are *protocol*, true of any
+//! capture proxy and so owned by [`tapes_capture::gateway`]; the last three are
+//! *presentation*, which is a product's own and so lives with the artifact that
+//! reads them.
+//!
+//! | variable | const | set by | meaning |
+//! | --- | --- | --- | --- |
+//! | `TAPES_GATEWAY_URL` | [`GATEWAY_URL_ENV`] | launcher | Where to send the harness's LLM traffic. **Unset means "not captured"** — the artifact leaves the harness's own endpoints alone, which is what keeps a global install from touching sessions nobody launched under capture. |
+//! | `TAPES_GATEWAY_SCHEMA` | [`tapes_capture::gateway::GATEWAY_SCHEMA_ENV`] | launcher | Which upstream schema the proxy fronts (`anthropic`, `openai`). A display and diagnostic hint; an artifact must not gate the redirect on it. |
+//! | `TAPES_GATEWAY_NONCE` | [`GATEWAY_NONCE_ENV`] | launcher | The per-launch secret. Read once at load and deleted from the process environment immediately, so the harness's own subprocesses never receive it. |
+//! | `TAPES_GATEWAY_PROVIDER_ROUTES` | [`tapes_capture::gateway::GATEWAY_PROVIDER_ROUTES_ENV`] | launcher | Set to `1` when the proxy serves each provider on its own route. Unset is the single-upstream shape, which is what a launcher predating this variable gets. |
+//! | `TAPES_GATEWAY_LABEL` | [`pi::GATEWAY_LABEL_ENV`] | launcher | The product word shown in pi's status entry. |
+//! | `TAPES_GATEWAY_LABEL_SUFFIX` | [`pi::GATEWAY_LABEL_SUFFIX_ENV`] | launcher | Appended to the status label after the active schema. |
+//! | `TAPES_GATEWAY_REMEDY` | [`pi::GATEWAY_REMEDY_ENV`] | launcher | The sentence appended to a schema-mismatch warning — the diagnosis is the asset's, the remedy is the launcher's, because only it knows which command switches its proxy. |
+//!
+//! Every one of the seven is optional, and every one has a defined unset
+//! behaviour. That is not politeness: an artifact installs globally and loads
+//! for every session on the machine, so "nothing set" has to be a working
+//! configuration rather than an error.
+//!
+//! One request the harness makes on its own behalf goes back the other way:
+//! [`tapes_capture::gateway::GATEWAY_NONCE_HEADER`] is the request header in
+//! which the artifact echoes the nonce, and
+//! [`tapes_capture::gateway::nonce_matches`] is what the proxy compares it
+//! with.
 
 use std::path::{Path, PathBuf};
 
@@ -204,7 +234,7 @@ impl PluginArtifact {
     /// constrains the order — because the state that must never be reached is
     /// *both files present*, and writing first reaches it the moment a removal
     /// fails. So the bytes are staged first under a name the harness's glob
-    /// cannot match ([`Self::staged_path`]), the superseded siblings are
+    /// cannot match, the superseded siblings are
     /// removed second, and the staged file is renamed onto its final name last.
     /// Each way that can fail leaves at most one extension where the harness
     /// looks:
@@ -280,8 +310,9 @@ impl PluginArtifact {
 /// What a product says differently it now says through the environment of its
 /// own launch — see [`pi`].
 ///
-/// [`Self::superseded_file_names`] carries the branded name that model left on
-/// disk, because an upgrading user has one and pi would go on loading it.
+/// [`PluginArtifact::superseded_file_names`] carries the branded name that
+/// model left on disk, because an upgrading user has one and pi would go on
+/// loading it.
 pub const PI_GATEWAY_EXTENSION: PluginArtifact = PluginArtifact {
     file_name: "tapes-gateway.ts",
     install_dir: &[".pi", "agent", "extensions"],
@@ -415,7 +446,7 @@ mod tests {
         );
     }
 
-    /// **The PCC-1125 property.** pi loads every file in its extension
+    /// **The one-artifact property.** pi loads every file in its extension
     /// directory into one process, so two clients installing "their" copy is
     /// two readers contending over one launch's nonce and over the same
     /// provider registrations — and the loser registers anyway, unattributed.
@@ -448,10 +479,11 @@ mod tests {
     }
 
     /// **The migration, and the half without which the fix reaches nobody.**
-    /// Every user who ran an older `paper` has `paper-gateway.ts` sitting in
-    /// pi's extension directory. Writing the new file next to it leaves two
-    /// extensions loaded and the bug exactly as it was — with the fix installed,
-    /// which is worse than not shipping it. So installing removes it.
+    /// Every user who ran a client from before the assets were unified has that
+    /// client's branded extension sitting in pi's directory. Writing the new
+    /// file next to it leaves two extensions loaded and the bug exactly as it
+    /// was — with the fix installed, which is worse than not shipping it. So
+    /// installing removes the superseded names.
     #[test]
     fn installing_the_pi_extension_removes_a_superseded_branded_copy() {
         let home = tempfile::tempdir().unwrap();
@@ -644,8 +676,8 @@ mod tests {
     /// nobody sets — a silently uncaptured session, not a build failure.
     ///
     /// Pinned as the whole `const … = "…";` declaration rather than as a
-    /// substring. A per-product namespacing of these names was the shape of an
-    /// earlier attempt at PCC-1125, and a `contains` accepts an asset that
+    /// substring. Per-product namespacing of these names was the shape of an
+    /// earlier attempt at the same fix, and a `contains` accepts an asset that
     /// keeps such a name *alongside* the shared one — which is a launcher and
     /// an extension agreeing on a variable nobody else sets.
     #[test]

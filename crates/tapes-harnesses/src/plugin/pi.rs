@@ -133,7 +133,8 @@ mod tests {
             .collect()
     }
 
-    /// **The PCC-1125 fix, stated as a property.** The asset is not a template
+    /// **The one-artifact fix, stated as a property.** The asset is not a
+    /// template
     /// and has no consumer-varying bytes: what any client installs is this
     /// file, so a second installed reader of the pi extension directory cannot
     /// exist for the copies to contend over.
@@ -215,7 +216,8 @@ mod tests {
         );
     }
 
-    /// **The property paperctl's gateway depends on.** A launcher that sets
+    /// **The property an internally routing gateway depends on.** A launcher
+    /// that sets
     /// nothing must get the requests it got before this existed — same base
     /// URL, same path — because a gateway that routes internally would receive
     /// a labelled path it has no route for and fail every turn.
@@ -324,13 +326,14 @@ mod tests {
     }
 
     /// The status label a product sees, still built the way it was before the
-    /// slots became environment reads. Paper's label is `paper:anthropic+codex`
-    /// exactly, and it is a string users read in a status bar and match on: the
-    /// pieces, their order, and the separator are all observable.
+    /// slots became environment reads. For a product whose label is `acme`, the
+    /// composed value is `acme:anthropic+codex` exactly — a string users read in
+    /// a status bar and match on, so the pieces, their order, and the separator
+    /// are all observable.
     ///
     /// The expected value is reconstructed from the template literal *in the
     /// asset*, so reordering the pieces there fails here instead of quietly
-    /// producing `anthropic:paper+codex`.
+    /// producing `anthropic:acme+codex`.
     #[test]
     fn the_status_label_is_composed_exactly_as_it_was_when_it_was_rendered() {
         let opening = "ctx.ui.setStatus(statusLabel, `";
@@ -342,12 +345,12 @@ mod tests {
 
         assert_eq!(pattern, "${statusLabel}:${activeSchema}${statusSuffix}");
         let label = pattern
-            .replace("${statusLabel}", "paper")
+            .replace("${statusLabel}", "acme")
             .replace("${activeSchema}", "anthropic")
             .replace("${statusSuffix}", "+codex");
         assert_eq!(
-            label, "paper:anthropic+codex",
-            "the label a paper launch presents has changed"
+            label, "acme:anthropic+codex",
+            "the label a consumer's launch presents has changed"
         );
     }
 

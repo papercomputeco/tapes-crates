@@ -47,10 +47,13 @@ use tapes_capture::envelope::{
 
 /// The metadata key carrying the consumer's per-request correlation id.
 ///
-/// The spelling is frozen: tapes' raw-turn attribution-repair query joins a
-/// stored `harness_metadata` blob back to a proxy observation on exactly this
-/// key. It reads `paper` because paperd minted it, and renaming it here would
-/// silently orphan every turn a consumer could otherwise still repair.
+/// The spelling is frozen, and deliberately not tidied: tapes' raw-turn
+/// attribution-repair query joins a stored `harness_metadata` blob back to a
+/// proxy observation on exactly this key. The name carries the branding of the
+/// client that first minted it, and every turn already in a deployment's
+/// history carries that name too — so renaming it here would silently orphan
+/// every turn a consumer could otherwise still repair. It is a wire constant,
+/// read literally on both sides, not a description of who is sending it.
 pub const REQUEST_CORRELATION_METADATA_KEY: &str = "paperProxyRequestId";
 
 /// The value a rollout transcript records in `thread_source` for a sub-thread.

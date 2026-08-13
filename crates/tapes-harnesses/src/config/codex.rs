@@ -1,9 +1,10 @@
 //! The codex `config.toml` provider-patch grammar.
 //!
-//! Ported from paper's `cli/integrations.rs` (`merge_codex_config`,
-//! `ensure_table`, `remove_obsolete_paper_executable_env`, and the read-back
-//! half of `infer_codex_integration_intent`) — the code that has been
-//! configuring the Codex app and CLI against a capture proxy in the field.
+//! Ported from a closed-source installer's codex integration — the merge, the
+//! table-creation helper, the obsolete-override scrub, and the read-back half
+//! of its intent inference. That is the code that has been configuring the
+//! Codex app and CLI against a capture proxy in the field, and this module is
+//! the harness-grammar part of it with the deployment parts left behind.
 //! The `-c` argv spelling of the same provider declaration lives in
 //! [`crate::launch::codex`]; this is its persistent form, written into
 //! `$CODEX_HOME/config.toml` so the Codex *app* — which nobody launches with
@@ -26,28 +27,29 @@
 //!   body is opaque to a capture proxy, in this grammar exactly as in the
 //!   launch recipe's;
 //! * removal of any caller-named `shell_environment_policy.set` overrides —
-//!   the hook a consumer uses to retire config *it* wrote in earlier
-//!   versions (paper scrubs its obsolete `PAPER_EXECUTABLE` override here).
+//!   the hook a consumer uses to retire config *it* wrote in earlier versions.
+//!   The installer this grammar came from scrubs an obsolete executable-path
+//!   override through exactly this hook.
 //!
 //! Everything else in the file is the user's and survives byte-for-byte.
 //!
 //! # Fidelity: comments, ordering, and idempotence
 //!
-//! The grammar edits via `toml_edit`, as paper does, so the user's comments,
-//! whitespace, and key order are preserved wherever the patch does not
-//! rewrite a value. Keys the patch (re)sets keep their existing position;
-//! keys and tables the patch introduces are appended in the positions
-//! `toml_edit` chooses. This is exactly paper's fidelity — no more:
+//! The grammar edits via `toml_edit`, as the installer it came from does, so
+//! the user's comments, whitespace, and key order are preserved wherever the
+//! patch does not rewrite a value. Keys the patch (re)sets keep their existing
+//! position; keys and tables the patch introduces are appended in the positions
+//! `toml_edit` chooses. That is the whole of the fidelity promise — no more:
 //! formatting *inside* a value the patch owns is normalised to `toml_edit`'s
 //! default rendering when the value changes, and a freshly created
-//! `model_providers` container renders a bare `[model_providers]` header
-//! (paper inserts explicit tables; see the canonical fixture below).
+//! `model_providers` container renders a bare `[model_providers]` header rather
+//! than an explicit table (see the canonical fixture below).
 //!
-//! Idempotence is textual, and [`is_provider_applied`] is deliberately the
-//! same probe paper's reconciler uses: apply the patch to the current text
-//! and compare bytes. A config is "applied" exactly when reapplying would
-//! change nothing, which is also the condition under which paper skips its
-//! restart-required notice.
+//! Idempotence is textual, and [`is_provider_applied`] is deliberately the same
+//! probe a reconciling installer uses: apply the patch to the current text and
+//! compare bytes. A config is "applied" exactly when reapplying would change
+//! nothing, which is also the condition under which an installer can skip
+//! telling the user to restart.
 //!
 //! # What is deliberately *not* here
 //!
@@ -57,13 +59,13 @@
 //!   [`crate::launch::codex`] for the conventions).
 //! * **Filesystem and environment.** Resolving `$CODEX_HOME`, reading the
 //!   file, atomic writes, and restart messaging stay with the consumer.
-//! * **Removal side-cars.** paper's installer also writes Paper-owned
+//! * **Removal side-cars.** The installer this came from also writes its own
 //!   handoff and intent files next to `config.toml`; those are deployment
-//!   state, not harness grammar, and stay in paper.
-//! * **An uninstall precedent.** paper has no uninstall path today;
-//!   [`remove_provider`] is defined here (conservatively) rather than ported,
-//!   so all three consumers grow the same one. See its docs for exactly what
-//!   it leaves behind.
+//!   state, not harness grammar, and stay with that consumer.
+//! * **An uninstall precedent.** No consumer had an uninstall path to port, so
+//!   [`remove_provider`] is defined here — conservatively — rather than
+//!   inherited, and every consumer grows the same one. See its docs for exactly
+//!   what it leaves behind.
 
 use snafu::{ResultExt, Snafu};
 use toml_edit::{Document, Item, Table, value};
@@ -80,8 +82,9 @@ const WIRE_API: &str = "responses";
 ///
 /// Build with [`CodexProviderPatch::new`] and refine with the builder-style
 /// setters, mirroring [`crate::launch::CodexRecipe`]. Identity, branding, and
-/// endpoint are all the caller's: paper passes its `paper-openai` id, its
-/// display name, and a paperd route; tapesctl passes its own.
+/// endpoint are all the caller's: each consumer passes its own provider id,
+/// its own display name, and a route its own proxy serves. Nothing here
+/// supplies a default for any of the three.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexProviderPatch {
     provider_id: String,
@@ -152,10 +155,9 @@ impl CodexProviderPatch {
     ///
     /// This is the consumer's hook for retiring environment overrides *it*
     /// wrote in earlier versions of its own installer; overrides the user
-    /// wrote are never touched unless named here. Ported from paper's
-    /// `remove_obsolete_paper_executable_env`, with the name — paper's is
-    /// `PAPER_EXECUTABLE` — moved to the caller so the grammar stays
-    /// vendor-neutral.
+    /// wrote are never touched unless named here. Ported from an installer
+    /// that scrubbed one hard-coded executable-path override, with the name
+    /// moved to the caller so the grammar stays vendor-neutral.
     pub fn with_scrubbed_env_override(mut self, name: impl Into<String>) -> Self {
         self.scrub_env_overrides.push(name.into());
         self
@@ -164,10 +166,9 @@ impl CodexProviderPatch {
 
 /// Patch `patch`'s provider into `config_text`, returning the new text.
 ///
-/// An empty (or whitespace-only) input is a fresh document, exactly as in
-/// paper's `merge_codex_config`; the caller maps "file does not exist" to
-/// `""`. The result is canonical for the patch: applying it to its own
-/// output changes nothing.
+/// An empty (or whitespace-only) input is a fresh document; the caller maps
+/// "file does not exist" to `""`. The result is canonical for the patch:
+/// applying it to its own output changes nothing.
 pub fn apply_provider(
     config_text: &str,
     patch: &CodexProviderPatch,
@@ -229,8 +230,9 @@ pub fn apply_provider(
 /// Remove `provider_id`'s declaration from `config_text`, returning the new
 /// text.
 ///
-/// paper has no uninstall path, so this is defined here — conservatively —
-/// rather than ported. It removes only what is unambiguously the patch's:
+/// No consumer had an uninstall path to port, so this is defined here —
+/// conservatively — rather than inherited. It removes only what is
+/// unambiguously the patch's:
 ///
 /// * the `model_providers.<id>` table, and the `model_providers` container
 ///   itself when that removal leaves it empty;
@@ -282,11 +284,10 @@ pub fn remove_provider(config_text: &str, provider_id: &str) -> Result<String, C
 
 /// Is `patch` already fully applied to `config_text`?
 ///
-/// The probe is textual, matching paper's reconciler byte-for-byte: applied
-/// means [`apply_provider`] would return the input unchanged. A malformed
-/// config is an error, not `false` — paper's reconcile fails on it too, and
-/// an installer must surface that rather than "helpfully" rewriting a file
-/// it could not parse.
+/// The probe is textual, matching the reconciler this was ported from
+/// byte-for-byte: applied means [`apply_provider`] would return the input
+/// unchanged. A malformed config is an error, not `false` — an installer must
+/// surface that rather than "helpfully" rewriting a file it could not parse.
 pub fn is_provider_applied(
     config_text: &str,
     patch: &CodexProviderPatch,
@@ -297,10 +298,10 @@ pub fn is_provider_applied(
 /// What a `model_providers.<id>` table currently declares, read back for
 /// consumers that infer prior install intent from it.
 ///
-/// This is the neutral half of paper's `infer_codex_integration_intent`: the
-/// grammar reads the keys back; deciding what a given `base_url` shape
-/// *means* (which auth mode, which backend segment) is the consumer's route
-/// knowledge and stays with it.
+/// This is the neutral half of an installer's intent inference: the grammar
+/// reads the keys back; deciding what a given `base_url` shape *means* (which
+/// auth mode, which backend segment) is the consumer's route knowledge and
+/// stays with it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct InstalledCodexProvider {
@@ -353,18 +354,26 @@ pub enum CodexConfigError {
     #[snafu(display("codex provider id must not be empty"))]
     EmptyProviderId,
 
-    /// The config text is not valid TOML. paper surfaces this rather than
-    /// rewriting a file it could not parse, and so does every entry point
-    /// here.
+    /// The config text is not valid TOML. Every entry point here surfaces this
+    /// rather than rewriting a file it could not parse.
     #[snafu(display("could not parse codex config.toml"))]
-    Parse { source: toml_edit::TomlError },
+    Parse {
+        /// The TOML parse failure, which names the offending line and column.
+        source: toml_edit::TomlError,
+    },
 
     /// A key the patch must write through is present but not a standard
     /// table (for example `model_providers = 3`, or an inline
-    /// `model_providers = {}`). Ported limitation: paper refuses these
-    /// identically rather than restructuring the user's document.
+    /// `model_providers = {}`). Ported limitation: the installer this came
+    /// from refuses these identically rather than restructuring the user's
+    /// document.
     #[snafu(display("codex config key `{key}` is not a table"))]
-    NotATable { key: String },
+    NotATable {
+        /// The dotted key whose existing value blocked the patch — for example
+        /// `model_providers`. Named so a consumer can tell the user which line
+        /// of their own config to look at.
+        key: String,
+    },
 }
 
 fn require_provider_id(provider_id: &str) -> Result<&str, CodexConfigError> {
@@ -384,7 +393,7 @@ fn parse(config_text: &str) -> Result<Document, CodexConfigError> {
 }
 
 /// Get-or-create `parent[key]` as a standard table, refusing any other
-/// existing shape. Ported verbatim from paper's `ensure_table`.
+/// existing shape. Ported verbatim from the installer's table helper.
 fn ensure_table<'a>(
     parent: &'a mut Table,
     key: &str,
@@ -441,7 +450,7 @@ fn scrub_stale_attribution_headers(
 
 /// Remove each named override from `shell_environment_policy.set`, leaving
 /// the rest — and both containers, whatever their spelling — alone. Ported
-/// from paper's `remove_obsolete_paper_executable_env` with the names made
+/// from an installer's obsolete-override scrub with the names made
 /// caller-supplied.
 fn scrub_env_overrides(doc: &mut Document, names: &[String]) {
     if names.is_empty() {
@@ -467,9 +476,9 @@ fn scrub_env_overrides(doc: &mut Document, names: &[String]) {
 mod tests {
     use super::*;
 
-    /// A neutral stand-in for what paper passes: id, branding, a fully built
-    /// route, an attribution header, and the obsolete override its installer
-    /// used to write.
+    /// A neutral stand-in for what a consumer passes: id, branding, a fully
+    /// built route, an attribution header, and the obsolete override its
+    /// installer used to write.
     fn chatgpt_patch() -> CodexProviderPatch {
         CodexProviderPatch::new(
             "acme-openai",
@@ -497,8 +506,8 @@ mod tests {
     /// `config.toml`) produces exactly this document — the canonical shape
     /// every other fixture converges on.
     ///
-    /// The bare `[model_providers]` header is observed paper behaviour,
-    /// pinned deliberately: paper's `ensure_table` inserts an explicit
+    /// The bare `[model_providers]` header is the ported installer's observed
+    /// behaviour, pinned deliberately: its table helper inserts an explicit
     /// (non-implicit) table, so a freshly created container renders its own
     /// empty header. Suppressing it (`set_implicit`) would be a fidelity
     /// upgrade this port refuses to smuggle in.
@@ -650,8 +659,7 @@ enable_request_compression = false
         );
     }
 
-    /// Ported from paper's `codex_api_key_config_removes_chatgpt_auth` and
-    /// `codex_chatgpt_config_uses_boolean_openai_auth`: each auth mode sets
+    /// Ported from the installer's own auth-mode tests: each auth mode sets
     /// its keys and removes the other mode's, in both directions.
     #[test]
     fn auth_modes_swap_credential_keys_in_both_directions() {
@@ -684,10 +692,8 @@ enable_request_compression = false
         assert!(is_provider_applied(&applied, &patch_without).unwrap());
     }
 
-    /// Ported from paper's
-    /// `codex_config_removes_obsolete_executable_and_preserves_environment_overrides`,
-    /// with the override name caller-supplied: only the named override goes;
-    /// the user's stays.
+    /// Ported from the installer's obsolete-override test, with the override
+    /// name caller-supplied: only the named override goes; the user's stays.
     #[test]
     fn scrubbed_env_overrides_are_removed_and_the_users_are_preserved() {
         let existing = r#"
@@ -867,7 +873,7 @@ name = "Theirs"
     }
 
     /// The read-back probe reports what the table declares and `None` when
-    /// it does not exist — paper's intent inference keeps its URL-shape
+    /// it does not exist — a consumer's intent inference keeps its URL-shape
     /// parsing on top of exactly this.
     #[test]
     fn installed_provider_reads_the_table_back() {
@@ -895,8 +901,8 @@ name = "Theirs"
     }
 
     /// Ported limitation, pinned: a `model_providers` (or provider) key that
-    /// is not a standard table is refused, exactly as paper's `ensure_table`
-    /// refuses it — including the inline-table spelling.
+    /// is not a standard table is refused, exactly as the installer's table
+    /// helper refuses it — including the inline-table spelling.
     #[test]
     fn non_table_shapes_are_refused_not_restructured() {
         for existing in [

@@ -6,8 +6,25 @@
 # This crate exists to be depended on by this repository's own tests and by a
 # consumer's `[dev-dependencies]`. It ships no production capability, makes no
 # stability promise, and is excluded from the crates.io release the sibling
-# crates are heading for: `publish` is false at the workspace root, and this
-# crate is the one member for which that must never flip.
+# crates are heading for.
+#
+# Two mechanisms say so, and they are worth telling apart. `publish = false`
+# below is the local one: it does not inherit the workspace's `publish = true`,
+# and it makes `cargo publish` refuse this crate outright. The workspace flag is
+# `true` and has to be — `cargo publish --dry-run` will not run on a crate marked
+# unpublishable, so a blanket `false` would have disabled the very check that
+# keeps a release possible. The overriding `false` here buys the guarantee for
+# the one member that wants it without costing the other three theirs.
+#
+# The second mechanism is the release workflow, and it is the one that actually
+# holds: it accepts tags for the three published crates only and fails any other,
+# so no tag naming this crate can start a release at all. That guard is
+# independent of anything in this file.
+#
+# Setting the flag costs nothing in the gates. `cargo package --workspace` still
+# packages and verifies this crate — `publish = false` gates uploading, not
+# packaging — so the check that this crate still compiles standalone is
+# unaffected.
 #
 # It is deliberately a crate rather than a `#[cfg(test)]` module or a cargo
 # feature on `tapes-harnesses`. See `README.md` beside this file for the full
@@ -22,7 +39,7 @@ version = "0.1.0"
 edition.workspace = true
 rust-version = "1.88"
 license.workspace = true
-publish.workspace = true
+publish = false
 authors.workspace = true
 repository = "https://github.com/papercomputeco/tapes-crates"
 description = "Internal test support: a streaming mock provider upstream and mock ingest, plus the scripted one-shot recipes and runner behind the harness regression matrix. Not published."

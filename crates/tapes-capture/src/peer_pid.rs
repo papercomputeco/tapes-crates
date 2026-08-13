@@ -1,6 +1,6 @@
 //! Per-OS "which PID owns this TCP loopback connection" lookup.
 //!
-//! The proxy listens on `127.0.0.1:51539` and accepts TCP connections;
+//! A capture proxy listens on a loopback port and accepts TCP connections;
 //! every accept hands back the peer's `(addr, port)` 4-tuple from
 //! kernel state. The Claude process on the other end of that connection
 //! has the matching socket in its FD table. The lookup answers:
@@ -13,11 +13,11 @@
 //! a PID costs differently per platform:
 //!
 //! * Linux — `NETLINK_INET_DIAG` lists sockets (with inodes and UID) cheaply,
-//!   but mapping an inode back to a PID means walking `/proc/<pid>/fd`. paperd
-//!   runs unprivileged, so a *system-wide* walk (what
+//!   but mapping an inode back to a PID means walking `/proc/<pid>/fd`. A
+//!   capture client runs unprivileged, so a *system-wide* walk (what
 //!   `netsock::get_sockets` does internally) hits `EACCES` on every process
 //!   we don't own and floods the log. We instead enumerate sockets with
-//!   [`netsock::iter_sockets_without_processes`] (no walk) and read only a
+//!   `netsock::iter_sockets_without_processes` (no walk) and read only a
 //!   bounded PID set: either the caller's known candidates, or for owner
 //!   lookup, processes whose `/proc/<pid>` owner matches the socket UID.
 //! * macOS — `proc_pidfdinfo` is already per-PID and there is no
@@ -27,7 +27,7 @@
 //! A small per-peer-address memoization sits in front of the netsock
 //! scan: Claude's HTTP/2 multiplexes many requests over one TCP
 //! connection, and the `(peer_ip, peer_port)` tuple is invariant for the
-//! connection's lifetime. Caching the resolved PID for [`CACHE_TTL`]
+//! connection's lifetime. Caching the resolved PID for a bounded TTL
 //! turns "global socket-table scan per request" into "scan once,
 //! HashMap lookup after." Cached PIDs are revalidated against the live
 //! candidate set on every hit so a dead process whose port gets reused
@@ -37,9 +37,9 @@
 //! number is only unique within an address family and interface
 //! address: `127.0.0.1:54321` and `[::1]:54321` are different sockets
 //! that can be owned by different processes at the same instant, and
-//! the scan below treats them as different (see [`addr_matches`] —
-//! native v6 does not match v4). Keying on the port alone let one
-//! entry answer for both.
+//! the scan below treats them as different (a native v6 address does not
+//! match a v4 one, even when the v4 address is the mapped form of it).
+//! Keying on the port alone let one entry answer for both.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -108,7 +108,7 @@ fn cache() -> &'static Mutex<HashMap<SocketAddr, CacheEntry>> {
 
 /// Look up which of `candidates` owns the loopback TCP socket whose
 /// peer endpoint is `peer`. The peer is the *agent's* side of the
-/// connection (the client socket on the Claude process); paperd's
+/// connection (the client socket on the Claude process); a proxy's
 /// `accept` returns that 4-tuple directly.
 ///
 /// Returns `Self::pid = None` when no candidate matches (caller falls
@@ -856,8 +856,8 @@ mod tests {
     /// Manual benchmark. Run with:
     ///
     /// ```text
-    /// cargo test -p paper-daemon --release \
-    ///     proxy::session::peer_pid::tests::bench_lookup_microseconds \
+    /// cargo test -p tapes-capture --release --lib \
+    ///     peer_pid::tests::bench_lookup_microseconds \
     ///     -- --ignored --nocapture
     /// ```
     ///

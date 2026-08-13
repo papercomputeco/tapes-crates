@@ -139,7 +139,8 @@ pub enum AttributionStrategy {
 pub enum TranscriptSource {
     /// `~/.claude/projects/`, whose immediate children are cwd-encoded
     /// directories holding `<sid>.jsonl` plus each session's `subagents/`.
-    /// This is the root [`crate::transcript::sweep`] walks.
+    /// This is the root [`transcript::sweep`](mod@crate::transcript::sweep)
+    /// walks.
     ClaudeProjects,
     /// The Codex rollout directory — `$CODEX_HOME/sessions` when set,
     /// otherwise `~/.codex/sessions`. Flat JSONL rollouts rather than a
@@ -465,9 +466,9 @@ impl crate::attribution::pipeline::UserAgentHarness for RegistryUserAgents {
 /// The harnesses a consumer can launch, in registry order.
 ///
 /// This is the list each consumer's `start` command should offer, derived
-/// rather than restated: paper's `SUPPORTED_AGENTS` and tapesctl's harness
-/// argument both come from here, so a harness added to [`REGISTRY`] appears in
-/// both without either being edited.
+/// rather than restated: a closed-source client's supported-agent list and
+/// tapesctl's harness argument both come from here, so a harness added to
+/// [`REGISTRY`] appears in both without either being edited.
 #[must_use]
 pub fn supported_agents() -> Vec<&'static str> {
     REGISTRY

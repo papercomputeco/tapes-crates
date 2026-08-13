@@ -28,6 +28,16 @@ description = "One client for the whole tapes read surface: the sealed contract 
 keywords = ["tapes", "client", "openapi", "observability", "api"]
 categories = ["api-bindings", "web-programming::http-client", "development-tools"]
 
+# Both features are on by default, so docs.rs would render every module without
+# this block. It is here for two reasons: to keep the three published crates
+# configured identically, and so `--no-default-features` — which the crate docs
+# explicitly invite — cannot quietly become the untested build. `--cfg docsrs`
+# is reserved for a later `doc_cfg` opt-in and is read by nothing today; which
+# items a feature carries is stated in prose on each gated module.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [lib]
 name = "tapes_client"
 path = "src/lib.rs"

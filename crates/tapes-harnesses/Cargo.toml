@@ -28,6 +28,14 @@ description = "Shared, open-source client-side harness knowledge for Tapes captu
 keywords = ["tapes", "harness", "coding-agent", "capture", "observability"]
 categories = ["development-tools", "development-tools::debugging"]
 
+# This crate has no features, so docs.rs would render it correctly without any
+# of this. The block is here anyway so the three published crates are
+# configured identically — a crate that later grows a feature should not also
+# have to remember it needs a docs.rs entry.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [lib]
 name = "tapes_harnesses"
 path = "src/lib.rs"

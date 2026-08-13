@@ -1,11 +1,10 @@
 //! Transcript-file discovery and JSONL handling.
 //!
-//! Extracted verbatim from paperd's `transcript_upload::files`, which in turn
-//! mirrors the Go reference client
-//! (`telemetry/tapes/pkg/backfill/transcript_upload.go`) — so every client that
-//! feeds the transcript lane (paperd, `tapesctl`, the manual
-//! `tapes backfill transcripts` CLI) produces byte-identical upload sets for the
-//! same on-disk state:
+//! Extracted verbatim from a daemon client's transcript file discovery, which
+//! in turn mirrors the Go reference client
+//! (`pkg/backfill/transcript_upload.go`) — so every client that feeds the
+//! transcript lane, including the manual `tapes backfill transcripts` CLI,
+//! produces byte-identical upload sets for the same on-disk state:
 //!
 //! * main transcript: `<projects_dir>/<sid>.jsonl`
 //! * subagents:       `<projects_dir>/<sid>/subagents/agent-<id>.jsonl`

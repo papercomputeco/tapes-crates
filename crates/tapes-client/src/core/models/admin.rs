@@ -130,8 +130,8 @@ impl ContractModel for RederiveReport {
 #[serde(default)]
 #[non_exhaustive]
 pub struct ReconcileStats {
-    /// CodexInteractedRows counts anchor rows carrying a non-started kind
-    /// (interacted re-entries banked by paperd for future rendering).
+    /// Counts anchor rows carrying a non-started kind — interacted re-entries
+    /// a capture client banked for future rendering.
     pub codex_interacted_rows: i32,
 
     /// Codex thread-spawn anchoring (see codex.go). Unanchored threads

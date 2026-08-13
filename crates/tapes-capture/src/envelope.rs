@@ -1,8 +1,8 @@
 //! The capture envelope.
 //!
 //! The `X-Tapes-*` request-header contract carries attribution and provenance
-//! from a capture transport (the tapesctl JIT proxy, paperd, or tapes-extproc)
-//! into the tapes ingest server. It is the narrow Rust↔Go waist: metadata, not
+//! from a capture transport — a client's just-in-time proxy, a long-lived
+//! daemon client, or the tapes gateway filter — into the tapes ingest server. It is the narrow Rust↔Go waist: metadata, not
 //! parsing, and it rarely changes.
 //!
 //! This module is the **producer** half. It turns a resolved session identity
@@ -15,15 +15,17 @@
 //! oracle in `envelope_fixtures.rs`. Drift between the halves is otherwise
 //! invisible until a captured session lands mis-attributed.
 //!
-//! Extracted from paperd's `proxy::headers`, which was the sole producer before
-//! `tapesctl` existed. The behaviour is pinned by the corpus, so both capture
-//! paths emit byte-identical envelopes by construction rather than by review.
+//! Extracted from a daemon client's header layer, which was the sole producer
+//! before `tapesctl` existed. The behaviour is pinned by the corpus, so every
+//! capture path emits byte-identical envelopes by construction rather than by
+//! review.
 //!
-//! What is deliberately *not* here: `X-Paper-Auth` and its injection helper.
-//! That header is paperd's private channel to the Paper cloud edge, not part of
-//! the tapes envelope, and it stays in paperd. The generic RFC 7230 hop-by-hop
-//! knowledge every capture proxy needs does live here — see
-//! [`HOP_BY_HOP_HEADERS`] and [`is_hop_by_hop`].
+//! What is deliberately *not* here: a consumer's bespoke auth header and its
+//! injection helper. A client fronted by an authenticating edge carries a
+//! private header so that edge admits the request; it is that consumer's
+//! channel, not part of the tapes envelope, and it stays with the consumer.
+//! The generic RFC 7230 hop-by-hop knowledge every capture proxy needs does
+//! live here — see [`HOP_BY_HOP_HEADERS`] and [`is_hop_by_hop`].
 
 use crate::session::HarnessSession;
 use base64::Engine;
@@ -1009,7 +1011,7 @@ mod tests {
         assert_eq!(json["originator"], "codex-tui");
     }
 
-    /// Ported from paperd's `TapesAttributionExt` shim (PCC-1056): the
+    /// Ported from the extension shim these constructors replaced: the
     /// metadata-only and parent-lineage constructors fill exactly the
     /// fields their arguments name and nothing else.
     #[test]

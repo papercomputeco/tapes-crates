@@ -1,11 +1,11 @@
 //! Sweep-on-start: find transcripts on disk that no live session would reveal.
 //!
 //! This is the one piece of the transcript lane that is **new** rather than
-//! moved, and it closes a real gap in paperd's design.
+//! moved, and it closes a real gap in the design it was extracted from.
 //!
 //! # The gap
 //!
-//! paperd learns which sessions to upload from its proxy's per-request
+//! A daemon client learns which sessions to upload from its proxy's per-request
 //! attribution: a forwarded request maps to a `~/.claude/sessions/<pid>.json`,
 //! and that session enters the registry. The registry lives in memory only, and
 //! is rebuilt from live traffic after a restart. That works for any session still

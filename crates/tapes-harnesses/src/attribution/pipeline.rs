@@ -3,11 +3,11 @@
 //! The sibling modules in [`crate::attribution`] are *primitives* — read a
 //! session file, look up a peer PID, scan for a fork parent. Composing them
 //! into "who sent this request?" is the part that was hard to get right, and it
-//! is the part that must not exist twice: paperd validated this exact sequence
-//! against real Claude and Codex traffic, and a second capture client that
-//! re-derived it would drift silently, mis-attributing sessions in ways only a
-//! parity corpus would catch. So the composition lives here, and both
-//! `tapesctl start` and `paper start` call [`attribute`].
+//! is the part that must not exist twice: a daemon client validated this exact
+//! sequence against real Claude and Codex traffic, and a second capture client
+//! that re-derived it would drift silently, mis-attributing sessions in ways
+//! only a parity corpus would catch. So the composition lives here, and every
+//! client's `start` path calls [`attribute`].
 //!
 //! # The two lanes
 //!
@@ -49,12 +49,12 @@
 //!
 //! # What stays parameterized
 //!
-//! Nothing Paper-specific lives here. The consumer supplies:
+//! Nothing specific to any one consumer lives here. The consumer supplies:
 //!
 //! * the **marker header value** ([`RequestFacts::codex_marker`]) — the header
-//!   *name* is the consumer's (paperd sends `X-Paper-Codex-Attribution`), and
-//!   matching it against a launch recipe's `with_attribution_header` is the
-//!   consumer's business;
+//!   *name* is the consumer's own bespoke attribution header, and matching it
+//!   against a launch recipe's `with_attribution_header` is the consumer's
+//!   business;
 //! * whether the request is **on a Codex route**
 //!   ([`RequestFacts::codex_route`]) — route grammars are deployment
 //!   knowledge, not harness knowledge;
@@ -72,9 +72,9 @@
 //!   composition becomes a second place a harness has to be taught about.
 //!
 //! The provider filter is why [`CodexProviderFilter`] exists rather than a
-//! hardcoded `paper-openai` test: a standalone `tapesctl` names its provider
-//! something else entirely, and a shared crate that only recognised Paper's
-//! spelling would silently attribute nothing for every other consumer.
+//! hardcoded provider-id test: every consumer names its provider something
+//! else, and a shared crate that only recognised one consumer's spelling would
+//! silently attribute nothing for all the others.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -125,10 +125,10 @@ pub const DEFAULT_CODEX_RECENT_WINDOW: time::Duration = time::Duration::minutes(
 /// against some other provider" — attributing the latter would attach a
 /// stranger's session id to our traffic.
 ///
-/// Matching is exact-or-suffixed: a filter built from `paper-openai` matches
-/// `paper-openai` and `paper-openai-transparent`, but not `paper-openai2` and
-/// not `other-openai`. The suffix form exists because recipes commonly append
-/// a backend discriminator to the base id.
+/// Matching is exact-or-suffixed: a filter built from `acme-openai` matches
+/// `acme-openai` and `acme-openai-transparent`, but not `acme-openai2` and not
+/// `other-openai`. The suffix form exists because recipes commonly append a
+/// backend discriminator to the base id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexProviderFilter {
     base: String,
@@ -363,8 +363,8 @@ impl AttributionState {
 ///
 /// Deliberately not an `http::Request`: the consumer has already parsed its own
 /// route grammar and its own marker header name by this point, and passing the
-/// whole request would invite the pipeline to start reading Paper-specific
-/// headers itself.
+/// whole request would invite the pipeline to start reading one consumer's
+/// private headers itself.
 ///
 /// Deliberately exhaustive, like [`Attributed`] and for the same reason.
 /// Adding a field here breaks every consumer's literal, and that is the point:
@@ -573,10 +573,10 @@ impl Attributed {
 
     /// The resolved Claude session, when the Claude lane hit.
     ///
-    /// Consumers use this for side effects an attributed request implies —
-    /// paperd registers the session with its transcript uploader, because an
-    /// attributed request is the proof that the session's traffic flows
-    /// through it.
+    /// Consumers use this for side effects an attributed request implies — a
+    /// daemon client registers the session with its transcript uploader,
+    /// because an attributed request is the proof that the session's traffic
+    /// flows through it.
     #[must_use]
     pub fn claude_session(&self) -> Option<&ClaudeSessionFile> {
         match self {
