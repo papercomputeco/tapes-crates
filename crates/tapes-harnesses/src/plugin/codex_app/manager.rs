@@ -753,6 +753,25 @@ mod tests {
     /// A `codex` shim that appends its arguments to `invocations.log` and
     /// scripts per-subcommand behaviour, so a test asserts exact invocations
     /// without touching `PATH`.
+    ///
+    /// The shim is executed once before it is returned, retrying `ETXTBSY`,
+    /// because a freshly written executable is momentarily unrunnable in a
+    /// multithreaded test binary. While `fs::write` holds the file open for
+    /// writing, any other test thread that spawns ITS shim forks this
+    /// process, and the child inherits a duplicate of the open descriptor
+    /// until its own exec closes it (`O_CLOEXEC` closes at exec, not at
+    /// fork). Linux refuses to exec a file any process holds open for
+    /// writing, so a spawn that lands in that window fails with
+    /// `Text file busy`. Closing our handle before returning — which
+    /// `fs::write` already does — cannot retract the duplicates, and neither
+    /// can a write-then-rename, since the duplicates name the inode rather
+    /// than the path. The duplicates are only ever created during the write,
+    /// though, and each dies at its holder's exec — so once one exec of the
+    /// shim succeeds, none remain and every later spawn is safe. That first
+    /// exec happens here, with no arguments — no shim body changes any state
+    /// on an argument list that names no subcommand — and the log line it
+    /// appends is deleted so each test still observes exactly its own
+    /// invocations.
     #[cfg(unix)]
     fn write_codex_shim(root: &Path, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -765,6 +784,19 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        for attempt in 1.. {
+            match std::process::Command::new(&path).output() {
+                Ok(_) => break,
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 100 =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(err) => panic!("warm-up exec of {} failed: {err}", path.display()),
+            }
+        }
+        let _ = std::fs::remove_file(&log);
         path
     }
 
