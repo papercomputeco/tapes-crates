@@ -3,6 +3,28 @@
 //! that directory's `SOURCE.md`), as a reader plus this crate's producer-side
 //! oracle.
 //!
+//! **Available on crate feature `envelope-fixtures` only.** The feature is off
+//! by default and is meant for `[dev-dependencies]`; nothing in this module is
+//! compiled into a consumer's production build unless it asks. The crate's
+//! documentation is built with every feature on, so this module renders there
+//! whether or not you have enabled it.
+//!
+//! # The corpus is vendored, in three places at once
+//!
+//! The corpus is copied into **every** implementation of the contract — this
+//! crate, and each parser in each other language — and all copies must move
+//! together from one upstream revision. A copy that moves alone is a test suite
+//! going green against bytes no other implementation has ever seen, which is
+//! exactly the failure the corpus exists to prevent.
+//!
+//! `DIGEST` is what makes "the same corpus" checkable rather than asserted:
+//! sort the case files by base name, feed `"<basename>  <sha256>\n"` for each
+//! into SHA-256, and compare the result. The recipe is deliberately trivial so
+//! that each language restates it in a few lines instead of sharing an
+//! implementation that would itself have to be vendored. `corpus-seal` in this
+//! repository's makefile recomputes it, and a test does the same on every
+//! `cargo test`.
+//!
 //! The corpus pins the `X-Tapes-*` header ↔ session-envelope contract. This
 //! crate is the **producer**: it turns a resolved session identity into the on-wire
 //! header set. The parsers on the other side (tapes-extproc's

@@ -1,9 +1,38 @@
-//! The capture-gateway environment contract and the launch-nonce protocol.
+//! The capture-gateway environment contract, and the two protocols carried
+//! over it.
 //!
 //! This is the wire/environment agreement between a launching capture client
-//! and whatever runs inside the harness on the other end: which variables name
-//! the proxy, which variable carries the per-launch secret, which header echoes
-//! it back, and what "the echo matched" means.
+//! and whatever runs inside the harness on the other end. It is **two
+//! sub-protocols**, and a reader who takes it for one will be surprised by the
+//! other:
+//!
+//! **1. Launch and trust.** [`GATEWAY_URL_ENV`] names the proxy,
+//! [`GATEWAY_SCHEMA_ENV`] hints at which upstream schema it fronts,
+//! [`GATEWAY_NONCE_ENV`] carries a per-launch secret, [`GATEWAY_NONCE_HEADER`]
+//! is where an installed plugin echoes that secret back, and
+//! [`nonce_matches`] is the constant-time comparison that decides whether the
+//! echo counts. This is what makes an inbound envelope believable at all —
+//! see [`crate::envelope::TapesAttribution::from_headers`] for the other half
+//! of that argument.
+//!
+//! **2. Per-provider routing.** A plugin can register more providers than a
+//! single-upstream proxy can serve. [`GATEWAY_PROVIDER_ROUTES_ENV`] (set to
+//! [`GATEWAY_PROVIDER_ROUTES_ON`]) tells the plugin to label each request with
+//! the provider it belongs to; [`provider_route`] builds the labelled base URL
+//! under [`GATEWAY_PROVIDER_ROUTE_PREFIX`], and [`split_provider_route`] is
+//! the proxy-side inverse. Unset, a plugin registers everything at the base URL
+//! unchanged, which is what a client predating this protocol gets.
+//!
+//! All nine items are re-exported at the crate root.
+//!
+//! # The variables a launching consumer sets
+//!
+//! Four of the seven live here, because they are protocol. The other three are
+//! presentation — what a product calls itself in a harness's status bar and
+//! what it tells a user to run — and live with the artifact that reads them, in
+//! the harness crate's `plugin::pi` module. A consumer wiring up a launch needs
+//! all seven; that full table is in the harness crate, on `plugin`, because
+//! only that crate can name both sets.
 //!
 //! It is protocol, not artifact. Adding another harness does not change any
 //! constant here — a new in-harness extension is written *against* this

@@ -14,7 +14,7 @@
 //!   net, and a final push on harness exit.
 //! * [`payload`] — the ingest payload shape, a cross-language contract with the
 //!   Go server.
-//! * [`sweep`] — a startup scan of the transcript tree, which finds sessions that
+//! * [`sweep`](mod@sweep) — a startup scan of the transcript tree, which finds sessions that
 //!   ended while the client was not running. New here rather than moved: it closes
 //!   a gap in any purely registry-driven discovery.
 //! * [`codex_anchors`] — Codex's counterpart for the fork skeleton alone. Codex
@@ -44,7 +44,7 @@
 //! records array, so unchanged content answers `deduped` and a grown transcript
 //! appends a new version. The fingerprint driving
 //! [`trigger::TriggerInput::dirty`] is deliberately coarse (size + mtime), retries
-//! re-read the files rather than buffering anything, and [`sweep`] re-offers
+//! re-read the files rather than buffering anything, and [`sweep`](mod@sweep) re-offers
 //! transcripts a previous process may already have sent. The transcript files on
 //! disk are the spool; there is no client-side queue to lose.
 

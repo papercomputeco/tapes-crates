@@ -105,7 +105,7 @@ impl CoreSurface {
     /// locations, which is all [`call_for`] reads, are the document's
     /// regardless. A consumer that renders this surface on a command line
     /// passes its reserved flags here; one that only calls operations can use
-    /// [`core`].
+    /// [`core`](crate::core::contract::core).
     #[must_use]
     pub fn reduce(reducer: &ReducerConfig<'_>) -> Option<Self> {
         Self::from_yaml(TAPES_API_YAML, reducer)

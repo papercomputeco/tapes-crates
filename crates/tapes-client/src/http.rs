@@ -97,7 +97,9 @@ const UNAUTHORIZED: u16 = 401;
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct Rejected<'a> {
-    /// The status the server answered with — always [`UNAUTHORIZED`] today.
+    /// The status the server answered with — always `401` today. It is carried
+    /// rather than assumed so that a future engine which routes another status
+    /// through this hook does not have to change the hook's shape.
     pub status: u16,
     /// The URL that was refused, for diagnostics.
     pub endpoint: &'a str,

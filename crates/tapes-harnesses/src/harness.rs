@@ -139,7 +139,8 @@ pub enum AttributionStrategy {
 pub enum TranscriptSource {
     /// `~/.claude/projects/`, whose immediate children are cwd-encoded
     /// directories holding `<sid>.jsonl` plus each session's `subagents/`.
-    /// This is the root [`crate::transcript::sweep`] walks.
+    /// This is the root [`transcript::sweep`](mod@crate::transcript::sweep)
+    /// walks.
     ClaudeProjects,
     /// The Codex rollout directory — `$CODEX_HOME/sessions` when set,
     /// otherwise `~/.codex/sessions`. Flat JSONL rollouts rather than a

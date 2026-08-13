@@ -316,15 +316,15 @@ that way. `CoreClient::call` is generic exactly so it can.
 ## Stability
 
 This crate is **supported public API**, meant to be depended on directly. So
-are its two siblings — [`tapes-capture`](../tapes-capture/README.md) (the
-capture protocol) and [`tapes-harnesses`](../tapes-harnesses/README.md) (the
+are its two siblings — [`tapes-capture`](https://github.com/papercomputeco/tapes-crates/blob/main/crates/tapes-capture/README.md) (the
+capture protocol) and [`tapes-harnesses`](https://github.com/papercomputeco/tapes-crates/blob/main/crates/tapes-harnesses/README.md) (the
 harness knowledge) — and all three version independently on crates.io. This one
 sits on neither side of the repository's single dependency edge, so its releases
 are ordered against nothing.
 
 Pre-1.0, `0.x` versions carry the usual Cargo meaning: a breaking change bumps
 the minor (`0.2.0`), anything compatible bumps the patch (`0.1.1`). What counts
-as breaking is the boundary in the [repository README](../../README.md#the-public-api-boundary),
+as breaking is the boundary in the [repository README](https://github.com/papercomputeco/tapes-crates/blob/main/README.md#the-public-api-boundary),
 not just the signatures: authentication, tenancy, transport, and rendering are
 outside this crate by design, and growing one of them here would break the
 promise while compiling cleanly.
@@ -334,7 +334,7 @@ it with a wildcard arm. The sealed surface moves when the vendored contract
 under `contracts/` is refreshed, which can add or change operations without a
 line of Rust changing; those refreshes are versioned like any other change.
 
-Changes are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+Changes are recorded in [`CHANGELOG.md`](https://github.com/papercomputeco/tapes-crates/blob/main/crates/tapes-client/CHANGELOG.md).
 
 ## License
 

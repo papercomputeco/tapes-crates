@@ -32,7 +32,7 @@
 //! `transcript:<sid>:<agent|main>:<sha256(records)[..8]>`, so re-pushing
 //! unchanged files answers `{"deduped": true}` and grown files append a new
 //! version. That is what makes the eager trigger in [`super::trigger`] and
-//! sweep-on-start in [`super::sweep`] safe.
+//! sweep-on-start in [`super::sweep`](mod@super::sweep) safe.
 //!
 //! # What stays with the client
 //!
@@ -56,7 +56,8 @@ pub const INGEST_PATH: &str = "/v1/ingest/transcript";
 /// A client's own session registry will carry more than this (a pid to watch,
 /// bookkeeping for backoff); this is the subset that reaches the wire. Kept
 /// owned rather than borrowed so a client can build one from a swept transcript
-/// (see [`super::sweep`]) as easily as from a live registry entry.
+/// (see [`super::sweep`](mod@super::sweep)) as easily as from a live registry
+/// entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptSession {
     /// Which harness produced it — `claude` today. Should match the

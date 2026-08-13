@@ -76,7 +76,7 @@ pub type Snapshot = Arc<ArcSwap<WatcherSnapshot>>;
 /// proxy construction, before any request can observe the snapshot, so
 /// paying for it on the caller's thread is what makes the very first
 /// request see a populated candidate set. Every *periodic* scan is
-/// offloaded with `spawn_blocking` — [`scan`] does directory iteration
+/// offloaded with `spawn_blocking` — the scan does directory iteration
 /// plus a `read(2)` per session file, and running that inline on a
 /// tokio worker stalls every future that worker owns for the duration
 /// of the scan. The Codex watcher already offloads the same way; this

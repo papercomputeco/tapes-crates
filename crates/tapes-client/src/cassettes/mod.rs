@@ -37,7 +37,8 @@
 //!   two document sources, one reading of OpenAPI.
 //! - [`cache`] — the per-server on-disk surface cache, named and aged by the
 //!   consumer via [`cache::CacheConfig`].
-//! - [`invoke`] — fetching discovery, conditionally fetching a spec, and
+//! - [`invoke`](mod@invoke) — fetching discovery, conditionally
+//!   fetching a spec, and
 //!   executing a described call — all through
 //!   [`crate::transport::TapesTransport`].
 //!

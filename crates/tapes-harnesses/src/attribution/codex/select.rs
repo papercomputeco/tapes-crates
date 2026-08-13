@@ -30,8 +30,9 @@
 //!
 //! Rungs 3 and 4 both narrow by the rollout the request names before
 //! deciding, and both refuse rather than guess when several DISTINCT live
-//! sessions survive — see [`narrow_by_rollout_id`] and
-//! [`one_live_session_or_refuse`]. A missed attribution heals when the
+//! sessions survive: the request's rollout id narrows the candidate set, and a
+//! set that still holds more than one live session is refused rather than
+//! resolved. A missed attribution heals when the
 //! transcript is reconciled; a wrong one is permanent and silently corrupts a
 //! sub-thread family's shape.
 //!
