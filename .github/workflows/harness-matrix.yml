@@ -25,6 +25,12 @@
 # what would make this reproducible rather than merely current — is also
 # follow-up. Using the nixpkgs pin is the honest intermediate: the versions are
 # whatever that pin carries, and the manifest records exactly what they were.
+#
+# Whether those versions are the *current* releases is a separate question this
+# workflow cannot answer, because a run has nothing to compare itself to. Every
+# run states where it stands against `harness-versions.json` — the versions the
+# matrix has passed against — and `harness-drift-watch.yml` is what moves that
+# record when upstream ships. Drift is stated here and never fails a run.
 
 name: Harness matrix
 

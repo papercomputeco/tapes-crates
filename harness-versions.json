@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "harnesses": [
+    {
+      "name": "claude",
+      "version": "2.1.220 (Claude Code)",
+      "upstream_version": "2.1.220",
+      "discovery": {
+        "kind": "npm",
+        "source": "@anthropic-ai/claude-code",
+        "note": "Claude Code is distributed as this npm package, and the nixpkgs `claude-code` derivation packages the same tarball — so the registry's `latest` dist-tag is the version the matrix would move to. `version` is the string `claude --version` printed; the suffix is the harness's own, not an annotation."
+      }
+    },
+    {
+      "name": "codex",
+      "version": "codex-cli 0.145.0",
+      "upstream_version": "0.145.0",
+      "discovery": {
+        "kind": "npm",
+        "source": "@openai/codex",
+        "note": "The Codex CLI ships to npm and to GitHub releases from the same tag; npm is watched because it is also how a candidate version is materialised on a runner. `version` is the `codex-cli <semver>` string the binary prints."
+      }
+    },
+    {
+      "name": "codex-app",
+      "version": null,
+      "upstream_version": null,
+      "discovery": {
+        "kind": "unwatched",
+        "source": null,
+        "note": "The Codex desktop app is a long-lived host a consumer configures rather than starts: it has no one-shot invocation, so no matrix cell runs it and there is no version for a run to record. It also self-updates on its own schedule, out of band from any pin this repository could hold, so a discovered version would not describe what any user is running. Its capture path is covered by the lifecycle-hook attribution tests, and keeping up with it stays a manual review."
+      }
+    },
+    {
+      "name": "opencode",
+      "version": "1.18.4",
+      "upstream_version": "1.18.4",
+      "discovery": {
+        "kind": "npm",
+        "source": "opencode-ai",
+        "note": "opencode publishes this npm package per release; the nixpkgs `opencode` derivation tracks the same versions. The binary prints a bare semver, so `version` and `upstream_version` coincide today — they are still recorded separately, because that is a fact about opencode's output format rather than a guarantee."
+      }
+    },
+    {
+      "name": "pi",
+      "version": "0.80.10",
+      "upstream_version": "0.80.10",
+      "discovery": {
+        "kind": "npm",
+        "source": "@earendil-works/pi-coding-agent",
+        "note": "pi is not in the flake's `matrix` shell, so the ordinary CI matrix skips it and this baseline was seeded from a developer machine rather than from the nixpkgs pin. The npm package is the same artefact, which is what makes pi watchable at all: the drift watch materialises a candidate from this registry, so its cells run in the watch even though they skip in the per-change matrix. Its provenance is therefore the registry's, not a pinned closure's."
+      }
+    }
+  ]
+}

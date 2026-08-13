@@ -61,7 +61,7 @@ place. This is the current state, not an aspiration:
 | `claude` | runs wherever `claude` is installed | runs with a client binary | packaged in the pinned nixpkgs, so it runs in CI |
 | `codex` | runs wherever `codex` is installed | runs with a client binary | packaged in the pinned nixpkgs, so it runs in CI |
 | `opencode` | runs wherever `opencode` is installed | **skips** — `tapesctl` does not list `opencode` among its supported harnesses | packaged in the pinned nixpkgs; the client-side gap is real and visible |
-| `pi` | runs wherever `pi` is installed | runs with a client binary, after the capture plugin is installed into the sandbox | **not** packaged in nixpkgs, so both cells skip in CI |
+| `pi` | runs wherever `pi` is installed | runs with a client binary, after the capture plugin is installed into the sandbox | not in the flake's `matrix` shell, so both cells skip in CI — though the pinned nixpkgs does carry `pi-coding-agent` (see the follow-ups) |
 | `codex-app` | **skips**, always | **skips**, always | a long-lived host a consumer configures rather than starts: no one-shot invocation exists |
 
 In CI the composition column skips entirely: both clients live in other
@@ -147,13 +147,148 @@ This is the drift watch's input and deliberately only its input: the manifest
 records and compares, and takes no view on what should happen when a version
 moves. That policy belongs with whatever runs on a schedule.
 
+## The version record
+
+A manifest says what one run ran against. It cannot say whether those were the
+*current* releases, because a single run has nothing to compare itself to — and
+comparing to the previous run does not help either, since two runs on the same
+runner agree perfectly while both sit six weeks behind upstream.
+
+So the answer is written down, in [`harness-versions.json`](../harness-versions.json)
+at the repository root: per harness, the version the matrix last **passed**
+against, and how to find out what upstream is serving today.
+
+```json
+{
+  "name": "claude",
+  "version": "2.1.220 (Claude Code)",
+  "upstream_version": "2.1.220",
+  "discovery": {
+    "kind": "npm",
+    "source": "@anthropic-ai/claude-code",
+    "note": "…why this source, and anything needed to trust the answer"
+  }
+}
+```
+
+JSON rather than TOML, for three reasons that all point the same way. The
+manifest it is compared against is already JSON, so one serde type reads both
+and there is no second parser to keep in step. The scheduled watcher has to
+*rewrite* the file on a runner, and `jq` is present everywhere while a TOML
+editor is not. And the thing TOML would buy — comments explaining each entry —
+is bought better by the mandatory `note` field, because the workflow can print a
+note and cannot print a comment.
+
+**Two versions per harness, deliberately.** A harness prints its version however
+it likes (`2.1.220 (Claude Code)`, `codex-cli 0.145.0`, a bare `1.18.4`) while a
+registry answers with a bare semver. `version` is compared to a run's manifest by
+exact equality; `upstream_version` is compared to discovery. Nothing parses
+anything, so a harness that rewords its `--version` output surfaces as ordinary
+drift a human reads rather than as a watch that quietly stopped matching.
+
+Every matrix run now prints where it stands against the record, whether or not
+anything moved:
+
+```text
+--- drift from the version record ---
+  DRIFT  claude: the record passed against 2.1.220 (Claude Code); this run ran 2.1.229 (Claude Code)
+  (drift is stated, not failed: the record moves through a reviewed pull request)
+```
+
+Drift never fails a run — the record is what the matrix last passed against, and
+a newer harness on a laptop is news, not a regression. A record that cannot be
+*read* does fail, for the same reason a manifest that cannot be written does:
+every later run would report "no drift" on the strength of a comparison that
+never happened. A harness the record knows but this run did not have is reported
+in its own bucket, with the run's own skip reason, and does not count as drift.
+
+## The drift watch
+
+[`.github/workflows/harness-drift-watch.yml`](../.github/workflows/harness-drift-watch.yml),
+daily at 06:37 UTC:
+
+1. **Discover.** `scripts/harness-latest-versions.sh` asks each watched entry's
+   source for its current version. Unreachable registry, renamed package,
+   unimplemented discovery kind — all exit non-zero. The one answer it will never
+   give is a quiet "nothing is newer".
+2. **Verify.** For each moved harness, install that exact version, put it on PATH
+   ahead of the one the flake pins, and run the whole matrix. The run's manifest
+   must resolve the harness *from the installed candidate* — checked, not
+   assumed, because a PATH that failed to take would otherwise produce a green
+   run against the old version and a pull request claiming the new one passed.
+3. **Propose.** Green: push `automation/harness-drift/<harness>` and open a pull
+   request carrying old → new and a link to the run. Red, or a version that could
+   not be installed at all: open an issue naming the harness, the version, and
+   the failing cells — and no pull request, so the record keeps naming the
+   version that last passed.
+
+Automation moves the record, CI decides, humans merge. Nothing is auto-merged and
+nothing is written to the default branch.
+
+**Dedupe** is structural rather than best-effort. One stable branch per harness,
+force-updated, so there is exactly one open bump per harness and no older one to
+merge later and walk the record backwards. Issues are deduped on an exact title
+per harness and version, so a nightly schedule cannot file the same breakage
+every morning.
+
+**One repository setting is required**, and until it is enabled the watch pushes
+branches but cannot open pull requests:
+
+> Settings → Actions → General → Workflow permissions →
+> ☑ **Allow GitHub Actions to create and approve pull requests**
+
+The workflow catches exactly that failure and reports it by name, having already
+pushed the branch, so the run is recoverable by hand. No secret beyond the
+default `GITHUB_TOKEN` is needed — everything it writes, it writes here.
+
+The job that installs and executes harness releases holds no credential at all,
+and the job that pushes runs nothing but `jq` and `git` in its own fresh
+checkout. A record bump must be able to say that the tree it came from never
+executed a harness release.
+
+### What the watch does not cover
+
+- **Only version-discoverable harnesses.** A harness is watched because the
+  record names a source that can be asked. Everything else is in the record as
+  `unwatched`, with its reason, and appears in the run's log rather than being
+  omitted from it.
+- **`codex-app` is manual, permanently.** The desktop app self-updates on its own
+  schedule, out of band from anything this repository could pin, and it has no
+  one-shot invocation for a cell to drive.
+- **`pi`'s provenance is its registry's.** It is not in the flake's `matrix`
+  shell, so the per-change matrix skips it and its baseline was seeded from a
+  developer machine. The watch installs it from npm, which is the only reason its
+  cells run there at all.
+- **A candidate run runs the whole matrix, not one cell.** The runner has no
+  per-harness filter, so a failure attributed to a candidate could belong to
+  another row; the issue body carries the actual failing cell names for exactly
+  that reason.
+
+Both scripts run by hand, which is how the watch is debugged without waiting for
+a schedule:
+
+```bash
+scripts/harness-latest-versions.sh                                  # what has moved
+scripts/harness-record-bump.sh claude '2.1.229 (Claude Code)' 2.1.229
+```
+
+To see the drift path work while the record is up to date, point a run at a
+doctored copy:
+
+```bash
+jq '(.harnesses[] | select(.name == "claude") | .version) = "2.1.100 (Claude Code)"' \
+  harness-versions.json >/tmp/doctored.json
+HARNESS_VERSIONS_RECORD=/tmp/doctored.json make harness-matrix
+```
+
 ## Follow-ups, named
 
 Left undone deliberately, rather than sketched:
 
 - **A pinned CI image holding every harness at a known version.** Today the
   versions are whatever the nixpkgs pin carries, which makes a run current but
-  not reproducible. The manifest records exactly what they were, which is the
+  not reproducible. The manifest records exactly what they were, and the version
+  record says which of those the matrix has actually passed against, which is the
   honest intermediate.
 - **The composition column in CI**, which needs a cross-repository client build.
 - **Forged-envelope refusal as a live cell.** The refusal *semantics* are pinned
@@ -164,4 +299,11 @@ Left undone deliberately, rather than sketched:
 - **Exercising each client's own `plugin install`.** The matrix installs a
   capture plugin through this repository's `PluginArtifact::install` so the cell
   stays portable across clients whose installer command lines differ.
-- **`pi` in CI**, which needs it packaged or vendored.
+- **`pi` in the per-change matrix.** The flake's `matrix` shell does not carry it,
+  which is why its cells skip in CI — but the pinned nixpkgs *does* package it as
+  `pi-coding-agent`, so this is now a one-line addition to that shell rather than
+  the packaging problem it was when the shell was written. Doing it would move
+  pi's recorded baseline from a developer machine to the pin, which is a better
+  provenance than the drift watch's registry install and worth taking together.
+  The watch covers pi meanwhile, and a nightly watch is not the same guarantee as
+  a cell on every change.

@@ -58,6 +58,7 @@ use tapes_mock_upstream::manifest::{Status, VersionManifest, probe, which};
 use tapes_mock_upstream::recipe::{
     OneShotContext, OneShotRecipe, Pointing, SCRIPTED_PROMPT, Surface, ToleratedExit, for_harness,
 };
+use tapes_mock_upstream::record::{Record, RecordError};
 use tapes_mock_upstream::{MockPair, TURN_TIMEOUT};
 
 /// The capture clients this matrix can drive, and the variable naming each
@@ -701,7 +702,13 @@ fn the_harness_matrix_holds() {
     }
 
     let written = manifest_dir().and_then(|dir| write_manifest(&manifest, &dir));
-    print_table(&cells, &manifest, &written);
+    // Loaded, not required to agree: drift is stated in the table and never
+    // fails the run, because the record is what the matrix last *passed*
+    // against and a newer harness is news rather than a regression. A record
+    // that cannot be read at all is a different thing — a repository fault —
+    // and it is collected into the failures below.
+    let record = Record::load(&Record::default_path());
+    print_table(&cells, &manifest, &written, record.as_ref());
 
     let mut failures: Vec<String> = cells
         .iter()
@@ -725,6 +732,15 @@ fn the_harness_matrix_holds() {
     // successful run, which is the failure this file is built to refuse.
     if let Err(err) = &written {
         failures.push(format!("  manifest: {err}"));
+    }
+
+    // A record that will not load is a failed run for the same reason a manifest
+    // that will not write is: the run's versions become uncomparable, and every
+    // later run reports "no drift" on the strength of a comparison that never
+    // happened. Note the asymmetry — an unreadable record fails, drift found
+    // against a readable one does not.
+    if let Err(err) = &record {
+        failures.push(format!("  version record: {err}"));
     }
 
     assert!(
@@ -770,7 +786,12 @@ fn write_manifest(manifest: &VersionManifest, dir: &Path) -> Result<PathBuf, Str
 /// Printed unconditionally rather than only on failure: the reasons a cell did
 /// not run are the most perishable information a run produces, and a green run
 /// whose coverage nobody can see is how a matrix silently shrinks.
-fn print_table(cells: &[Cell], manifest: &VersionManifest, written: &Result<PathBuf, String>) {
+fn print_table(
+    cells: &[Cell],
+    manifest: &VersionManifest,
+    written: &Result<PathBuf, String>,
+    record: Result<&Record, &RecordError>,
+) {
     println!("\n=== harness regression matrix (Tier 1) ===\n");
 
     let column_width = cells.iter().map(|c| c.column.len()).max().unwrap_or(10);
@@ -787,6 +808,15 @@ fn print_table(cells: &[Cell], manifest: &VersionManifest, written: &Result<Path
     println!("\n--- versions ---");
     for (name, version) in manifest.versions() {
         println!("  {name}: {version}");
+    }
+
+    // Every run says where it stands against the record, including when it
+    // stands exactly on it. A drift section that appeared only when something
+    // had moved would be indistinguishable from a drift check nobody wired up.
+    println!();
+    match record {
+        Ok(record) => print!("{}", record.compare(manifest).render()),
+        Err(err) => println!("--- drift from the version record ---\n  NOT COMPARED — {err}"),
     }
 
     let skips: Vec<&Cell> = cells

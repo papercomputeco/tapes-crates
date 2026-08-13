@@ -1,0 +1,492 @@
+# Watch every harness's upstream for a release the matrix has not been run
+# against, run the Tier-1 matrix against it, and propose the record move.
+#
+# The per-change matrix (`harness-matrix.yml`) answers "does this code work with
+# the harnesses on the runner". It cannot answer "are those the current
+# releases", because a green run has nothing to compare itself to. This workflow
+# is that second question, asked on a schedule:
+#
+#   1. Read `harness-versions.json` — what the matrix last *passed* against —
+#      and ask each entry's discovery source what it is serving today.
+#   2. For every harness whose upstream has moved, install that exact version and
+#      run the whole Tier-1 matrix with it on PATH.
+#   3. Green: push a branch bumping that harness's entry and open a pull request.
+#      Red, or a version that could not be installed at all: open an issue naming
+#      the harness, the version, and the failing cells.
+#
+# **Automation moves the record; CI decides; humans merge.** Nothing here merges
+# anything, and nothing here writes to the default branch. A harness release that
+# breaks a cell is a thing to read before shipping, not a red X to route around,
+# and a harness release that does not is still a change to the versions this
+# repository claims support for.
+#
+# ---------------------------------------------------------------------------
+# REQUIRED REPOSITORY SETTING — a provisioning step, like the fan-out's token.
+#
+#   Settings → Actions → General → Workflow permissions
+#     ☑ Allow GitHub Actions to create and approve pull requests
+#
+# Without it `GITHUB_TOKEN` may push a branch but not open a pull request, and
+# `gh pr create` fails with "GitHub Actions is not permitted to create or approve
+# pull requests". This workflow catches exactly that failure and turns it into an
+# error naming the setting, having already pushed the branch — so the run is
+# recoverable by opening the pull request by hand, and the reason is in the log
+# rather than in someone's memory.
+#
+# No secret is needed beyond the default token: everything written here is
+# written to this repository. That is deliberate. The one job that runs
+# third-party code (`verify`, which installs and executes harness releases) holds
+# no credential at all, and the job that pushes never runs any.
+# ---------------------------------------------------------------------------
+#
+# # Honest limitations
+#
+# * **Only version-discoverable harnesses are watched.** A harness is watched
+#   because `harness-versions.json` names a source that can be asked for a
+#   current version. Everything else is in the record as `unwatched` with its
+#   reason, and is reported in the log rather than omitted from it.
+# * **The Codex desktop app is not watched and cannot be.** It self-updates on
+#   its own schedule, out of band from anything this repository pins, and it has
+#   no one-shot invocation for a cell to drive. Keeping up with it is a manual
+#   review, stated here so its absence is not mistaken for coverage.
+# * **`pi`'s provenance is its registry's, not a pinned closure's.** It is not in
+#   the flake's `matrix` shell, so the per-change matrix skips it; this watch
+#   installs it from npm, which is the only reason its cells run here at all.
+# * **A candidate run runs the whole matrix, not one cell.** The runner has no
+#   per-harness filter, so a failure attributed to the candidate could in
+#   principle belong to another row. The issue body carries the actual failing
+#   cell names for that reason — read them before believing the title.
+# * **Discovery answers "different", not "newer".** A registry's `latest` tag can
+#   move backwards when a release is pulled; that is still a version the matrix
+#   has not run against, and it is treated as one.
+
+name: Harness drift watch
+
+on:
+  schedule:
+    # 06:37 UTC. Off the hour on purpose: scheduled workflows all over GitHub
+    # queue at :00, and a run that waits out that spike for no reason is a run
+    # whose results arrive late for no reason.
+    - cron: "37 6 * * *"
+  # How a bump gets retried after a fix, and how this is smoke-tested without
+  # waiting a day.
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Watch a single harness (its registry id). Empty watches every watched harness."
+        required: false
+        default: ""
+
+# The default for every job. The one job that writes elevates its own.
+permissions:
+  contents: read
+
+# Serialized, not cancelled: a cancelled run can leave a pushed branch with no
+# pull request opened against it.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+# Actions are pinned to full commit SHAs with the release each is the tip of.
+# A tag is a pointer its owner can repoint; this workflow installs and executes
+# third-party releases and pushes to this repository, so leaving any other part
+# of it mutable would be a poor trade. The SHAs for `checkout` and
+# `upload-artifact` are the ones `harness-matrix.yml` already uses — the same
+# action pinned twice to two different commits is its own kind of drift.
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. What has moved?
+  # ---------------------------------------------------------------------------
+  discover:
+    name: Discover upstream versions
+    runs-on: ubuntu-latest
+    outputs:
+      candidates: ${{ steps.scan.outputs.candidates }}
+      any: ${{ steps.scan.outputs.any }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Ask each source for its current version
+        id: scan
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          set -euo pipefail
+
+          # The script fails loudly on an unreachable registry or a discovery
+          # kind it cannot resolve. That failure must stay a failure: a watch
+          # that answers "nothing is newer" when it could not ask is a watch
+          # that has silently switched itself off.
+          scripts/harness-latest-versions.sh >"${RUNNER_TEMP}/latest.json"
+
+          echo "--- the record against upstream ---"
+          jq -r '.[] | if .watched
+                       then "  \(.name): recorded \(.recorded_upstream), upstream \(.latest)\(if .newer then "   <- MOVED" else "" end)"
+                       else "  \(.name): not watched — \(.note)"
+                       end' "${RUNNER_TEMP}/latest.json"
+
+          candidates="$(jq -c --arg only "${ONLY}" \
+            '[ .[]
+               | select(.newer)
+               | select($only == "" or .name == $only)
+               | {name, source, from: .recorded_upstream, to: .latest} ]' \
+            "${RUNNER_TEMP}/latest.json")"
+
+          echo "candidates=${candidates}" >>"$GITHUB_OUTPUT"
+          if [ "$(printf '%s' "${candidates}" | jq 'length')" -gt 0 ]; then
+            echo "any=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "any=false" >>"$GITHUB_OUTPUT"
+            echo "::notice title=No harness drift::Every watched harness is at the version the record was last passed against."
+          fi
+
+  # ---------------------------------------------------------------------------
+  # 2. Does the matrix still pass against them?
+  #
+  # THE UNTRUSTED JOB. It installs harness releases from a public registry and
+  # then executes them, which is running third-party code by design — that is
+  # the entire question being asked. What makes it safe is that there is nothing
+  # here to steal or subvert: no secret is in this job's environment, the
+  # checkout persists no credential, and nothing this job writes is ever pushed.
+  # The `propose` job below starts from its own clean checkout for exactly that
+  # reason.
+  #
+  # One sequential job rather than a matrix leg per candidate: the legs would
+  # share nothing but a cargo target directory they cannot actually share, and a
+  # single job returns one output the next job reads, with no artifact round
+  # trip in between.
+  # ---------------------------------------------------------------------------
+  verify:
+    name: Run the matrix against the new versions
+    needs: discover
+    if: needs.discover.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      results: ${{ steps.run.outputs.results }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # Pinned rather than the image's default: the harnesses are npm packages
+      # with their own engine requirements, and a runner image whose default
+      # Node moves under us turns "this release breaks the matrix" and "this
+      # runner cannot install this release" into the same red.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - uses: cachix/install-nix-action@ba0dd844c9180cbf77aa72a116d6fbc515d0e87b # v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Install each candidate and run the matrix
+        id: run
+        env:
+          CANDIDATES: ${{ needs.discover.outputs.candidates }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${RUNNER_TEMP}/evidence"
+          results='[]'
+
+          for row in $(printf '%s' "${CANDIDATES}" | jq -r '.[] | @base64'); do
+            field() { printf '%s' "${row}" | base64 --decode | jq -r ".$1"; }
+            name="$(field name)"
+            source="$(field source)"
+            from="$(field from)"
+            to="$(field to)"
+
+            echo "::group::${name} ${from} -> ${to}"
+            outcome="failed"
+            detail=""
+            printed=""
+
+            prefix="${RUNNER_TEMP}/candidates/${name}"
+            rm -rf "${prefix}"
+            mkdir -p "${prefix}"
+
+            # `unmaterialised` rather than `failed` when the version cannot be
+            # put on a runner at all: "this release breaks us" and "we could not
+            # test this release" are different findings, and collapsing the
+            # second into the first would have us open a breakage issue for a
+            # runner problem.
+            if ! npm install --prefix "${prefix}" --no-audit --no-fund --loglevel=error \
+                 "${source}@${to}" >"${RUNNER_TEMP}/evidence/${name}-install.log" 2>&1; then
+              outcome="unmaterialised"
+              detail="npm could not install ${source}@${to} on this runner (Node $(node --version)); see the install log in this run's artifact."
+            fi
+
+            binary="${prefix}/node_modules/.bin/${name}"
+            if [ "${outcome}" = "failed" ] && [ ! -x "${binary}" ]; then
+              outcome="unmaterialised"
+              detail="${source}@${to} installed but provides no ${name} executable at node_modules/.bin/${name}."
+            fi
+
+            if [ "${outcome}" = "failed" ]; then
+              printed="$("${binary}" --version 2>&1 | head -1 || true)"
+              case "${printed}" in
+                *"${to}"*) : ;;
+                *)
+                  outcome="unmaterialised"
+                  detail="the installed ${name} reports '${printed}', which does not contain ${to}."
+                  ;;
+              esac
+            fi
+
+            if [ "${outcome}" = "failed" ]; then
+              # The candidate's bin directory holds this harness alone, so
+              # prepending it overrides exactly one row of the matrix and leaves
+              # the rest on the versions the flake pins.
+              if nix develop .#matrix --command bash -c \
+                   "export PATH=\"${prefix}/node_modules/.bin:\$PATH\"; make harness-matrix" \
+                   >"${RUNNER_TEMP}/evidence/${name}-matrix.log" 2>&1; then
+                outcome="passed"
+              fi
+              cat "${RUNNER_TEMP}/evidence/${name}-matrix.log"
+
+              # A run that emitted no manifest never got as far as the harnesses
+              # — a compile failure, say — so it says nothing about this version.
+              manifest="target/debug/deps/harness-matrix-manifest.json"
+              if [ ! -f "${manifest}" ]; then
+                outcome="unmaterialised"
+                detail="the matrix run emitted no version manifest, so it did not get as far as launching ${name} ${to}."
+              else
+                cp "${manifest}" "${RUNNER_TEMP}/evidence/${name}-manifest.json"
+                resolved="$(jq -r --arg n "${name}" \
+                  '.harnesses[] | select(.name == $n) | .path // "none"' "${manifest}")"
+                printed="$(jq -r --arg n "${name}" \
+                  '.harnesses[] | select(.name == $n) | .version // ""' "${manifest}")"
+
+                # The run must have used the candidate. Without this check a
+                # PATH that did not take would produce a green run against the
+                # *old* version and a pull request claiming the new one passed —
+                # the one outcome that would make this whole watch a liar.
+                case "${resolved}" in
+                  "${prefix}"*) : ;;
+                  *)
+                    outcome="unmaterialised"
+                    detail="the matrix resolved ${name} from ${resolved}, not from the installed candidate; the run proves nothing about ${to}."
+                    ;;
+                esac
+              fi
+            fi
+
+            if [ "${outcome}" = "failed" ]; then
+              # The failing rows of the printed table, then the runner's own
+              # summary of which cells failed and why.
+              cells="$(grep -F 'FAIL' "${RUNNER_TEMP}/evidence/${name}-matrix.log" || true)"
+              failures="$(sed -n '/matrix failure(s)/,$p' \
+                "${RUNNER_TEMP}/evidence/${name}-matrix.log" | head -20 || true)"
+              detail="$(printf '%s\n%s' "${cells}" "${failures}" | head -25)"
+            fi
+
+            echo "${name}: ${outcome}"
+            echo "::endgroup::"
+
+            results="$(printf '%s' "${results}" | jq -c \
+              --arg name "${name}" --arg source "${source}" \
+              --arg from "${from}" --arg to "${to}" \
+              --arg outcome "${outcome}" --arg detail "${detail}" \
+              --arg printed "${printed}" \
+              '. + [{name: $name, source: $source, from: $from, to: $to,
+                     outcome: $outcome, detail: $detail, printed: $printed}]')"
+          done
+
+          echo "results=${results}" >>"$GITHUB_OUTPUT"
+
+      # Every candidate's install log, matrix log, and manifest — the evidence
+      # behind whatever the next job opens. `always()` because a red candidate's
+      # log is the one most worth reading.
+      - name: Upload the candidate runs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: harness-drift-evidence
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # 3. Propose the move, or report the breakage.
+  #
+  # A checkout of its own, which is the point rather than an accident. The record
+  # bump this job commits must contain nothing but the record bump, and the tree
+  # the previous job left behind had four harness releases executed inside it.
+  # This one has run nothing but `jq` and `git`.
+  # ---------------------------------------------------------------------------
+  propose:
+    name: Open the pull requests and issues
+    needs: [discover, verify]
+    if: always() && needs.verify.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      # Push the per-harness bump branches.
+      contents: write
+      # Open or update the bump pull requests.
+      pull-requests: write
+      # File a breakage issue when a candidate is red or could not be installed.
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # No credential in `.git/config`: the push below supplies one for the
+          # length of a single command, the same shape `bump-consumers.yaml`
+          # uses. Nothing untrusted runs here, and the habit is worth keeping
+          # anyway — this is the job with write access.
+          persist-credentials: false
+
+      - name: Propose or report each candidate
+        env:
+          RESULTS: ${{ needs.verify.outputs.results }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          base="$(git rev-parse HEAD)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          auth="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)"
+          echo "::add-mask::${auth}"
+
+          for row in $(printf '%s' "${RESULTS}" | jq -r '.[] | @base64'); do
+            field() { printf '%s' "${row}" | base64 --decode | jq -r ".$1"; }
+            name="$(field name)"
+            from="$(field from)"
+            to="$(field to)"
+            outcome="$(field outcome)"
+            detail="$(field detail)"
+            printed="$(field printed)"
+
+            if [ "${outcome}" = "passed" ]; then
+              # ONE branch per harness, reused and force-updated. A per-version
+              # name would accrete a pull request per release: two open bumps of
+              # the same harness, independently mergeable, and merging them out
+              # of order walks the record backwards to a version this repository
+              # already left behind — while staying green, because an older
+              # recorded version is not a broken one.
+              branch="automation/harness-drift/${name}"
+              # From the default branch's tip every time, never from the
+              # previous iteration's commit: each branch must carry one
+              # harness's bump and nothing else.
+              git checkout -q -B "${branch}" "${base}"
+              scripts/harness-record-bump.sh "${name}" "${printed}" "${to}"
+
+              if [ -z "$(git status --porcelain)" ]; then
+                echo "::notice::${name} already records ${to}."
+                continue
+              fi
+
+              title=":arrow_up: chore: record ${name} ${to} as matrix-verified"
+              git add harness-versions.json
+              git commit -q -m "${title}"
+
+              cat >"${RUNNER_TEMP}/pr-body.md" <<EOF
+          The Tier-1 harness matrix passed against \`${name}\` **${to}**, so this
+          moves the version record to it.
+
+          | | recorded | verified |
+          | --- | --- | --- |
+          | upstream version | \`${from}\` | \`${to}\` |
+          | \`--version\` output | (see the diff) | \`${printed}\` |
+
+          Opened by the scheduled \`harness-drift-watch\` workflow: it noticed the
+          release, installed that exact version, put it on PATH ahead of the one
+          the flake pins, and ran the whole matrix against it.
+          [Run](${RUN_URL}) — the candidate's matrix log and manifest are
+          attached to it as \`harness-drift-evidence\`.
+
+          The manifest from that run resolved \`${name}\` from the installed
+          candidate, which is checked rather than assumed: a PATH that failed to
+          take would otherwise produce a green run against the *old* version and
+          a pull request claiming the new one passed.
+
+          This branch is reused. If a newer release lands before this merges, the
+          branch is force-updated to that version and this description rewritten,
+          so there is only ever one open bump per harness and no older one to
+          merge later and walk the record backwards.
+
+          Not auto-merged, and not to be merged on the strength of this
+          description: CI on this pull request is the gate.
+          EOF
+
+              git -c "http.extraheader=AUTHORIZATION: basic ${auth}" \
+                push --force origin "refs/heads/${branch}:refs/heads/${branch}"
+
+              # The branch is stable, so after the first run there is a pull
+              # request to update rather than a second one to open.
+              existing="$(gh pr list --head "${branch}" --state open \
+                --json number --jq '.[0].number' || true)"
+              if [ -n "${existing}" ]; then
+                gh pr edit "${existing}" --title "${title}" \
+                  --body-file "${RUNNER_TEMP}/pr-body.md"
+                echo "::notice::Updated PR #${existing} for ${name} ${to}."
+              elif ! gh pr create --head "${branch}" --title "${title}" \
+                     --body-file "${RUNNER_TEMP}/pr-body.md"; then
+                # Almost always the one missing repository setting. The branch
+                # is already pushed, so this is recoverable by hand — say how,
+                # rather than leaving a bare `gh` exit code.
+                echo "::error title=Could not open the bump PR::Pushed ${branch}, but opening the pull request failed. Check Settings → Actions → General → Workflow permissions → 'Allow GitHub Actions to create and approve pull requests', then open it by hand or re-run this workflow."
+                exit 1
+              fi
+              continue
+            fi
+
+            # Red, or never installed. An issue, and deliberately no pull
+            # request: the record must keep naming the version that last passed.
+            if [ "${outcome}" = "unmaterialised" ]; then
+              title="harness drift: ${name} ${to} could not be tested"
+              headline="The watch could not run the matrix against \`${name}\` ${to} at all."
+            else
+              title="harness drift: ${name} ${to} fails the Tier-1 matrix"
+              headline="The Tier-1 harness matrix failed against \`${name}\` ${to} (the record has ${from})."
+            fi
+
+            # Dedupe on the exact title, which is stable per harness and version:
+            # a nightly schedule would otherwise file the same issue every day
+            # for as long as the breakage lasts. `--search` is a text match, so
+            # the title is compared exactly afterwards rather than trusted.
+            open_issue="$(gh issue list --state open --limit 50 \
+              --search "\"${title}\" in:title" \
+              --json number,title \
+              --jq "map(select(.title == \"${title}\")) | .[0].number" || true)"
+            if [ -n "${open_issue}" ] && [ "${open_issue}" != "null" ]; then
+              echo "::notice::${name} ${to} already has open issue #${open_issue}."
+              continue
+            fi
+
+            cat >"${RUNNER_TEMP}/issue-body.md" <<EOF
+          ${headline}
+
+          | | |
+          | --- | --- |
+          | harness | \`${name}\` |
+          | recorded version | \`${from}\` |
+          | version under test | \`${to}\` |
+          | outcome | \`${outcome}\` |
+
+          \`\`\`
+          ${detail}
+          \`\`\`
+
+          From the scheduled \`harness-drift-watch\` workflow —
+          [run](${RUN_URL}), with the full matrix log and version manifest
+          attached as \`harness-drift-evidence\`.
+
+          No pull request was opened: \`harness-versions.json\` still records
+          ${from}, which is the last version the matrix passed against, and it
+          should stay there until this is resolved.
+
+          A candidate run runs the whole matrix rather than one cell, so read the
+          failing cell names above before concluding that \`${name}\` is the
+          cause. The watch will re-file this only if it is closed while the
+          breakage is still current.
+          EOF
+
+            gh issue create --title "${title}" --body-file "${RUNNER_TEMP}/issue-body.md"
+          done
