@@ -122,11 +122,11 @@ to each upload, which neither lock above provides.
   is not yet on crates.io. A per-crate `cargo package -p tapes-harnesses`
   fails today for that reason, and that failure is about the invocation rather
   than about the crate.
-- `cargo publish --dry-run` for `tapes-capture` and `tapes-client`, which
-  exercises the upload-preparation path — manifest normalisation, the
-  path-to-registry dependency rewrite, the index lookups — without uploading.
-  `tapes-harnesses` joins this list once `tapes-capture` has a published
-  release.
+- `cargo publish --dry-run` for all three crates, which exercises the
+  upload-preparation path — manifest normalisation, the path-to-registry
+  dependency rewrite, the index lookups — without uploading. `tapes-harnesses`
+  joined the list once `tapes-capture` was live on crates.io, because its
+  dry-run resolves the published `tapes-capture` release.
 - An explicit check that the vendored data files are inside the packages.
   These files are `include_str!`d, so a missing one is a compile error rather
   than a silent hole — but the check names the file, which a compile error in a
