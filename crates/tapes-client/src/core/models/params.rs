@@ -175,9 +175,15 @@ pub struct SessionListParams {
     pub since: Option<String>,
     /// Upper bound on activity, as an RFC 3339 timestamp.
     pub until: Option<String>,
-    /// Only sessions captured from this harness.
+    /// With [`Self::harness_session_id`], narrows the point lookup to the
+    /// single session with this harness id. Rejected alone (400): a harness
+    /// id names a harness, not a session.
     pub harness_id: Option<String>,
-    /// Only the session with this harness-side id.
+    /// Only sessions with this harness-side id (exact match). Alone it
+    /// matches across all harnesses — at most one row per harness; with
+    /// [`Self::harness_id`] it is a single-harness point lookup. The server
+    /// refuses either combined with `cursor`, `sort`, `direction`, `since`,
+    /// or `until` (400), and ignores `limit` while the filter is active.
     pub harness_session_id: Option<String>,
     /// Only sessions captured for this authenticated subject.
     pub auth_subject: Option<String>,
@@ -355,6 +361,10 @@ pub struct StatsParams {
     pub since: Option<String>,
     /// Upper bound, as an RFC 3339 timestamp.
     pub until: Option<String>,
+    /// Narrow every total to sessions captured for this authenticated
+    /// subject — the same subject the sessions listing filters by, so totals
+    /// can agree with the rows beside them. Omitted, the totals are org-wide.
+    pub auth_subject: Option<String>,
 }
 
 impl ContractParams for StatsParams {
@@ -364,6 +374,7 @@ impl ContractParams for StatsParams {
         let mut values = Vec::new();
         push(&mut values, "since", self.since.as_deref());
         push(&mut values, "until", self.until.as_deref());
+        push(&mut values, "auth_subject", self.auth_subject.as_deref());
         values
     }
 }

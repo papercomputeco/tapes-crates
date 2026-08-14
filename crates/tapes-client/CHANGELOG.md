@@ -15,6 +15,33 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-14
+
+A refresh of the vendored read contract, from tapes v0.34.0 to v0.36.0. No
+Rust API is removed or renamed; the one addition is a new optional field.
+
+### Added
+
+- `StatsParams` gained `auth_subject`: `getStats` now takes the same
+  gateway-stamped JWT subject filter the sessions listing takes, so a
+  personal surface can show totals that agree with the rows beside them.
+  Unset, it is omitted and the totals stay org-wide.
+
+### Changed
+
+- The vendored contract's `listSessions` filter semantics moved, and the
+  `SessionListParams` field docs with them: `harness_session_id` alone is now
+  accepted and matches across all harnesses (at most one row per harness),
+  while `harness_id` alone is rejected with a 400 — it names a harness, not a
+  session. Either combined with `cursor`, `sort`, `direction`, `since`, or
+  `until` is refused with a 400 where the incompatibility was previously
+  narrower. The typed structs are unchanged in shape; what moved is what the
+  server accepts.
+- The contract's `StatsResponse` prose now pins down `tool_calls`: the sum of
+  the turn rollups' tool span counts, windowed on each turn's `started_at`
+  like every other stats figure. Documentation only — the field's type and
+  name are unchanged.
+
 ## [0.1.0] - 2026-08-13
 
 The first release. `0.1.0` is the contents of the crate at publish rather than
