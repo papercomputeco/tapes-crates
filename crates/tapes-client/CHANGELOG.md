@@ -15,9 +15,10 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
-Not yet published. The first release will be `0.1.0`, and it is the current
-contents of the crate rather than a changelog entry — the seams are listed in
-[`README.md`](README.md).
+## [0.1.0] - 2026-08-13
+
+The first release. `0.1.0` is the contents of the crate at publish rather than
+a list of changes — the seams are listed in [`README.md`](README.md).
 
 Two things here move for reasons outside a normal code change, and both belong
 in this file when they do: a refresh of the vendored read contract under

@@ -64,14 +64,14 @@ jobs:
       # the registry index lookups a real `cargo publish` performs before it
       # sends anything. Nothing is uploaded — `--dry-run` stops at the wire.
       #
-      # Only the two crates with no unpublished sibling can run this. The
-      # `tapes-harnesses` dry run resolves `tapes-capture` from the crates.io
-      # index and fails until that crate has a published release; it is covered
-      # by the `--workspace` gate above, and this step should grow a third line
-      # once `tapes-capture` is on crates.io. Ordering matches the dependency
-      # order in docs/releasing.md.
+      # The `tapes-harnesses` dry run resolves `tapes-capture` from the
+      # crates.io index, so it could only join this list once that crate had a
+      # published release — it does now, so all three run. Ordering matches
+      # the dependency order in docs/releasing.md.
       - name: Dry-run publish (tapes-capture)
         run: cargo publish --dry-run --locked -p tapes-capture
+      - name: Dry-run publish (tapes-harnesses)
+        run: cargo publish --dry-run --locked -p tapes-harnesses
       - name: Dry-run publish (tapes-client)
         run: cargo publish --dry-run --locked -p tapes-client
 

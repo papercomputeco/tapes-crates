@@ -1,12 +1,20 @@
-# Releasing
+---
+title: Releasing
+description: How the three crates reach crates.io — dependency order, the tag scheme, what the release workflow checks, and the two-lock hold on the upload.
+sidebar:
+  order: 7
+---
 
 The three crates in this repository are published to crates.io independently.
 Each has its own version, its own CHANGELOG, and its own release tag, because
 each makes its own promise to the people who depend on it — a fix to the read
 client is not a reason to renumber the capture protocol.
 
-> **The upload is currently held.** The release workflow runs end to end on a
-> release tag but stops short of `cargo publish`. See [The hold](#the-hold).
+All three are live: `tapes-capture`, `tapes-harnesses`, and `tapes-client`
+each published `0.1.0` on 2026-08-13, so `cargo add tapes-client` resolves
+against the real index and every release after the first follows the
+procedure below. The upload step is guarded by two locks — see
+[The hold](#the-hold).
 
 ## Dependency order
 
@@ -85,10 +93,11 @@ both are open:
 | repository variable `PUBLISH_ENABLED` | it is set to exactly `true` | every run |
 | workflow input `confirm` | it is retyped to match the tag | manual `workflow_dispatch` runs only |
 
-`PUBLISH_ENABLED` **is not set**, which is the hold. Every step before the
-upload still runs, so pushing a release tag today is a full rehearsal: it will
-tell you whether that crate would have published, and change nothing. The job
-summary names which lock is closed.
+While `PUBLISH_ENABLED` is unset, every step before the upload still runs, so
+pushing a release tag is a full rehearsal: it tells you whether that crate
+would have published, and changes nothing. The job summary names which lock is
+closed. The hold was opened for the `0.1.0` releases; its current state is
+visible in one place, the repository settings.
 
 To lift the hold, create the repository variable `PUBLISH_ENABLED = true`
 (Settings → Secrets and variables → Actions → Variables). Deleting it re-arms
@@ -97,9 +106,9 @@ the hold is then visible in one place in the repository settings, and flipping
 it leaves an audit entry that editing a workflow file does not.
 
 Publishing also needs the `CARGO_REGISTRY_TOKEN` secret, a crates.io API token
-scoped to publishing these crates. When the hold lifts, scoping that secret to
-a GitHub Environment with required reviewers is worth doing: it adds a human
-approval to each upload, which neither lock above provides.
+scoped to publishing these crates. Scoping that secret to a GitHub
+Environment with required reviewers is worth doing: it adds a human approval
+to each upload, which neither lock above provides.
 
 ## Keeping the crates publishable
 
@@ -113,11 +122,11 @@ approval to each upload, which neither lock above provides.
   is not yet on crates.io. A per-crate `cargo package -p tapes-harnesses`
   fails today for that reason, and that failure is about the invocation rather
   than about the crate.
-- `cargo publish --dry-run` for `tapes-capture` and `tapes-client`, which
-  exercises the upload-preparation path — manifest normalisation, the
-  path-to-registry dependency rewrite, the index lookups — without uploading.
-  `tapes-harnesses` joins this list once `tapes-capture` has a published
-  release.
+- `cargo publish --dry-run` for all three crates, which exercises the
+  upload-preparation path — manifest normalisation, the path-to-registry
+  dependency rewrite, the index lookups — without uploading. `tapes-harnesses`
+  joined the list once `tapes-capture` was live on crates.io, because its
+  dry-run resolves the published `tapes-capture` release.
 - An explicit check that the vendored data files are inside the packages.
   These files are `include_str!`d, so a missing one is a compile error rather
   than a silent hole — but the check names the file, which a compile error in a

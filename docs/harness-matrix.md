@@ -1,4 +1,9 @@
-# The harness regression matrix
+---
+title: The harness regression matrix
+description: The CI tier that launches each real harness binary through a mock provider and a mock ingest, and asserts on what actually crossed the wire.
+sidebar:
+  order: 6
+---
 
 Five harnesses, two capture clients, and — until this — nothing that launched a
 real harness binary through a real client automatically.
@@ -91,7 +96,7 @@ as a named skip quoting the client's own message rather than as nothing at all.
 ## The recipe format
 
 One `OneShotRecipe` per registry harness, in
-[`crates/tapes-mock-upstream/src/recipe.rs`](../crates/tapes-mock-upstream/src/recipe.rs).
+[`crates/tapes-mock-upstream/src/recipe.rs`](https://github.com/papercomputeco/tapes-crates/blob/main/crates/tapes-mock-upstream/src/recipe.rs).
 Declarative, with a small tagged field for the one thing that genuinely differs:
 
 | field | meaning |
@@ -154,7 +159,7 @@ A manifest says what one run ran against. It cannot say whether those were the
 comparing to the previous run does not help either, since two runs on the same
 runner agree perfectly while both sit six weeks behind upstream.
 
-So the answer is written down, in [`harness-versions.json`](../harness-versions.json)
+So the answer is written down, in [`harness-versions.json`](https://github.com/papercomputeco/tapes-crates/blob/main/harness-versions.json)
 at the repository root: per harness, the version the matrix last **passed**
 against, and how to find out what upstream is serving today.
 
@@ -204,7 +209,7 @@ in its own bucket, with the run's own skip reason, and does not count as drift.
 
 ## The drift watch
 
-[`.github/workflows/harness-drift-watch.yml`](../.github/workflows/harness-drift-watch.yml),
+[`.github/workflows/harness-drift-watch.yml`](https://github.com/papercomputeco/tapes-crates/blob/main/.github/workflows/harness-drift-watch.yml),
 daily at 06:37 UTC:
 
 1. **Discover.** `scripts/harness-latest-versions.sh` asks each watched entry's
