@@ -96,7 +96,7 @@ document (with `If-None-Match` revalidation), `spec` reduces a cassette's
 OpenAPI to a method table, and `invoke` makes the call — through the same
 floor as every sealed call. What cassettes are and how a deployment serves
 them is server-side documentation:
-[tapes.dev/docs/tapes/](https://tapes.dev/docs/tapes/).
+[tapes.dev/docs/cassettes/](https://tapes.dev/docs/cassettes/).
 
 Behind the `cli` feature, the crate can synthesize clap commands from a
 discovered surface and resolve a parsed match back into a call. It stops at

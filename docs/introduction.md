@@ -46,7 +46,7 @@ precise name.
   else.
 - **`tapes`** is a different repository entirely: the server these clients
   capture to and read from, documented at
-  [tapes.dev/docs/tapes/](https://tapes.dev/docs/tapes/). It is also the
+  [tapes.dev/docs/](https://tapes.dev/docs/). It is also the
   authoring home of the envelope fixture corpus vendored here.
 
 ## The crate map
