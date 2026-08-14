@@ -15,7 +15,7 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
-## [0.1.1] - 2026-08-14
+## [0.2.0] - 2026-08-14
 
 A refresh of the vendored read contract, from tapes v0.34.0 to v0.36.0. No
 Rust API is removed or renamed; the one addition is a new optional field.
