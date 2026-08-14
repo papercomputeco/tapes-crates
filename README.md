@@ -72,13 +72,15 @@ Consumers who want it for their own tests take it as a git dependency under
 
 ## Publishing
 
-Consumed by git pin today. crates.io is where they are going, and the machinery
-to get them there is in place — the manifests are publishable, every PR proves
-they have stayed that way, and the upload itself is held.
+All three crates are live on crates.io — each first published at `0.1.0` —
+so `cargo add tapes-capture`, `cargo add tapes-harnesses`, and
+`cargo add tapes-client` resolve against the real index, and every PR proves
+the crates have stayed publishable.
 
-Each crate is released on its own version and its own `<crate>-v<version>` tag.
-They version independently: a fix to the read client is not a reason to
-renumber the capture protocol.
+Each crate is released on its own version and its own `<crate>-v<version>` tag,
+cut from `main` by the Cut Release dispatch workflow. They version
+independently: a fix to the read client is not a reason to renumber the
+capture protocol.
 
 **Semantics, pre-1.0.** While these crates are `0.x`, versions carry the usual
 Cargo meaning — a breaking change bumps the minor (`0.2.0`), anything
@@ -90,10 +92,9 @@ Only one dependency edge exists — `tapes-harnesses` requires `tapes-capture` �
 so `tapes-capture` publishes first whenever both move, and `tapes-client` is
 free of the ordering entirely.
 [`docs/releasing.md`](docs/releasing.md) has the order, the tag scheme, the
-gates that keep publishability from rotting between releases, and the hold:
-the release workflow runs end to end on a release tag but stops short of
-`cargo publish` until the repository variable `PUBLISH_ENABLED` is set to
-`true`. Tagging today is a rehearsal that cannot reach crates.io.
+gates that keep publishability from rotting between releases, and the two-lock
+hold on the upload step: the publish runs only while the repository variable
+`PUBLISH_ENABLED` is `true`, and it is.
 
 ## Adding a harness
 
