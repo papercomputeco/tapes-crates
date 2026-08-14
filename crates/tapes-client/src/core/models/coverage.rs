@@ -890,6 +890,7 @@ mod tests {
         check_params(&StatsParams {
             since: Some("2020-01-01T00:00:00Z".to_owned()),
             until: Some("2020-01-02T00:00:00Z".to_owned()),
+            auth_subject: Some("user".to_owned()),
         })
         .unwrap();
     }

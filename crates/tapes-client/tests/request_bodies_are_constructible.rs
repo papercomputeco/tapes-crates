@@ -155,6 +155,7 @@ fn every_parameter_set_can_be_built_by_a_consumer() {
         StatsParams {
             since: Some("2020-01-01T00:00:00Z".to_owned()),
             until: Some("2020-01-02T00:00:00Z".to_owned()),
+            auth_subject: Some("user".to_owned()),
         }
         .values(),
     ];

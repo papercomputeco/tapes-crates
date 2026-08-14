@@ -771,6 +771,9 @@ components:
             JSON consumer's 2^53 safe-integer range (~104 cumulative days), and
             sub-ms precision is meaningless for an aggregate agent-time figure.
           - TurnCount counts traces (user-visible turns).
+          - ToolCalls is the SUM of the turn rollups' tool span counts,
+            windowed on the turn's started_at like every other figure here
+            rather than on each tool span's own timestamp (PCC-936).
           - CompletedCount counts distinct sessions whose denormalized
             derived_status is 'completed' (chain-aware, PCC-515).
       properties:
@@ -1491,16 +1494,19 @@ paths:
         schema:
           format: date-time
           type: string
-      - description: Filter to the single session with this harness id (exact match;
-          requires harness_session_id, incompatible with cursor; limit is ignored
-          when the filter is active)
+      - description: 'Combined with harness_session_id, narrows the filter to the
+          single session with this harness id (exact match). Rejected alone (400):
+          a harness id names a harness, not a session. Incompatible with cursor, sort,
+          direction, since, and until (400); limit is ignored when the filter is active'
         in: query
         name: harness_id
         schema:
           type: string
-      - description: Filter to the single session with this harness session id (exact
-          match; requires harness_id, incompatible with cursor; limit is ignored when
-          the filter is active)
+      - description: Filter to sessions with this harness session id (exact match).
+          Alone it matches across all harnesses — the id is unique per harness, so
+          at most one row per harness returns, in practice zero or one; with harness_id
+          it is a single-harness point lookup. Incompatible with cursor, sort, direction,
+          since, and until (400); limit is ignored when the filter is active
         in: query
         name: harness_session_id
         schema:
@@ -1523,8 +1529,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-          description: Invalid query parameters, a lone harness filter param, or cursor
-            combined with the harness filter
+          description: Invalid query parameters, a lone harness_id, or cursor, sort,
+            direction, since, or until combined with the harness filter
         "500":
           content:
             application/json:
@@ -2406,7 +2412,10 @@ paths:
       description: Returns counts plus cost / token / duration / tool-call / completed-count
         totals for the window. The numbers are span-grain trace rollup sums (delta-only
         usage, agent time = sum of trace durations) so they agree with the session
-        and trace views; turn_count counts traces. Filter the window with since/until.
+        and trace views; turn_count counts traces. Filter the window with since/until,
+        and narrow every total to one user with auth_subject — the same subject the
+        /v1/sessions filter takes, so a personal surface can show totals that match
+        the rows beside them.
       operationId: getStats
       parameters:
       - description: Only include records at or after this RFC3339 timestamp
@@ -2420,6 +2429,13 @@ paths:
         name: until
         schema:
           format: date-time
+          type: string
+      - description: Narrow every total to sessions captured for this gateway-stamped
+          JWT subject (exact match). Omitted, the totals are org-wide. A subject with
+          no sessions in the window aggregates to zeros, not an error
+        in: query
+        name: auth_subject
+        schema:
           type: string
       responses:
         "200":
