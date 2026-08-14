@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use tapes_harnesses::harness::{self, Harness, PluginDelivery};
 use tapes_mock_upstream::completeness::{
-    ArtifactClaim, AssetEvidence, Evidence, HarnessClaims, check,
+    ArtifactClaim, AssetEvidence, Evidence, HarnessClaims, check, docs_matrix_rows,
 };
 use tapes_mock_upstream::recipe::RECIPES;
 use tapes_mock_upstream::record::Record;
@@ -123,6 +123,19 @@ fn no_stale_names_outside_the_registry() {
             registry_ids.contains(recipe.harness_id),
             "RECIPES names {:?}, which is not in the registry",
             recipe.harness_id,
+        );
+    }
+
+    // The docs matrix table, through the same row parsing the forward gate
+    // uses: a row for a harness the registry does not have is the honest
+    // table asserting facts about nothing.
+    let docs = std::fs::read_to_string(repo_root().join("docs/harness-matrix.md"))
+        .expect("docs/harness-matrix.md must exist");
+    for row in docs_matrix_rows(&docs) {
+        assert!(
+            registry_ids.contains(row.as_str()),
+            "docs/harness-matrix.md has a matrix-table row for {row:?}, which is not in the \
+             registry — remove the row or restore the harness",
         );
     }
 }

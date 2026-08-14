@@ -26,8 +26,9 @@
 //!    a source asset where the repository's convention says they live
 //!    (`crates/tapes-harnesses/assets/<harness>/<file>`), matching the embedded
 //!    contents byte for byte.
-//! 3. **Docs presence.** `docs/harness-matrix.md` names the harness, so the
-//!    honest table stays honest when the registry grows.
+//! 3. **Docs presence.** `docs/harness-matrix.md` carries a row for the
+//!    harness in its matrix table — an actual table row, not a mention in
+//!    prose — so the honest table stays honest when the registry grows.
 //!
 //! The checker is pure over its inputs — a caller supplies the claims and the
 //! evidence — which is what lets its own failure modes be tested with a fake
@@ -89,6 +90,84 @@ pub struct Evidence {
     pub docs: String,
 }
 
+/// The harness names claimed by the matrix table's data rows in
+/// `docs/harness-matrix.md`, in document order.
+///
+/// The docs hold several tables; the matrix table is the one whose header's
+/// first column is `harness`. This walks the document line by line, finds that
+/// header followed by its delimiter row, and collects the first cell of every
+/// data row until the table ends — stripping the backticks (or other inline
+/// emphasis) the docs conventionally wrap ids in. A harness mentioned only in
+/// prose therefore never appears here: presence means a row, not a word.
+#[must_use]
+pub fn docs_matrix_rows(docs: &str) -> Vec<String> {
+    let mut lines = docs.lines().peekable();
+    while let Some(line) = lines.next() {
+        let Some(header) = table_cells(line) else {
+            continue;
+        };
+        if header
+            .first()
+            .is_none_or(|cell| !strip_cell_formatting(cell).eq_ignore_ascii_case("harness"))
+        {
+            continue;
+        }
+        if !lines
+            .peek()
+            .and_then(|next| table_cells(next))
+            .is_some_and(|cells| is_delimiter_row(&cells))
+        {
+            continue;
+        }
+        lines.next(); // consume the delimiter row
+
+        let mut rows = Vec::new();
+        while let Some(next) = lines.peek() {
+            let Some(cells) = table_cells(next) else {
+                break;
+            };
+            lines.next();
+            if let Some(name) = cells.first().map(|cell| strip_cell_formatting(cell))
+                && !name.is_empty()
+            {
+                rows.push(name);
+            }
+        }
+        return rows;
+    }
+    Vec::new()
+}
+
+/// Split a markdown table line into trimmed cells, or `None` if the line is
+/// not a table line at all.
+fn table_cells(line: &str) -> Option<Vec<String>> {
+    let inner = line.trim().strip_prefix('|')?;
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    Some(
+        inner
+            .split('|')
+            .map(|cell| cell.trim().to_owned())
+            .collect(),
+    )
+}
+
+/// Whether every cell is a header/body delimiter (`---`, `:---:`, …).
+fn is_delimiter_row(cells: &[String]) -> bool {
+    !cells.is_empty()
+        && cells
+            .iter()
+            .all(|cell| cell.contains('-') && cell.chars().all(|ch| matches!(ch, '-' | ':')))
+}
+
+/// A cell's content with the inline formatting the docs wrap ids in removed:
+/// `` `claude` `` and `**claude**` both name `claude`.
+fn strip_cell_formatting(cell: &str) -> String {
+    cell.trim()
+        .trim_matches(|ch| matches!(ch, '`' | '*' | '_'))
+        .trim()
+        .to_owned()
+}
+
 /// Check every claim against the evidence, returning one message per failure.
 ///
 /// An empty result is completeness. Each message names the harness, the leg it
@@ -98,6 +177,7 @@ pub struct Evidence {
 #[must_use]
 pub fn check(claims: &[HarnessClaims], evidence: &Evidence) -> Vec<String> {
     let mut failures = Vec::new();
+    let docs_rows = docs_matrix_rows(&evidence.docs);
     for harness in claims {
         let id = &harness.id;
 
@@ -147,12 +227,14 @@ pub fn check(claims: &[HarnessClaims], evidence: &Evidence) -> Vec<String> {
             }
         }
 
-        // Leg 3: docs presence, matched as the backticked id so prose that
-        // merely mentions a similar word cannot satisfy it.
-        if !evidence.docs.contains(&format!("`{id}`")) {
+        // Leg 3: docs presence, meaning a row of the matrix table itself.
+        // Prose can mention a harness — backticked, even — without the table
+        // saying what runs where, so only a parsed row counts.
+        if !docs_rows.iter().any(|name| name == id) {
             failures.push(format!(
-                "{id}: docs/harness-matrix.md does not name it — add its row to the honest \
-                 table (what runs where, and what still skips)",
+                "{id}: docs/harness-matrix.md has no matrix-table row for it — add its row to \
+                 the honest table (what runs where, and what still skips); a mention in prose \
+                 does not count",
             ));
         }
     }
@@ -176,12 +258,26 @@ mod tests {
         }
     }
 
+    /// A docs document whose matrix table has one row naming `id`, shaped
+    /// like the real file: prose, an unrelated table, then the matrix table.
+    fn docs_with_row(id: &str) -> String {
+        format!(
+            "Prose about the matrix.\n\n\
+             | column | meaning |\n\
+             | --- | --- |\n\
+             | first | not a harness table |\n\n\
+             | harness | harness → mock | note |\n\
+             | --- | --- | --- |\n\
+             | `{id}` | runs | note |\n",
+        )
+    }
+
     /// Evidence in which `id` is fully present.
     fn evidence(id: &str) -> Evidence {
         Evidence {
             recipe_ids: [id.to_owned()].into_iter().collect(),
             record_names: [id.to_owned()].into_iter().collect(),
-            docs: format!("| `{id}` | runs | runs | note |"),
+            docs: docs_with_row(id),
         }
     }
 
@@ -219,14 +315,14 @@ mod tests {
     #[test]
     fn a_missing_docs_row_fails_naming_the_docs_file() {
         let mut ev = evidence("gemini");
-        ev.docs = "| `claude` | runs |".to_owned();
+        ev.docs = docs_with_row("claude");
         let failures = check(&[complete_claims("gemini")], &ev);
         assert_eq!(failures.len(), 1, "{failures:?}");
         assert!(failures[0].contains("docs/harness-matrix.md"));
     }
 
-    /// Docs matching is on the backticked id: prose containing the bare word
-    /// does not count as a row.
+    /// Docs presence means a matrix-table row: prose containing the bare word
+    /// does not count.
     #[test]
     fn a_bare_word_mention_is_not_docs_presence() {
         let mut ev = evidence("gemini");
@@ -234,6 +330,71 @@ mod tests {
         let failures = check(&[complete_claims("gemini")], &ev);
         assert_eq!(failures.len(), 1, "{failures:?}");
         assert!(failures[0].contains("docs/harness-matrix.md"));
+    }
+
+    /// The sharper version of the same trap: a *backticked* mention in prose
+    /// is still prose. Only a row of the matrix table satisfies the leg.
+    #[test]
+    fn a_backticked_prose_mention_is_not_docs_presence() {
+        let mut ev = evidence("gemini");
+        ev.docs = format!(
+            "{}\nSoon `gemini` will join the matrix.\n",
+            docs_with_row("claude"),
+        );
+        let failures = check(&[complete_claims("gemini")], &ev);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("docs/harness-matrix.md"));
+        assert!(failures[0].contains("prose"));
+    }
+
+    /// Row-cell formatting is convention, not contract: a padded cell, a bare
+    /// name, or bold instead of backticks all name the same harness.
+    #[test]
+    fn row_cell_formatting_variants_all_count() {
+        for cell in ["`gemini`", "gemini", "**gemini**", "   `gemini`   "] {
+            let mut ev = evidence("gemini");
+            ev.docs = format!(
+                "| harness | note |\n\
+                 | --- | --- |\n\
+                 |{cell}| runs |\n",
+            );
+            let failures = check(&[complete_claims("gemini")], &ev);
+            assert!(failures.is_empty(), "cell {cell:?}: {failures:?}");
+        }
+    }
+
+    /// The parser reads only the table whose header's first column is
+    /// `harness`, takes each data row's first cell, and stops when the table
+    /// does — so names in other tables or after the table's end never count.
+    #[test]
+    fn docs_matrix_rows_reads_only_the_matrix_table() {
+        let docs = "\
+            | column | meaning |\n\
+            | --- | --- |\n\
+            | claude | a cell in some other table |\n\n\
+            | harness | harness → mock | note |\n\
+            | --- | --- | --- |\n\
+            | `claude` | runs | packaged |\n\
+            | **codex** | runs | padded |\n\n\
+            And `opencode` in prose after the table.\n";
+        assert_eq!(docs_matrix_rows(docs), ["claude", "codex"]);
+    }
+
+    /// A document with no matrix table has no rows — every harness fails the
+    /// docs leg rather than the gate silently passing on prose alone.
+    #[test]
+    fn docs_without_a_matrix_table_have_no_rows() {
+        assert!(docs_matrix_rows("just `claude` in prose").is_empty());
+        // A header without its delimiter row is not a table either.
+        assert!(docs_matrix_rows("| harness | note |\n| `claude` | runs |").is_empty());
+    }
+
+    /// The parser reports rows the registry may not have; the reverse gate
+    /// leans on that to flag stale docs rows with the same row semantics.
+    #[test]
+    fn docs_matrix_rows_surface_unregistered_names() {
+        let rows = docs_matrix_rows(&docs_with_row("retired-harness"));
+        assert_eq!(rows, ["retired-harness"]);
     }
 
     #[test]
