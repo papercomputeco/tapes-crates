@@ -49,8 +49,10 @@
 //! recipe    per-harness one-shot launch, built on the real launch recipes
 //! manifest  the version record a run emits
 //! record    the committed version record a run is compared against
+//! completeness  the per-harness gates a registry entry must clear beyond compiling
 //! ```
 
+pub mod completeness;
 pub mod http;
 pub mod ingest;
 pub mod manifest;

@@ -34,6 +34,39 @@ jobs:
         env:
           TAPES_CONTRACT_STRICT: "1"
 
+  # The registry is the source of truth and most coverage derives from it —
+  # the matrix iterates REGISTRY, and the recipe table is invariant-tested
+  # against it in both directions. What derivation cannot reach is the
+  # hand-maintained far side: the version record a run compares itself
+  # against, the asset files a bundled extension claims to ship, and the docs
+  # table that says the harness exists. A harness missing any of those
+  # compiles, passes every unit test, and ships incomplete.
+  #
+  # Its own job rather than a line in lint-test for the same reason the
+  # contract seal is: a failure here should read as "the registry outgrew its
+  # record, assets, or docs — and here is the edit", not as one more red test
+  # among hundreds. The same tests also run inside the ordinary `cargo test`,
+  # which is fine — this job is the named gate, not the only execution.
+  #
+  # Actions pinned by commit for the same reason harness-matrix.yml pins them:
+  # this runs on `pull_request`, so a tag the action's owner can repoint must
+  # not decide what executes here. The trailing comment is the release each
+  # commit is the tip of.
+  registry-completeness:
+    name: Registry completeness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: cachix/install-nix-action@ba0dd844c9180cbf77aa72a116d6fbc515d0e87b # v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # --nocapture for the same reason the matrix insists on it: the failure
+      # list IS the output, and a captured run reports "FAILED" while hiding
+      # the edits it is asking for.
+      - name: Every registry harness clears the completeness gates
+        run: nix develop --command cargo test -p tapes-mock-upstream --test registry_completeness -- --nocapture
+
   lint-test:
     name: Lint & Test (${{ matrix.os }})
     strategy:
