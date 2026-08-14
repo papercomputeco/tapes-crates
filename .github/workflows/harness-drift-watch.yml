@@ -21,7 +21,7 @@
 # repository claims support for.
 #
 # ---------------------------------------------------------------------------
-# REQUIRED REPOSITORY SETTING — a provisioning step, like the fan-out's token.
+# REQUIRED REPOSITORY SETTING — a one-time provisioning step.
 #
 #   Settings → Actions → General → Workflow permissions
 #     ☑ Allow GitHub Actions to create and approve pull requests
@@ -333,10 +333,10 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          # No credential in `.git/config`: the push below supplies one for the
-          # length of a single command, the same shape `bump-consumers.yaml`
-          # uses. Nothing untrusted runs here, and the habit is worth keeping
-          # anyway — this is the job with write access.
+          # No credential in `.git/config`: the push below supplies one for
+          # the length of a single command. Nothing untrusted runs here, and
+          # the habit is worth keeping anyway — this is the job with write
+          # access.
           persist-credentials: false
 
       - name: Propose or report each candidate
