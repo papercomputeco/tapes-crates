@@ -53,7 +53,7 @@ default = ["cli", "direct-http"]
 cli = ["dep:clap"]
 # The in-crate HTTP transport. Off, the crate has no HTTP client at all and a
 # consumer plugs its own into `TapesTransport`.
-direct-http = ["dep:http", "dep:reqwest"]
+direct-http = ["dep:http", "dep:reqwest", "dep:tokio"]
 
 # Dependency versions match the consumers, so their lockfiles do not fork when
 # they consume this crate.
@@ -71,6 +71,9 @@ reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls",
   "json",
 ], optional = true }
+# The deadline under `cassettes::cache::load_live`. reqwest already brings
+# the tokio runtime, so this adds a feature, not a runtime.
+tokio = { version = "1", features = ["time"], optional = true }
 # `DeserializeOwned` is the bound on the generic response target; the derive
 # feature is for this crate's own models and for consumers'.
 serde = { version = "1", features = ["derive"] }
