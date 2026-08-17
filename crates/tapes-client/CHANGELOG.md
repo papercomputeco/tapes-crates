@@ -15,6 +15,36 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-17
+
+Span search moves to the search cassette's route, and the discovered
+cassette surface can be loaded live-first. The minor bump is for the first
+of these: no Rust API changes shape, but a caller's requests go somewhere
+new.
+
+### Changed
+
+- **Breaking for deployments without the search cassette**:
+  `CoreClient::search_spans` now targets `GET /v1/cassettes/search/spans`
+  — the search cassette's serving of the identical request and response
+  contract — instead of core's retirement-bound `/v1/search/spans`. A
+  deployment that does not serve the search cassette answers 404 where the
+  previous version still found core's route. The parameters, models, and
+  every other operation are untouched.
+
+### Added
+
+- `cassettes::cache::load_live`: a live-first alternative to `load` for
+  the shapes where the listing is the product (a `--help` that validates
+  what a deployment is vending). Discovery runs under a caller-supplied
+  deadline with ETag revalidation; the on-disk cache stands in only when
+  the server cannot answer, labeled through the new `Provenance` enum
+  (`Live`, `TimedOut`, `FetchFailed`) so a consumer can say so instead of
+  silently serving stale. The cache-first `load` is unchanged.
+- The `direct-http` feature now carries a `tokio` (time-only) dependency
+  for `load_live`'s deadline; feature-less and `cli`-only builds are
+  unaffected.
+
 ## [0.2.0] - 2026-08-14
 
 A refresh of the vendored read contract, from tapes v0.34.0 to v0.36.0. No
