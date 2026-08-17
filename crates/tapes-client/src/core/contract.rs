@@ -88,6 +88,8 @@ pub mod ops {
     pub const PUBLISH_SKILL: &str = "publishSkill";
     /// `POST /v1/skills/generate`
     pub const GENERATE_SKILL: &str = "generateSkill";
+    /// `GET /v1/skills/{id}/skill.md` — the rendered SKILL.md document.
+    pub const GET_SKILL_MARKDOWN: &str = "getSkillMarkdown";
 }
 
 /// The core read surface, reduced from the vendored contract.

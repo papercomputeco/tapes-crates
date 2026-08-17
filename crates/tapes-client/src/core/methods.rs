@@ -73,6 +73,54 @@ impl<T> CoreClient<T> {
     }
 }
 
+/// Send a sealed operation to the cassette that serves it now.
+///
+/// Three read surfaces were extracted from tapes core into cassettes —
+/// search, export, and skills — each serving its routes under
+/// `/v1/cassettes/<name>` with request and response shapes identical to the
+/// core routes they replace. Core's own copies are retirement-bound and no
+/// longer what deployments keep current, so every resolution of these
+/// operations is redirected here: the named methods, the generic
+/// [`CoreClient::call`] and [`CoreClient::stream`] escape hatches, and
+/// [`CoreClient::request_for`] all agree, because they all build their
+/// request through this.
+///
+/// Only the path moves — parameters, bodies, and models still come from the
+/// sealed contract, so a contract change to any of these shapes still lands
+/// at vendor time. `listSessionSkills` is the one reshape: core spelled it
+/// `GET /v1/sessions/{id}/skills`, and the skills cassette serves the same
+/// listing as a `session_id` filter on its own collection, so the path
+/// parameter becomes a query parameter.
+///
+/// A deployment that does not serve the cassette answers 404 where core once
+/// answered; typed access over the *discovered* surface, which would make
+/// that a first-class "not served here", is the successor to this table.
+fn reroute_to_cassette(operation_id: &str, request: &mut WireRequest<'static>) {
+    request.path = match operation_id {
+        ops::SEARCH_SPANS => "/v1/cassettes/search/spans",
+        ops::EXPORT_SESSION => "/v1/cassettes/export/sessions/{id}",
+        ops::EXPORT_SESSIONS => "/v1/cassettes/export/sessions",
+        ops::LIST_SKILLS | ops::CREATE_SKILL => "/v1/cassettes/skills",
+        ops::GET_SKILL | ops::UPDATE_SKILL | ops::DELETE_SKILL => "/v1/cassettes/skills/{id}",
+        ops::DUPLICATE_SKILL => "/v1/cassettes/skills/{id}/duplicate",
+        ops::GET_SKILL_MARKDOWN => "/v1/cassettes/skills/{id}/skill.md",
+        ops::LIST_SKILL_VERSIONS | ops::PUBLISH_SKILL => "/v1/cassettes/skills/{id}/versions",
+        ops::GENERATE_SKILL => "/v1/cassettes/skills/generate",
+        ops::LIST_SESSION_SKILLS => {
+            let session = request
+                .path_params
+                .iter()
+                .position(|(name, _)| name == "id")
+                .map(|index| request.path_params.remove(index));
+            if let Some((_, id)) = session {
+                request.query.push(("session_id".to_owned(), id));
+            }
+            "/v1/cassettes/skills"
+        }
+        _ => return,
+    };
+}
+
 impl<T: TapesTransport> CoreClient<T> {
     /// Resolve one operation in the sealed contract and call it, decoding into
     /// a type the caller names.
@@ -112,7 +160,8 @@ impl<T: TapesTransport> CoreClient<T> {
         body: Option<String>,
     ) -> Result<R> {
         let method = core()?.method(operation_id)?;
-        let request = contract::call_for_with_body(method, values, body)?;
+        let mut request = contract::call_for_with_body(method, values, body)?;
+        reroute_to_cassette(operation_id, &mut request);
         let response = self
             .transport
             .send(&request)
@@ -135,7 +184,9 @@ impl<T: TapesTransport> CoreClient<T> {
         operation_id: &str,
         values: Vec<(&str, String)>,
     ) -> Result<WireRequest<'static>> {
-        contract::call_for(core()?.method(operation_id)?, values)
+        let mut request = contract::call_for(core()?.method(operation_id)?, values)?;
+        reroute_to_cassette(operation_id, &mut request);
+        Ok(request)
     }
 
     /// Call an operation with a typed parameter set.
@@ -297,33 +348,14 @@ impl<T: TapesTransport> CoreClient<T> {
     }
 
     /// `GET /v1/cassettes/search/spans` — semantic search over span
-    /// embeddings, served by the search cassette.
-    ///
-    /// The one route here that is not the sealed contract's own. Span search
-    /// was extracted from tapes core into the search cassette, which serves
-    /// the identical request and response shapes under `/v1/cassettes/search`;
-    /// core's `/v1/search/spans` is retirement-bound and no longer the copy
-    /// deployments keep current. The sealed operation still supplies all of
-    /// the parameter and response plumbing — only the path moves — so a
-    /// contract change to the search shape still lands here at vendor time.
-    ///
-    /// A deployment that does not serve the search cassette answers 404;
-    /// typed access over the *discovered* surface, which would make that a
-    /// first-class "not served here" instead, is the follow-on this literal
-    /// path is the bridge to.
+    /// embeddings, served by the search cassette (see
+    /// [`reroute_to_cassette`]).
     ///
     /// # Errors
     ///
     /// Any contract, transport, status, or decode failure; see [`crate::Error`].
     pub async fn search_spans(&self, params: &SearchSpansParams) -> Result<SpanSearchOutput> {
-        let mut request = self.request_for(ops::SEARCH_SPANS, params.values())?;
-        request.path = "/v1/cassettes/search/spans";
-        let response = self
-            .transport
-            .send(&request)
-            .await
-            .context(error::TransportSnafu)?;
-        decode::json_typed(&response)
+        self.with_params(params).await
     }
 
     /// `GET /v1/stats` — the aggregate rollups.
@@ -478,7 +510,8 @@ impl<T: StreamingTransport> CoreClient<T> {
     /// Any contract or transport failure; see [`crate::Error`].
     pub async fn stream(&self, operation_id: &str, values: Vec<(&str, String)>) -> Result<T::Body> {
         let method = core()?.method(operation_id)?;
-        let request = contract::call_for(method, values)?;
+        let mut request = contract::call_for(method, values)?;
+        reroute_to_cassette(operation_id, &mut request);
         self.transport.send_stream(&request).await
     }
 
@@ -773,6 +806,179 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(client.transport().bodies.borrow().as_slice(), [None]);
+    }
+
+    impl crate::transport::StreamingTransport for Recorder {
+        type Body = Vec<u8>;
+
+        async fn send_stream(&self, request: &WireRequest<'_>) -> Result<Self::Body> {
+            let url = call_url(&self.base, request, PathMode::UnderBase).map_err(|error| {
+                crate::Error::Transport {
+                    source: TransportError::new(error.to_string()),
+                }
+            })?;
+            self.seen.borrow_mut().push(url.to_string());
+            Ok(Vec::new())
+        }
+    }
+
+    /// Every operation whose surface moved into a cassette, with the route
+    /// the request must now target. One table, asserted through the same
+    /// request-building path every caller uses — a route that reads
+    /// `/v1/skills` or `/v1/sessions/{id}/export` again is a client that
+    /// silently moved back to a retirement-bound core copy.
+    #[tokio::test]
+    async fn extracted_operations_target_their_cassette_routes() {
+        let client = CoreClient::new(Recorder::new(
+            "http://127.0.0.1:8081",
+            vec![serde_json::json!({})],
+        ));
+        type Case = (&'static str, Vec<(&'static str, String)>, &'static str);
+        let id = ("id", "x-1".to_owned());
+        let cases: &[Case] = &[
+            (
+                ops::SEARCH_SPANS,
+                vec![("query", "q".to_owned())],
+                "/v1/cassettes/search/spans",
+            ),
+            (
+                ops::EXPORT_SESSION,
+                vec![id.clone()],
+                "/v1/cassettes/export/sessions/x-1",
+            ),
+            (
+                ops::EXPORT_SESSIONS,
+                vec![],
+                "/v1/cassettes/export/sessions",
+            ),
+            (ops::LIST_SKILLS, vec![], "/v1/cassettes/skills"),
+            (ops::GET_SKILL, vec![id.clone()], "/v1/cassettes/skills/x-1"),
+            (
+                ops::DELETE_SKILL,
+                vec![id.clone()],
+                "/v1/cassettes/skills/x-1",
+            ),
+            (
+                ops::DUPLICATE_SKILL,
+                vec![id.clone()],
+                "/v1/cassettes/skills/x-1/duplicate",
+            ),
+            (
+                ops::GET_SKILL_MARKDOWN,
+                vec![id.clone()],
+                "/v1/cassettes/skills/x-1/skill.md",
+            ),
+            (
+                ops::LIST_SKILL_VERSIONS,
+                vec![id.clone()],
+                "/v1/cassettes/skills/x-1/versions",
+            ),
+        ];
+        for (operation, values, expected) in cases {
+            let request = client
+                .request_for(operation, values.clone())
+                .unwrap_or_else(|e| panic!("{operation}: {e}"));
+            let url = call_url(
+                &Url::parse("http://127.0.0.1:8081").unwrap(),
+                &request,
+                PathMode::UnderBase,
+            )
+            .unwrap_or_else(|e| panic!("{operation}: {e}"));
+            assert!(
+                url.path().ends_with(expected.trim_start_matches('/')) || url.path() == *expected,
+                "{operation}: expected {expected}, got {}",
+                url.path()
+            );
+            assert!(
+                !url.path().contains("/v1/skills")
+                    && !url.path().contains("/v1/search")
+                    && !url.path().contains("/v1/sessions"),
+                "{operation}: still targets a core route: {}",
+                url.path()
+            );
+        }
+
+        // The body-bearing operations cannot be built through request_for
+        // (it refuses a required body), so they are asserted through the
+        // same call path a consumer uses.
+        let _: std::result::Result<Value, _> = client
+            .call_with_body(ops::GENERATE_SKILL, Vec::new(), Some("{}".to_owned()))
+            .await;
+        let _: std::result::Result<Value, _> = client
+            .call_with_body(ops::CREATE_SKILL, Vec::new(), Some("{}".to_owned()))
+            .await;
+        let _: std::result::Result<Value, _> = client
+            .call_with_body(
+                ops::PUBLISH_SKILL,
+                vec![("id", "x-1".to_owned())],
+                Some("{}".to_owned()),
+            )
+            .await;
+        let seen = client.transport().seen.borrow();
+        let tail: Vec<&String> = seen.iter().rev().take(3).collect();
+        assert!(
+            tail[2].contains("/v1/cassettes/skills/generate"),
+            "got {}",
+            tail[2]
+        );
+        assert!(tail[1].ends_with("/v1/cassettes/skills"), "got {}", tail[1]);
+        assert!(
+            tail[0].contains("/v1/cassettes/skills/x-1/versions"),
+            "got {}",
+            tail[0]
+        );
+    }
+
+    #[test]
+    fn session_skills_becomes_a_session_id_filter_on_the_skills_cassette() {
+        // The one reshape in the table: core's per-session skills listing is
+        // the cassette collection filtered by session_id, so the path
+        // parameter must travel as a query parameter — dropping it instead
+        // would silently widen the listing to every skill.
+        let client = CoreClient::new(Recorder::new(
+            "http://127.0.0.1:8081",
+            vec![serde_json::json!({})],
+        ));
+        let request = client
+            .request_for(ops::LIST_SESSION_SKILLS, vec![("id", "ses-9".to_owned())])
+            .unwrap();
+        let url = call_url(
+            &Url::parse("http://127.0.0.1:8081").unwrap(),
+            &request,
+            PathMode::UnderBase,
+        )
+        .unwrap();
+        assert!(
+            url.path().ends_with("/v1/cassettes/skills"),
+            "got {}",
+            url.path()
+        );
+        assert!(
+            url.query_pairs()
+                .any(|(k, v)| k == "session_id" && v == "ses-9"),
+            "session_id must survive as a query parameter, got {:?}",
+            url.query()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_stream_escape_hatch_reroutes_like_the_typed_surface() {
+        // paperctl streams skill.md through the generic operation-id seam;
+        // the reroute must live below that seam, not only in named methods.
+        let client = CoreClient::new(Recorder::new(
+            "http://127.0.0.1:8081",
+            vec![serde_json::json!({})],
+        ));
+        let _ = client
+            .stream(ops::GET_SKILL_MARKDOWN, vec![("id", "skl-1".to_owned())])
+            .await
+            .unwrap();
+        let seen = client.transport().seen.borrow();
+        assert!(
+            seen[0].contains("/v1/cassettes/skills/skl-1/skill.md"),
+            "got {}",
+            seen[0]
+        );
     }
 
     #[tokio::test]
