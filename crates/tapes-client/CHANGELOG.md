@@ -15,6 +15,28 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking for deployments without the export and skills cassettes**: the
+  export and skills operations now target their cassettes' routes, the same
+  move `searchSpans` made in 0.3.0 — `exportSession`/`exportSessions` go to
+  `/v1/cassettes/export/sessions[/{id}]`, and every skills operation goes to
+  `/v1/cassettes/skills/...`. The reroute sits below every calling surface —
+  named methods, the generic `call`/`stream` escape hatches, and
+  `request_for` all agree. Parameters, bodies, and models are unchanged; a
+  deployment not serving the cassette answers 404 where core's copy once
+  answered.
+- `listSessionSkills` additionally changes shape: core spelled it
+  `GET /v1/sessions/{id}/skills`, and the skills cassette serves the same
+  listing as `GET /v1/cassettes/skills?session_id={id}`, so the path
+  parameter travels as a query parameter. The typed method and its response
+  model are unchanged.
+
+### Added
+
+- `ops::GET_SKILL_MARKDOWN`: the one skills operation id consumers had been
+  spelling as a local string literal.
+
 ## [0.3.0] - 2026-08-17
 
 Span search moves to the search cassette's route, and the discovered
