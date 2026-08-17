@@ -215,6 +215,75 @@ pub fn write(config: &CacheConfig<'_>, cached: &Cached) {
     }
 }
 
+/// How the surface [`load_live`] returned was obtained — so a consumer's
+/// `--help` can label a listing that is not the server's current truth, and
+/// warn when a live answer was attempted and gave out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provenance {
+    /// Discovery answered; the listing is the server's current truth.
+    Live,
+    /// Discovery did not finish inside the deadline — a server that is
+    /// slow, or a host that swallows packets instead of refusing them.
+    TimedOut {
+        /// Whether a previously discovered surface stood in.
+        cached: bool,
+    },
+    /// Discovery failed outright — a refused or unroutable connection (the
+    /// fast spelling of "offline"), or a response that did not decode. The
+    /// transport's own tracing has the specifics.
+    FetchFailed {
+        /// Whether a previously discovered surface stood in.
+        cached: bool,
+    },
+}
+
+/// Get the cassette surface for a server, live-first.
+///
+/// [`load`] prefers a fresh-enough cache to avoid network on every run. This
+/// entry inverts that for the shapes where the listing *is* the product — a
+/// user reading `--help` to validate that a cassette is being vended wants
+/// the server's answer, not last session's. Discovery runs under `deadline`,
+/// with ETag revalidation keeping the common case to one cheap request per
+/// document; the cache stands in only when the server cannot answer, always
+/// labeled through the returned [`Provenance`].
+///
+/// Reachability is judged by the transport and nothing else. An earlier
+/// design probed the URL's host with a raw TCP connect to bail faster when
+/// offline, and was wrong twice in the same way: the transport may reach the
+/// server through routing the probe knows nothing about (a proxy, a
+/// consumer's own transport), so a direct-connect verdict — whether it
+/// skipped the fetch or merely shortened its budget — could declare a
+/// reachable server offline. An unreachable host still answers quickly in
+/// the common case (a refused or unroutable connection errors immediately);
+/// only a black-holed host costs the full deadline, which is the bounded
+/// wait this entry promises anyway.
+///
+/// Never fails; an empty [`Surface`] with an honest provenance is the floor.
+#[cfg(feature = "direct-http")]
+pub async fn load_live<T: SpecTransport>(
+    transport: &T,
+    config: &CacheConfig<'_>,
+    reducer: &ReducerConfig<'_>,
+    deadline: Duration,
+) -> (Surface, Provenance) {
+    let existing = read(config);
+    let cached = existing.is_some();
+    let fallback = |existing: Option<Cached>| {
+        existing
+            .map(|cached| cached.surface(reducer))
+            .unwrap_or_default()
+    };
+
+    match tokio::time::timeout(deadline, revalidate(transport, config, existing.as_ref())).await {
+        Ok(Some(fresh)) => {
+            write(config, &fresh);
+            (fresh.surface(reducer), Provenance::Live)
+        }
+        Ok(None) => (fallback(existing), Provenance::FetchFailed { cached }),
+        Err(_elapsed) => (fallback(existing), Provenance::TimedOut { cached }),
+    }
+}
+
 /// Get the cassette surface for a server, from cache or from the network.
 ///
 /// Never fails. See the module docs for the degradation ladder.
@@ -340,6 +409,55 @@ mod tests {
             revalidate_after: REVALIDATE_AFTER,
             key,
         }
+    }
+
+    /// A transport whose requests never finish, like a host that is truly
+    /// unreachable through every route: the demoted attempt after a failed
+    /// probe must time out against it, not hang.
+    struct NeverAnswers;
+
+    impl crate::transport::SpecTransport for NeverAnswers {
+        type Error = std::convert::Infallible;
+
+        async fn fetch_discovery(&self) -> Result<Value, Self::Error> {
+            std::future::pending().await
+        }
+
+        async fn fetch_spec(
+            &self,
+            _path: &str,
+            _etag: Option<&str>,
+        ) -> Result<crate::transport::SpecFetch, Self::Error> {
+            unreachable!("the probe failed; no request may be made");
+        }
+
+        async fn execute(&self, _call: &crate::transport::Call<'_>) -> Result<Value, Self::Error> {
+            unreachable!("the probe failed; no request may be made");
+        }
+    }
+
+    #[tokio::test]
+    async fn load_live_times_out_against_a_transport_that_never_answers() {
+        // A black-holed host: the transport hangs, the deadline ends the
+        // wait, and with no cache on disk the floor is an empty surface with
+        // an honest provenance. The deadline is the whole of the bound —
+        // there is no probe to bail earlier, because only the transport can
+        // say what it can reach.
+        let unique = format!("live-timeout-{}", std::process::id());
+        let started = std::time::Instant::now();
+        let (surface, provenance) = load_live(
+            &NeverAnswers,
+            &config(&unique),
+            &RESERVED,
+            Duration::from_millis(300),
+        )
+        .await;
+        assert!(surface.is_empty());
+        assert_eq!(provenance, Provenance::TimedOut { cached: false });
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the deadline must actually bound the wait"
+        );
     }
 
     fn entry(name: &str) -> DiscoveryEntry {
