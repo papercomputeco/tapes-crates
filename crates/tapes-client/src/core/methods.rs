@@ -296,13 +296,34 @@ impl<T: TapesTransport> CoreClient<T> {
         .await
     }
 
-    /// `GET /v1/search/spans` — semantic search over span embeddings.
+    /// `GET /v1/cassettes/search/spans` — semantic search over span
+    /// embeddings, served by the search cassette.
+    ///
+    /// The one route here that is not the sealed contract's own. Span search
+    /// was extracted from tapes core into the search cassette, which serves
+    /// the identical request and response shapes under `/v1/cassettes/search`;
+    /// core's `/v1/search/spans` is retirement-bound and no longer the copy
+    /// deployments keep current. The sealed operation still supplies all of
+    /// the parameter and response plumbing — only the path moves — so a
+    /// contract change to the search shape still lands here at vendor time.
+    ///
+    /// A deployment that does not serve the search cassette answers 404;
+    /// typed access over the *discovered* surface, which would make that a
+    /// first-class "not served here" instead, is the follow-on this literal
+    /// path is the bridge to.
     ///
     /// # Errors
     ///
     /// Any contract, transport, status, or decode failure; see [`crate::Error`].
     pub async fn search_spans(&self, params: &SearchSpansParams) -> Result<SpanSearchOutput> {
-        self.with_params(params).await
+        let mut request = self.request_for(ops::SEARCH_SPANS, params.values())?;
+        request.path = "/v1/cassettes/search/spans";
+        let response = self
+            .transport
+            .send(&request)
+            .await
+            .context(error::TransportSnafu)?;
+        decode::json_typed(&response)
     }
 
     /// `GET /v1/stats` — the aggregate rollups.
@@ -752,6 +773,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(client.transport().bodies.borrow().as_slice(), [None]);
+    }
+
+    #[tokio::test]
+    async fn search_spans_targets_the_search_cassette_route() {
+        // The one deliberate departure from the operation table: span search
+        // is served by the search cassette, and the sealed operation only
+        // supplies the parameter plumbing. If this URL ever reads
+        // /v1/search/spans again, the client has silently moved back to the
+        // retirement-bound core route.
+        let client = client(
+            "http://127.0.0.1:8081",
+            serde_json::json!({"query": "q", "results": []}),
+        );
+        let _ = client
+            .search_spans(&SearchSpansParams {
+                query: "retry backoff".to_owned(),
+                top_k: Some(3),
+            })
+            .await
+            .unwrap();
+
+        let seen = client.transport().seen.borrow();
+        assert_eq!(seen.len(), 1);
+        assert!(
+            seen[0].contains("/v1/cassettes/search/spans?"),
+            "expected the cassette route, got {}",
+            seen[0]
+        );
+        assert!(
+            seen[0].contains("query=retry+backoff") || seen[0].contains("query=retry%20backoff")
+        );
+        assert!(seen[0].contains("top_k=3"));
     }
 
     #[tokio::test]
