@@ -11,6 +11,14 @@ policed**, because the same code runs in both. A behaviour that lives here
 cannot differ between clients; a behaviour that lives in a client can, and that
 is the test for whether something belongs in this repository at all.
 
+Two documentation surfaces, and they answer different questions. What these
+crates are for, how to add a harness, and the contracts they seal are at
+[tapes.dev/docs/tapes-crates](https://tapes.dev/docs/tapes-crates/). The API of
+each published crate is on docs.rs:
+[`tapes-harnesses`](https://docs.rs/tapes-harnesses),
+[`tapes-capture`](https://docs.rs/tapes-capture),
+[`tapes-client`](https://docs.rs/tapes-client).
+
 ## The public API boundary
 
 **All three published crates are supported public API.** None of them is a
