@@ -250,7 +250,7 @@ mod tests {
         // `+`, and a timestamp's colons are percent-encoded.
         let call = Call {
             method: "GET",
-            path: "/v1/search/spans",
+            path: "/v1/cassettes/search/spans",
             query: vec![
                 ("query".to_owned(), "gum glow charm".to_owned()),
                 ("since".to_owned(), "2026-07-01T00:00:00Z".to_owned()),
