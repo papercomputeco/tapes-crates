@@ -15,6 +15,15 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
+### Fixed
+
+- `SkillResponse.parent_id` is `Option<String>`: the contract's own prose
+  says `parentId` is null unless the skill is a duplicate/fork, and every
+  real listing shows it — the non-optional field made every skills listing
+  fail to decode on the first root skill, against core and cassette alike.
+  (The schema does not mark the field nullable, which is why the coverage
+  gate could not hold this shape.)
+
 ## [0.4.0] - 2026-08-18
 
 ### Changed
