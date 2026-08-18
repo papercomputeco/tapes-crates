@@ -15,6 +15,8 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-18
+
 ### Changed
 
 - **Breaking for deployments without the export and skills cassettes**: the
@@ -36,6 +38,16 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 - `ops::GET_SKILL_MARKDOWN`: the one skills operation id consumers had been
   spelling as a local string literal.
+- A completeness gate driven by the vendored contract: every operation whose
+  sealed path lives on an extracted surface must be rerouted, so a contract
+  refresh that adds an operation under a moved surface fails the build until
+  it is routed.
+
+### Fixed
+
+- The named methods' doc titles now state the cassette routes their requests
+  actually target; 0.3.0's rerouted `searchSpans` and this release's export
+  and skills methods had kept their core-route titles.
 
 ## [0.3.0] - 2026-08-17
 
