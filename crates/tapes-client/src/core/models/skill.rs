@@ -52,9 +52,12 @@ pub struct SkillResponse {
     )]
     pub originating_session_ids: Vec<String>,
 
-    /// The contract's `parentId`.
-    #[serde(rename = "parentId")]
-    pub parent_id: String,
+    /// The contract's `parentId` — null unless the skill is a
+    /// duplicate/fork, in the contract's own words. The schema does not
+    /// mark it nullable, so the coverage gate cannot hold this shape; the
+    /// prose and every real listing do.
+    #[serde(rename = "parentId", default)]
+    pub parent_id: Option<String>,
 
     /// The contract's `slug`.
     pub slug: String,
@@ -358,5 +361,42 @@ impl SkillsListResponse {
             items: self.items,
             next_cursor: Some(self.next_cursor),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod parent_id_tests {
+    use super::SkillResponse;
+
+    #[test]
+    fn a_root_skill_with_null_parent_decodes() {
+        // Every skill that is not a duplicate/fork carries `parentId: null` —
+        // the contract's prose says so and every real listing shows it. A
+        // non-optional field here made every `skill list` fail on the first
+        // root skill, against core and cassette alike.
+        let row = serde_json::json!({
+            "id": "skl-1", "slug": "s", "name": "n", "description": "d",
+            "type": "workflow", "version": "0.1.0", "visibility": "private",
+            "tags": [], "content": "c", "isAiGenerated": false,
+            "originatingSessionIds": [], "authorId": "user_1",
+            "downloadCount": 0, "parentId": null,
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"
+        });
+        let parsed: SkillResponse = serde_json::from_value(row)
+            .unwrap_or_else(|e| panic!("null parentId must decode: {e}"));
+        assert_eq!(parsed.parent_id, None);
+
+        let fork = serde_json::json!({
+            "id": "skl-2", "slug": "s2", "name": "n", "description": "d",
+            "type": "workflow", "version": "0.1.0", "visibility": "private",
+            "tags": [], "content": "c", "isAiGenerated": false,
+            "originatingSessionIds": [], "authorId": "user_1",
+            "downloadCount": 0, "parentId": "skl-1",
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"
+        });
+        let parsed: SkillResponse =
+            serde_json::from_value(fork).unwrap_or_else(|e| panic!("fork must decode: {e}"));
+        assert_eq!(parsed.parent_id.as_deref(), Some("skl-1"));
     }
 }
