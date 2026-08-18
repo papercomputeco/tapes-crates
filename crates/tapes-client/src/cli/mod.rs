@@ -13,7 +13,7 @@
 //! This module stops at [`resolve_invocation`], which turns a parsed match
 //! back into the [`Method`] it names and the [`Call`] to make. Executing the
 //! call and printing the response stay with the consumer: tapesctl reads its
-//! own `--tapes-url` flag (added through the [`augment`] decorator), builds
+//! own `--api-url` flag (added through the [`augment`] decorator), builds
 //! its client, and prints the way its hand-written commands do.
 
 use clap::{Arg, ArgMatches, Command};
@@ -35,7 +35,7 @@ const BODY: &str = "body";
 ///
 /// `decorate` is applied to every generated method command; it is where a
 /// consumer adds the flags its dispatch reads back (tapesctl adds its
-/// `--tapes-url`, with the `TAPES_API_URL` env fallback).
+/// `--api-url`, with the `TAPES_API_URL` env fallback).
 #[must_use]
 pub fn augment<F>(mut base: Command, surface: &Surface, decorate: F) -> Command
 where
@@ -214,14 +214,14 @@ mod tests {
     /// The list tapesctl reserves, which these moved tests were written
     /// against.
     const RESERVED: ReducerConfig<'static> = ReducerConfig {
-        reserved_flags: &["tapes-url", "body", "help", "verbose"],
+        reserved_flags: &["api-url", "body", "help", "verbose"],
     };
 
     /// The decorator tapesctl passes: its server flag, with the env fallback.
     fn with_tapes_url(command: Command) -> Command {
         command.arg(
-            Arg::new("tapes-url")
-                .long("tapes-url")
+            Arg::new("api-url")
+                .long("api-url")
                 .env("TAPES_API_URL")
                 .action(ArgAction::Set)
                 .value_name("URL")
@@ -271,7 +271,7 @@ mod tests {
         // — one rewrite pass would hand clap a duplicate id and panic at
         // command construction.
         let reserved = ReducerConfig {
-            reserved_flags: &["tapes-url", "body", "param-body", "help", "verbose"],
+            reserved_flags: &["api-url", "body", "param-body", "help", "verbose"],
         };
         let document = json!({"paths": {"/v1/cassettes/c/thing": {
             "post": {"operationId": "createThing", "requestBody": {"required": true},
@@ -306,7 +306,7 @@ mod tests {
                 "wire-body",
                 "--param-param-body-2",
                 "wire-param-body",
-                "--tapes-url",
+                "--api-url",
                 "http://x",
             ])
             .unwrap();
@@ -386,7 +386,7 @@ mod tests {
                 .unwrap()
                 .render_long_help()
                 .to_string();
-            assert!(help.contains("--tapes-url"), "{name} lost the flag: {help}");
+            assert!(help.contains("--api-url"), "{name} lost the flag: {help}");
         }
     }
 
@@ -409,7 +409,7 @@ mod tests {
                 "r-1",
                 "--since",
                 "yesterday",
-                "--tapes-url",
+                "--api-url",
                 "http://x",
             ])
             .unwrap();
@@ -435,7 +435,7 @@ mod tests {
                     "tapesctl",
                     "summary",
                     "get-report",
-                    "--tapes-url",
+                    "--api-url",
                     "http://x"
                 ])
                 .is_err(),
@@ -452,7 +452,7 @@ mod tests {
                     "tapesctl",
                     "hello-world",
                     "create-hello",
-                    "--tapes-url",
+                    "--api-url",
                     "http://x"
                 ])
                 .is_err(),
@@ -467,7 +467,7 @@ mod tests {
                     "get-hello",
                     "--body",
                     "{}",
-                    "--tapes-url",
+                    "--api-url",
                     "http://x",
                 ])
                 .is_err(),
@@ -490,7 +490,7 @@ mod tests {
                 "tapesctl",
                 "summary",
                 "list-reports",
-                "--tapes-url",
+                "--api-url",
                 "http://x",
             ])
             .unwrap();
@@ -542,7 +542,7 @@ mod tests {
                 "local:me",
                 "--x-report-kind",
                 "daily",
-                "--tapes-url",
+                "--api-url",
                 "http://x",
             ])
             .unwrap();
@@ -594,7 +594,7 @@ mod tests {
                 "r-1",
                 "--since",
                 "yesterday",
-                "--tapes-url",
+                "--api-url",
                 &server.uri(),
             ])
             .unwrap();
@@ -633,7 +633,7 @@ mod tests {
                 "tapesctl",
                 "summary",
                 "list-reports",
-                "--tapes-url",
+                "--api-url",
                 &server.uri(),
             ])
             .unwrap();
@@ -655,7 +655,7 @@ mod tests {
                 "tapesctl",
                 "hello-world",
                 "get-hello",
-                "--tapes-url",
+                "--api-url",
                 "http://x",
             ])
             .unwrap();

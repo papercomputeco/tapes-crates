@@ -330,7 +330,7 @@ mod tests {
     const REVALIDATE_AFTER: Duration = Duration::from_secs(600);
 
     const RESERVED: ReducerConfig<'static> = ReducerConfig {
-        reserved_flags: &["tapes-url", "body", "help", "verbose"],
+        reserved_flags: &["api-url", "body", "help", "verbose"],
     };
 
     fn config(key: &str) -> CacheConfig<'_> {

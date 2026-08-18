@@ -411,7 +411,7 @@ fn harness_via_cli(recipe: &OneShotRecipe, harness_binary: &Path, cli: &Path) ->
         recipe.harness_id.to_owned(),
         "--upstream".to_owned(),
         pair.upstream.base_url(),
-        "--tapes-url".to_owned(),
+        "--api-url".to_owned(),
         pair.ingest.base_url(),
     ];
     args.push("--".to_owned());
