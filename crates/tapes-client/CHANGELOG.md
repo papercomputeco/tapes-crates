@@ -13,7 +13,7 @@ before the tag is cut.
 Pre-1.0, `0.x` versions carry the usual Cargo meaning: a breaking change bumps
 the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
-## [Unreleased]
+## [0.4.1] - 2026-08-18
 
 ### Fixed
 

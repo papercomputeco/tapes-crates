@@ -15,7 +15,7 @@
 # where somebody remembers to name it.
 [package]
 name = "tapes-client"
-version = "0.4.0"
+version = "0.4.1"
 edition.workspace = true
 rust-version = "1.85"
 license.workspace = true
