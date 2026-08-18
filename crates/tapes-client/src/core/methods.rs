@@ -302,7 +302,8 @@ impl<T: TapesTransport> CoreClient<T> {
             .await
     }
 
-    /// `GET /v1/sessions/{id}/skills` — the skills attributed to one session.
+    /// `GET /v1/cassettes/skills?session_id={id}` — the skills attributed to one
+    /// session, as the skills cassette spells it (see [`reroute_to_cassette`]).
     ///
     /// # Errors
     ///
@@ -367,7 +368,7 @@ impl<T: TapesTransport> CoreClient<T> {
         self.with_params(params).await
     }
 
-    /// `GET /v1/skills` — one page of the skills listing.
+    /// `GET /v1/cassettes/skills` — one page of the skills listing.
     ///
     /// # Errors
     ///
@@ -390,7 +391,7 @@ impl<T: TapesTransport> CoreClient<T> {
         .await
     }
 
-    /// `GET /v1/skills/{id}` — one skill.
+    /// `GET /v1/cassettes/skills/{id}` — one skill.
     ///
     /// # Errors
     ///
@@ -399,7 +400,7 @@ impl<T: TapesTransport> CoreClient<T> {
         self.call(ops::GET_SKILL, vec![("id", id.to_owned())]).await
     }
 
-    /// `POST /v1/skills` — author a skill.
+    /// `POST /v1/cassettes/skills` — author a skill.
     ///
     /// # Errors
     ///
@@ -408,7 +409,7 @@ impl<T: TapesTransport> CoreClient<T> {
         self.with_body(ops::CREATE_SKILL, Vec::new(), body).await
     }
 
-    /// `PUT /v1/skills/{id}` — apply the present fields onto a skill.
+    /// `PUT /v1/cassettes/skills/{id}` — apply the present fields onto a skill.
     ///
     /// # Errors
     ///
@@ -418,7 +419,7 @@ impl<T: TapesTransport> CoreClient<T> {
             .await
     }
 
-    /// `DELETE /v1/skills/{id}` — delete a skill.
+    /// `DELETE /v1/cassettes/skills/{id}` — delete a skill.
     ///
     /// # Errors
     ///
@@ -428,7 +429,7 @@ impl<T: TapesTransport> CoreClient<T> {
             .await
     }
 
-    /// `POST /v1/skills/{id}/duplicate` — fork a skill.
+    /// `POST /v1/cassettes/skills/{id}/duplicate` — fork a skill.
     ///
     /// # Errors
     ///
@@ -438,7 +439,7 @@ impl<T: TapesTransport> CoreClient<T> {
             .await
     }
 
-    /// `GET /v1/skills/{id}/versions` — one skill's published history.
+    /// `GET /v1/cassettes/skills/{id}/versions` — one skill's published history.
     ///
     /// # Errors
     ///
@@ -448,7 +449,7 @@ impl<T: TapesTransport> CoreClient<T> {
             .await
     }
 
-    /// `POST /v1/skills/{id}/versions` — publish an immutable snapshot.
+    /// `POST /v1/cassettes/skills/{id}/versions` — publish an immutable snapshot.
     ///
     /// # Errors
     ///
@@ -462,7 +463,7 @@ impl<T: TapesTransport> CoreClient<T> {
             .await
     }
 
-    /// `POST /v1/skills/generate` — generate a skill from sessions.
+    /// `POST /v1/cassettes/skills/generate` — generate a skill from sessions.
     ///
     /// # Errors
     ///
@@ -515,7 +516,7 @@ impl<T: StreamingTransport> CoreClient<T> {
         self.transport.send_stream(&request).await
     }
 
-    /// `GET /v1/sessions/{id}/export`, streamed.
+    /// `GET /v1/cassettes/export/sessions/{id}`, streamed.
     ///
     /// An export can be far larger than a session's working set, and there is
     /// no reason to hold it in memory on the way to a file. It stays untyped
@@ -531,7 +532,7 @@ impl<T: StreamingTransport> CoreClient<T> {
         self.stream(ops::EXPORT_SESSION, values).await
     }
 
-    /// `GET /v1/sessions/export`, streamed.
+    /// `GET /v1/cassettes/export/sessions`, streamed.
     ///
     /// # Errors
     ///
@@ -545,6 +546,7 @@ impl<T: StreamingTransport> CoreClient<T> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::cassettes::spec::Location;
     use crate::core::models::params::PayloadDetail;
     use crate::path::{PathMode, call_url};
     use crate::transport::{TransportError, WireResponse};
@@ -978,6 +980,55 @@ mod tests {
             seen[0].contains("/v1/cassettes/skills/skl-1/skill.md"),
             "got {}",
             seen[0]
+        );
+    }
+
+    #[test]
+    fn every_operation_on_an_extracted_route_is_rerouted() {
+        // The completeness gate over the table above, driven by the vendored
+        // contract itself: every operation whose sealed path lives on a
+        // surface that moved into a cassette must be rerouted. A contract
+        // refresh that adds an operation under /v1/skills (or a new extracted
+        // surface's routes) fails here until the table routes it — reaching
+        // core's retirement-bound copy silently is exactly the drift this
+        // gate exists to end.
+        let surface = core().unwrap();
+        let extracted = |path: &str| {
+            path.starts_with("/v1/search")
+                || path.starts_with("/v1/skills")
+                || path == "/v1/sessions/export"
+                || path == "/v1/sessions/{id}/export"
+                || path == "/v1/sessions/{id}/skills"
+        };
+
+        let ids: Vec<&str> = surface.operation_ids().collect();
+        let mut checked = 0;
+        for id in ids {
+            let method = surface.method(id).unwrap();
+            if !extracted(&method.path) {
+                continue;
+            }
+            checked += 1;
+
+            let values: Vec<(&str, String)> = method
+                .params
+                .iter()
+                .filter(|param| param.required || matches!(param.location, Location::Path))
+                .map(|param| (param.wire.as_str(), "x".to_owned()))
+                .collect();
+            let body = (method.body == Some(true)).then(|| "{}".to_owned());
+            let mut request = contract::call_for_with_body(method, values, body)
+                .unwrap_or_else(|error| panic!("{id}: {error}"));
+            reroute_to_cassette(id, &mut request);
+            assert!(
+                request.path.starts_with("/v1/cassettes/"),
+                "{id} still targets {} — add it to reroute_to_cassette",
+                request.path
+            );
+        }
+        assert_eq!(
+            checked, 14,
+            "the census of operations on extracted routes moved; route the newcomer above and update this count"
         );
     }
 
