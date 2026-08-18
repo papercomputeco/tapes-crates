@@ -35,7 +35,7 @@ const BODY: &str = "body";
 ///
 /// `decorate` is applied to every generated method command; it is where a
 /// consumer adds the flags its dispatch reads back (tapesctl adds its
-/// `--tapes-url`, with the `TAPES_URL` env fallback).
+/// `--tapes-url`, with the `TAPES_API_URL` env fallback).
 #[must_use]
 pub fn augment<F>(mut base: Command, surface: &Surface, decorate: F) -> Command
 where
@@ -222,7 +222,7 @@ mod tests {
         command.arg(
             Arg::new("tapes-url")
                 .long("tapes-url")
-                .env("TAPES_URL")
+                .env("TAPES_API_URL")
                 .action(ArgAction::Set)
                 .value_name("URL")
                 .help("Base URL of the tapes server"),
