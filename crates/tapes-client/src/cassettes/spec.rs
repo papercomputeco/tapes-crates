@@ -494,7 +494,7 @@ mod tests {
     /// The list tapesctl reserves, which is what these moved tests were
     /// written against.
     const RESERVED: ReducerConfig<'static> = ReducerConfig {
-        reserved_flags: &["tapes-url", "body", "help", "verbose"],
+        reserved_flags: &["api-url", "body", "help", "verbose"],
     };
 
     /// Shadow of [`super::reduce`] pinning the tapesctl reserved list, so the
@@ -664,12 +664,12 @@ mod tests {
 
     #[test]
     fn a_parameter_cannot_take_a_flag_the_subcommand_defines_itself() {
-        // `--tapes-url` belongs to tapesctl. Handing it to a cassette parameter
+        // `--api-url` belongs to tapesctl. Handing it to a cassette parameter
         // would make clap panic on a duplicate argument at startup — which the
         // workspace lints forbid and a user could trigger with a custom spec.
         let document = json!({"paths": {"/v1/cassettes/c/reports": {
             "get": {"operationId": "listReports", "parameters": [
-                {"name": "tapes_url", "in": "query"},
+                {"name": "api_url", "in": "query"},
                 {"name": "body", "in": "query"}
             ]}
         }}});
@@ -679,9 +679,9 @@ mod tests {
             .iter()
             .map(|p| p.flag.as_str())
             .collect();
-        assert_eq!(flags, vec!["param-tapes-url", "param-body"]);
+        assert_eq!(flags, vec!["param-api-url", "param-body"]);
         // The wire names are untouched — only the presentation moved.
-        assert_eq!(cassette.methods[0].params[0].wire, "tapes_url");
+        assert_eq!(cassette.methods[0].params[0].wire, "api_url");
     }
 
     #[test]

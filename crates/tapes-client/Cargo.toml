@@ -87,7 +87,7 @@ tracing = "0.1"
 url = "2"
 
 [dev-dependencies]
-# The tests pin a consumer's decorator shape, whose `--tapes-url` falls back to
+# The tests pin a consumer's decorator shape, whose `--api-url` falls back to
 # an environment variable; `env` is a test-only need, the library itself never
 # reads one through clap.
 clap = { version = "4", features = ["env", "string"] }
