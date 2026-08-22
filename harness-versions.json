@@ -3,8 +3,8 @@
   "harnesses": [
     {
       "name": "claude",
-      "version": "2.1.220 (Claude Code)",
-      "upstream_version": "2.1.220",
+      "version": "2.1.239 (Claude Code)",
+      "upstream_version": "2.1.239",
       "discovery": {
         "kind": "npm",
         "source": "@anthropic-ai/claude-code",
