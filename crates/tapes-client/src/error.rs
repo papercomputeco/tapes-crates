@@ -76,6 +76,21 @@ pub enum Error {
         parameter: String,
     },
 
+    /// A caller supplied claimed filter pairs on an operation the vendored
+    /// contract does not document as claim-bearing. The claimed channel is a
+    /// scoped bypass, not a general one: the server's claims are per-surface,
+    /// and the sealed document names the surfaces that carry the extension
+    /// (`ops::CLAIM_BEARING_OPS`). Anywhere else, an unknown name is exactly
+    /// the drift the declared-parameter refusal exists to catch — so the call
+    /// is refused before anything is sent.
+    #[snafu(display(
+        "the vendored tapes-api contract documents no claimed filter params on {operation:?}"
+    ))]
+    ContractClaims {
+        /// The operation being called.
+        operation: String,
+    },
+
     /// A caller had no value for a path parameter the operation requires, so
     /// no URL can be built — the substitution would leave a literal `{id}`
     /// segment addressing nothing.

@@ -115,6 +115,11 @@ fn every_parameter_set_can_be_built_by_a_consumer() {
             harness_id: Some("claude".to_owned()),
             harness_session_id: Some("hs-1".to_owned()),
             auth_subject: Some("user".to_owned()),
+            // Constructible like every other field, but deliberately not in
+            // `values()`: claimed pairs are appended to the query by the
+            // sessions-list method itself, outside the declared-parameter
+            // check. See `SessionListParams::claimed`.
+            claimed: vec![("flavor".to_owned(), "grape".to_owned())],
         }
         .values(),
         SessionTracesParams {

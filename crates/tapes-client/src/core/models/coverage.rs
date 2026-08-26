@@ -850,6 +850,10 @@ mod tests {
             harness_id: Some("claude".to_owned()),
             harness_session_id: Some("hs-1".to_owned()),
             auth_subject: Some("user".to_owned()),
+            // Claimed pairs are runtime data the contract cannot declare;
+            // they travel outside `values()`, so populating one proves the
+            // declared-parameter agreement is judged without them.
+            claimed: vec![("flavor".to_owned(), "grape".to_owned())],
         })
         .unwrap();
         check_params(&SessionTracesParams {
