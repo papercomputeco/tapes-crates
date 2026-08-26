@@ -159,8 +159,79 @@ impl<T: TapesTransport> CoreClient<T> {
         values: Vec<(&str, String)>,
         body: Option<String>,
     ) -> Result<R> {
+        self.call_shaped(operation_id, values, &[], body).await
+    }
+
+    /// Resolve one operation and call it with claimed filter params appended
+    /// to the query.
+    ///
+    /// The claimed-param variant of [`CoreClient::call`], for a consumer that
+    /// decodes into its own type — a CLI passing the server's document
+    /// through verbatim, say. The typed sessions listing routes
+    /// [`SessionListParams::claimed`](crate::core::models::SessionListParams)
+    /// through the identical path, so the two spellings cannot drift.
+    ///
+    /// The pairs travel exactly as given: appended to the query after the
+    /// declared parameters, repeats and order preserved, names as data. See
+    /// [`CoreClient::call_shaped`] for why they bypass the declared-parameter
+    /// refusal without loosening it.
+    ///
+    /// The channel exists only where the sealed contract documents the claim
+    /// extension ([`ops::CLAIM_BEARING_OPS`]): a non-empty `claimed` set on
+    /// any other operation is refused before anything is sent, and an empty
+    /// set is equivalent to [`CoreClient::call`] everywhere.
+    ///
+    /// # Errors
+    ///
+    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
+    pub async fn call_with_claimed<R: DeserializeOwned>(
+        &self,
+        operation_id: &str,
+        values: Vec<(&str, String)>,
+        claimed: &[(String, String)],
+    ) -> Result<R> {
+        self.call_shaped(operation_id, values, claimed, None).await
+    }
+
+    /// The one request-building path behind every facade above.
+    ///
+    /// Declared `values` go through the contract check exactly as they always
+    /// have. `claimed` pairs are appended to the query *after* that check, in
+    /// the caller's order, because a claimed filter param is the one kind of
+    /// parameter the vendored document cannot declare: a cassette claims it
+    /// on the live server at admission time, and its semantics are entirely
+    /// server-side and claim-gated. The names are data — an unclaimed name is
+    /// ignored byte-identically by the server, and validating, normalizing,
+    /// or dropping one here would silently replace that contract with this
+    /// build's guess at it.
+    ///
+    /// Appending after `call_for` rather than inside it keeps the refusal
+    /// honest: a *declared* name still cannot be misspelled into the claimed
+    /// channel at a typed call site, because the typed params route through
+    /// `values()`, and the untyped route was always the caller's to spell.
+    ///
+    /// The bypass is scoped, not general: a non-empty `claimed` set is
+    /// refused up front unless the operation is in
+    /// [`ops::CLAIM_BEARING_OPS`], because the sealed document names which
+    /// surfaces carry the claim extension, and an unknown parameter on any
+    /// other operation is exactly the drift the declared-parameter refusal
+    /// exists to catch.
+    async fn call_shaped<R: DeserializeOwned>(
+        &self,
+        operation_id: &str,
+        values: Vec<(&str, String)>,
+        claimed: &[(String, String)],
+        body: Option<String>,
+    ) -> Result<R> {
+        if !claimed.is_empty() && !ops::CLAIM_BEARING_OPS.contains(&operation_id) {
+            return error::ContractClaimsSnafu {
+                operation: operation_id,
+            }
+            .fail();
+        }
         let method = core()?.method(operation_id)?;
         let mut request = contract::call_for_with_body(method, values, body)?;
+        request.query.extend(claimed.iter().cloned());
         reroute_to_cassette(operation_id, &mut request);
         let response = self
             .transport
@@ -223,7 +294,8 @@ impl<T: TapesTransport> CoreClient<T> {
     ///
     /// Any contract, transport, status, or decode failure; see [`crate::Error`].
     pub async fn list_sessions(&self, params: &SessionListParams) -> Result<SessionListResponse> {
-        self.with_params(params).await
+        self.call_shaped(ops::LIST_SESSIONS, params.values(), &params.claimed, None)
+            .await
     }
 
     /// Every session the listing matches, following `next_cursor` to the end.
@@ -1088,5 +1160,205 @@ mod tests {
             *named.transport().seen.borrow(),
             *raw.transport().seen.borrow()
         );
+    }
+
+    #[tokio::test]
+    async fn claimed_params_append_to_the_query_in_order() {
+        // The pairs travel exactly as given: after the declared parameters,
+        // repeats preserved, order preserved. The names are runtime data the
+        // vendored contract cannot declare — a cassette claims them on the
+        // live server — so they bypass the declared-parameter refusal
+        // without loosening it (the refusal test above still stands).
+        let client = client("http://127.0.0.1:8081", serde_json::json!({"items": []}));
+        let _ = client
+            .list_sessions(&SessionListParams {
+                limit: Some(25),
+                claimed: vec![
+                    ("flavor".to_owned(), "grape".to_owned()),
+                    ("flavor".to_owned(), "sour cherry".to_owned()),
+                    ("vintage".to_owned(), "1998".to_owned()),
+                ],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            client.transport().seen.borrow()[0],
+            "http://127.0.0.1:8081/v1/sessions?limit=25&flavor=grape&flavor=sour+cherry&vintage=1998",
+        );
+    }
+
+    #[tokio::test]
+    async fn claimed_values_are_percent_encoded_and_nothing_more() {
+        // A unicode value is form-encoded on the way out, and that is the
+        // whole of what happens to it: no normalization, no case folding, no
+        // client-side filtering. Whether it matches anything is the server's
+        // question — the claim's declared normalization profile lives there.
+        let client = client("http://127.0.0.1:8081", serde_json::json!({"items": []}));
+        let _ = client
+            .list_sessions(&SessionListParams {
+                claimed: vec![("flavor".to_owned(), "Grüße 🍇".to_owned())],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            client.transport().seen.borrow()[0],
+            "http://127.0.0.1:8081/v1/sessions?flavor=Gr%C3%BC%C3%9Fe+%F0%9F%8D%87",
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_claimed_set_leaves_the_request_as_it_always_was() {
+        // No claimed pairs, no trace of the mechanism: the unfiltered
+        // listing keeps its exact pre-feature spelling.
+        let client = client("http://127.0.0.1:8081", serde_json::json!({"items": []}));
+        let _ = client
+            .list_sessions(&SessionListParams::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            client.transport().seen.borrow()[0],
+            "http://127.0.0.1:8081/v1/sessions",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_page_walk_carries_claimed_params_onto_every_page() {
+        // A filtered walk must stay filtered: the cursor mints under the
+        // claimed set, and a page fetched without it would be answering a
+        // different question mid-listing.
+        let client = CoreClient::new(Recorder::new(
+            "http://127.0.0.1:8081",
+            vec![
+                serde_json::json!({"items": [{"id": "s1"}], "next_cursor": "c1"}),
+                serde_json::json!({"items": [{"id": "s2"}], "next_cursor": ""}),
+            ],
+        ));
+        let _ = client
+            .list_all_sessions(&SessionListParams {
+                claimed: vec![("flavor".to_owned(), "grape".to_owned())],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let seen = client.transport().seen.borrow();
+        assert_eq!(seen.len(), 2);
+        assert!(seen[1].contains("cursor=c1"), "got: {seen:?}");
+        assert!(
+            seen.iter().all(|url| url.contains("flavor=grape")),
+            "every page of a filtered walk must carry the claimed pairs: {seen:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_typed_and_untyped_claimed_spellings_build_the_same_request() {
+        // `call_with_claimed` is to `list_sessions` what `call` is to the
+        // named methods: a spelling, not a second route. If the two ever
+        // built different requests, the crate would be back to two ways of
+        // asking one question.
+        let named = client("http://127.0.0.1:8081", serde_json::json!({"items": []}));
+        let _ = named
+            .list_sessions(&SessionListParams {
+                limit: Some(1),
+                claimed: vec![("flavor".to_owned(), "grape".to_owned())],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let raw = client("http://127.0.0.1:8081", serde_json::json!({"items": []}));
+        let _: Value = raw
+            .call_with_claimed(
+                ops::LIST_SESSIONS,
+                vec![("limit", "1".to_owned())],
+                &[("flavor".to_owned(), "grape".to_owned())],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *named.transport().seen.borrow(),
+            *raw.transport().seen.borrow()
+        );
+    }
+
+    #[tokio::test]
+    async fn claimed_params_do_not_loosen_the_declared_parameter_refusal() {
+        // The claimed channel is additive: a misspelled *declared* name in
+        // `values` is still refused before anything is sent, claimed pairs
+        // present or not.
+        let client = client("http://127.0.0.1:8081", Value::Null);
+        let err = client
+            .call_with_claimed::<Value>(
+                ops::LIST_SESSIONS,
+                vec![("limt", "25".to_owned())],
+                &[("flavor".to_owned(), "grape".to_owned())],
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("limt"), "got: {err}");
+        assert!(
+            client.transport().seen.borrow().is_empty(),
+            "nothing may be sent for a call the contract refused",
+        );
+    }
+
+    #[tokio::test]
+    async fn claimed_pairs_on_a_non_claim_bearing_operation_are_refused() {
+        // The claimed channel is a scoped bypass, not a general one: the
+        // sealed contract documents the claim extension on the sessions
+        // listing alone, so a non-empty claimed set anywhere else is a
+        // contract refusal — before anything is sent, exactly like an
+        // undeclared parameter.
+        let client = client("http://127.0.0.1:8081", Value::Null);
+        let err = client
+            .call_with_claimed::<Value>(
+                ops::GET_SESSION,
+                vec![("id", "s-1".to_owned())],
+                &[("flavor".to_owned(), "grape".to_owned())],
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("no claimed filter params"),
+            "got: {err}",
+        );
+        assert!(
+            client.transport().seen.borrow().is_empty(),
+            "nothing may be sent for a call the contract refused",
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_claimed_set_is_permitted_on_every_operation() {
+        // No pairs, no restriction: `call_with_claimed` with an empty set is
+        // `call` by another spelling, on claim-bearing operations and
+        // otherwise alike.
+        let client = client(
+            "http://127.0.0.1:8081",
+            serde_json::json!({"session": {"id": "s-1"}}),
+        );
+        let _: Value = client
+            .call_with_claimed(ops::GET_SESSION, vec![("id", "s-1".to_owned())], &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            client.transport().seen.borrow()[0],
+            "http://127.0.0.1:8081/v1/sessions/s-1",
+        );
+    }
+
+    #[test]
+    fn every_claim_bearing_operation_is_in_the_vendored_contract() {
+        // The registry is a statement about the sealed document. An entry
+        // naming an operation the document does not have would open the
+        // claimed channel on nothing, and this is where that drift surfaces.
+        for operation in ops::CLAIM_BEARING_OPS {
+            assert!(
+                core().unwrap().method(operation).is_ok(),
+                "ops::CLAIM_BEARING_OPS names {operation:?}, which the vendored contract lacks",
+            );
+        }
     }
 }

@@ -40,6 +40,18 @@ pub const TAPES_API_YAML: &str = include_str!("../../contracts/tapes-api.yaml");
 pub mod ops {
     /// `GET /v1/sessions`
     pub const LIST_SESSIONS: &str = "listSessions";
+
+    /// The operations the sealed contract documents claim-gated filter
+    /// params on — today the sessions listing alone.
+    ///
+    /// A cassette's claims are per-surface on the live server, and the
+    /// vendored document records which surfaces carry the extension; this
+    /// set is the client's mirror of that fact. The claimed channel
+    /// ([`CoreClient::call_with_claimed`](crate::core::methods::CoreClient::call_with_claimed))
+    /// opens only on an operation named here, and the set grows exactly
+    /// when a re-pinned contract documents claim-gated params on another
+    /// operation — never ahead of the document.
+    pub const CLAIM_BEARING_OPS: &[&str] = &[LIST_SESSIONS];
     /// `GET /v1/sessions/{id}`
     pub const GET_SESSION: &str = "getSession";
     /// `GET /v1/sessions/{id}/traces`

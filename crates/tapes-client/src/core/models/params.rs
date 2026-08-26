@@ -187,12 +187,29 @@ pub struct SessionListParams {
     pub harness_session_id: Option<String>,
     /// Only sessions captured for this authenticated subject.
     pub auth_subject: Option<String>,
+    /// Claimed filter params: repeatable `(name, value)` pairs appended to
+    /// the query string, in order, after the declared parameters.
+    ///
+    /// The names are **data**, not contract. A cassette claims extra filter
+    /// params on the sessions listing at runtime (the server's generic
+    /// publishes/claims mechanism), so the vendored document cannot declare
+    /// them and this client must not pretend to know them: nothing here is
+    /// validated, normalized, or filtered. An unclaimed name is ignored
+    /// byte-identically server-side — a claimed one is the server's to
+    /// interpret — and either way the answer is the server's, which is what
+    /// keeps this crate working against deployments whose cassette sets it
+    /// has never heard of.
+    pub claimed: Vec<(String, String)>,
 }
 
 impl ContractParams for SessionListParams {
     const OPERATION: &'static str = "listSessions";
 
     fn values(&self) -> Vec<(&'static str, String)> {
+        // `claimed` is deliberately absent from this list: `values()` feeds
+        // the declared-parameter check, which would refuse a name the
+        // contract does not declare. The sessions-list method appends the
+        // claimed pairs to the query itself, after everything listed here.
         let mut values = Vec::new();
         push_num(&mut values, "limit", self.limit);
         push(&mut values, "cursor", self.cursor.as_deref());
