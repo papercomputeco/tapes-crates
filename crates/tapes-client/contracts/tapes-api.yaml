@@ -1,5 +1,24 @@
 components:
   schemas:
+    AdvertisedEntity:
+      description: |-
+        AdvertisedEntity is one entry in the aggregated entity registry: an entity
+        declaration plus where it came from. Cassette is empty for core-native
+        entities, because core is not a cassette.
+      properties:
+        cassette:
+          type: string
+        display_name:
+          type: string
+        id_kind:
+          type: string
+        relations:
+          items:
+            $ref: '#/components/schemas/EntityRelation'
+          type: array
+        type:
+          type: string
+      type: object
     Discovery:
       description: |-
         Discovery is the document served at GET /v1/cassettes.
@@ -14,6 +33,16 @@ components:
           type: array
         contract_version:
           type: string
+        entities:
+          description: |-
+            Entities is the aggregated entity registry:
+            core-native declarations plus every admitted cassette's [[entities]].
+            It updates as cassettes are admitted and withdrawn, and a consumer
+            keeping a catalog should treat it as advisory — shape-valid entity
+            types are usable whether or not they are currently listed.
+          items:
+            $ref: '#/components/schemas/AdvertisedEntity'
+          type: array
         problems:
           items:
             $ref: '#/components/schemas/Rejection'
@@ -38,6 +67,14 @@ components:
         client boot into a megabyte of mostly-unchanged bytes. The digest is enough
         to know whether the fetch is worth making.
       properties:
+        audience:
+          description: |-
+            Audience is the clients that should offer this cassette, empty meaning
+            all of them. Published because the filtering happens in the client, and a
+            client cannot filter on a field it never receives.
+          items:
+            type: string
+          type: array
         config:
           items:
             $ref: '#/components/schemas/DiscoverySetting'
@@ -79,6 +116,16 @@ components:
         secret:
           type: boolean
         type:
+          type: string
+      type: object
+    EntityRelation:
+      description: |-
+        EntityRelation declares a directed relation from the declaring entity type
+        to another.
+      properties:
+        kind:
+          type: string
+        to:
           type: string
       type: object
     ErrorResponse:
@@ -374,6 +421,8 @@ components:
           type: integer
         reconcile:
           $ref: '#/components/schemas/ReconcileStats'
+        transcript_projection:
+          $ref: '#/components/schemas/TranscriptProjectionStats'
         unattached_actions:
           description: |-
             UnattachedActions samples judged actions that found no matching
@@ -715,46 +764,6 @@ components:
         to_trace_id:
           type: string
       type: object
-    SpanSearchOutput:
-      description: SpanSearchOutput is the span search response.
-      properties:
-        count:
-          format: int32
-          type: integer
-        query:
-          type: string
-        results:
-          items:
-            $ref: '#/components/schemas/SpanSearchResult'
-          type: array
-      type: object
-    SpanSearchResult:
-      description: SpanSearchResult is one span hit with its trace/turn context.
-      properties:
-        model:
-          type: string
-        score:
-          format: float
-          type: number
-        session_id:
-          type: string
-        snippet:
-          description: Snippet previews the matched span's delta-only text.
-          type: string
-        span_id:
-          type: string
-        started_at:
-          format: date-time
-          type: string
-        trace_id:
-          type: string
-        user_prompt:
-          description: |-
-            UserPrompt is the prompt of the turn (trace) the span belongs to.
-            Served explicitly (not omitempty) so a synthetic turn's empty prompt
-            reaches consumers as "" rather than a dropped key — see TraceItem.
-          type: string
-      type: object
     StatsResponse:
       description: |-
         StatsResponse is the response for GET /v1/stats.
@@ -848,13 +857,10 @@ components:
           type: string
         source:
           description: |-
-            Source is the capture origin of the turn's rows ("wire" |
-            "transcript"), promoted from raw_turns.source. Per-trace, so a
-            session can mix live wire capture and transcript backfill. Today
-            every trace is "wire": transcripts only reconcile fork/parent edges
-            during derivation, they never form a trace on their own. "transcript"
-            becomes real when a session is reconstructed purely from a transcript
-            file with no proxy capture (an OSS backfill path).
+            Source is the projection provenance ("wire" | "transcript"). A
+            transcript-only session uses fallback until one usable wire call exists;
+            then its complete projection is wire-derived and transcripts only
+            reconcile structure. Spans inherit this trace-level provenance.
           type: string
         span_count:
           format: int32
@@ -918,6 +924,32 @@ components:
           format: int64
           type: integer
       type: object
+    TranscriptProjectionStats:
+      description: |-
+        TranscriptProjectionStats describes the deliberately partial transcript
+        fallback. OmittedTypes makes forward schema skew visible: unsupported records
+        remain immutable in raw_turns, but do not poison records that can be projected.
+      properties:
+        files:
+          format: int32
+          type: integer
+        omitted_records:
+          format: int32
+          type: integer
+        omitted_types:
+          additionalProperties:
+            format: int32
+            type: integer
+          type: object
+        projected_records:
+          format: int32
+          type: integer
+        records:
+          format: int32
+          type: integer
+        suppressed_by_wire:
+          type: boolean
+      type: object
     TreeTask:
       description: |-
         TreeTask is one task folded from the session's TaskCreate/TaskUpdate
@@ -935,24 +967,6 @@ components:
           format: int32
           type: integer
       type: object
-    createSkillRequest:
-      description: |-
-        createSkillRequest is the POST /v1/skills body for an authored-from-scratch
-        skill — only a name is required; the rest default to an empty private draft.
-      properties:
-        content:
-          type: string
-        description:
-          type: string
-        name:
-          type: string
-        tags:
-          items:
-            type: string
-          type: array
-        type:
-          type: string
-      type: object
     deriveRunResponse:
       description: |-
         deriveRunResponse is the derive-run result, keyed by org.
@@ -967,55 +981,10 @@ components:
             $ref: '#/components/schemas/RederiveReport'
           type: object
       type: object
-    generateSkillRequest:
-      description: |-
-        generateSkillRequest is the POST /v1/skills/generate body. It mirrors the
-        console's GenerateSkillInput: the client nominates source sessions plus
-        optional hints, and the server is authoritative on the skill body. Wire
-        shape is camelCase to match the console's skills schemas (which predate and
-        diverge from the snake_case convention the rest of tapes uses).
-      properties:
-        hint:
-          properties:
-            description:
-              type: string
-            name:
-              type: string
-            tags:
-              items:
-                type: string
-              type: array
-            type:
-              type: string
-          type: object
-        sessionIds:
-          items:
-            type: string
-          type: array
-      type: object
-    publishSkillRequest:
-      description: publishSkillRequest is the POST /v1/skills/:slug/versions body.
-      properties:
-        changelog:
-          type: string
-        content:
-          type: string
-      type: object
     seedDemoRequest:
       properties:
         overwrite:
           type: boolean
-      type: object
-    sessionSkillsResponse:
-      description: |-
-        sessionSkillsResponse is the envelope for the skills attributed to one
-        session. Unpaginated: a session's skill count is bounded by what was
-        generated from it.
-      properties:
-        items:
-          items:
-            $ref: '#/components/schemas/skillResponse'
-          type: array
       type: object
     sessionUpdateRequest:
       description: |-
@@ -1027,136 +996,6 @@ components:
         the response — and never the harness identity `name` (PCC-970).
       properties:
         display_name:
-          type: string
-      type: object
-    skillCountsResp:
-      description: |-
-        skillCountsResp are the tab counts for the current search: all matching,
-        authored by the caller (mine), and everyone else's (team = all - mine).
-      properties:
-        all:
-          format: int64
-          type: integer
-        mine:
-          format: int64
-          type: integer
-        team:
-          format: int64
-          type: integer
-      type: object
-    skillResponse:
-      description: |-
-        skillResponse is the unified Skill shape the console expects (camelCase). id
-        is the opaque identity / route key; slug is a cosmetic display label. content
-        always lives on the skill row (versions are history only); parentId is null
-        unless the skill is a duplicate/fork.
-      properties:
-        authorId:
-          type: string
-        content:
-          type: string
-        createdAt:
-          type: string
-        description:
-          type: string
-        downloadCount:
-          format: int64
-          type: integer
-        id:
-          type: string
-        isAiGenerated:
-          type: boolean
-        name:
-          type: string
-        originatingSessionIds:
-          items:
-            type: string
-          type: array
-        parentId:
-          type: string
-        slug:
-          type: string
-        tags:
-          items:
-            type: string
-          type: array
-        type:
-          type: string
-        updatedAt:
-          type: string
-        version:
-          type: string
-        visibility:
-          type: string
-      type: object
-    skillVersionResponse:
-      description: skillVersionResponse is one immutable published snapshot.
-      properties:
-        authorId:
-          type: string
-        changelog:
-          type: string
-        content:
-          type: string
-        id:
-          type: string
-        publishedAt:
-          type: string
-        semver:
-          type: string
-        skillId:
-          type: string
-        versionNumber:
-          format: int32
-          type: integer
-      type: object
-    skillVersionsResponse:
-      description: |-
-        skillVersionsResponse is the full version history for one skill, newest
-        first. TotalCount is the length of Versions — the history is returned whole
-        rather than paged, so the two never disagree.
-      properties:
-        totalCount:
-          format: int32
-          type: integer
-        versions:
-          items:
-            $ref: '#/components/schemas/skillVersionResponse'
-          type: array
-      type: object
-    skillsListResponse:
-      description: |-
-        skillsListResponse is the paginated list envelope: one keyset page plus the
-        opaque next_cursor (mirroring /v1/sessions) and the per-tab counts for the
-        active search.
-      properties:
-        counts:
-          $ref: '#/components/schemas/skillCountsResp'
-        items:
-          items:
-            $ref: '#/components/schemas/skillResponse'
-          type: array
-        next_cursor:
-          type: string
-      type: object
-    updateSkillRequest:
-      description: |-
-        updateSkillRequest is the PUT /v1/skills/:slug body — all fields optional;
-        only present fields are applied onto the existing record.
-      properties:
-        content:
-          type: string
-        description:
-          type: string
-        name:
-          type: string
-        tags:
-          items:
-            type: string
-          type: array
-        type:
-          type: string
-        visibility:
           type: string
       type: object
 info:
@@ -1369,7 +1208,7 @@ paths:
       description: |-
         Sends a JSON-RPC 2.0 request to the stateless Model Context Protocol endpoint mounted at /v1/mcp.
 
-        Typical calls include initialize, tools/list, and tools/call. The server exposes tools advertised by installed cassettes, plus the legacy core search tool while search is configured in core.
+        Typical calls include initialize, tools/list, and tools/call. The server exposes the tools advertised by installed cassettes.
       operationId: invokeMcp
       requestBody:
         content:
@@ -1400,59 +1239,14 @@ paths:
       summary: Invoke the streamable MCP endpoint
       tags:
       - mcp
-  /v1/search/spans:
-    get:
-      description: Embeds the query text and runs vector similarity over the embedded
-        span projection (main llm spans, delta-only content). Each hit carries span,
-        trace, and turn context.
-      operationId: searchSpans
-      parameters:
-      - description: Search query
-        in: query
-        name: query
-        required: true
-        schema:
-          type: string
-      - description: Maximum number of results to return
-        in: query
-        name: top_k
-        schema:
-          default: 5
-          minimum: 1
-          type: integer
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SpanSearchOutput'
-          description: Search hits
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Missing or invalid query parameters
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Search execution failed
-        "503":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Span search is not configured or not yet initialized
-      summary: Semantic search over span embeddings
-      tags:
-      - search
   /v1/sessions:
     get:
-      description: Returns one row per harness session from the sessions table, cursor-paginated.
+      description: 'Returns one row per harness session from the sessions table, cursor-paginated.
         Default order is last_active (last_seen_at) desc; override with the sort and
-        direction query params.
+        direction query params. Admitted cassettes may claim additional filter query
+        params on this surface (published-view filters; see the cassettes doc): a
+        claimed param filters server-side with repeats ANDed, while the same param
+        with no admitted claim is ignored exactly like any unknown parameter.'
       operationId: listSessions
       parameters:
       - description: Maximum number of sessions to return (default 50, max 200)
@@ -1688,64 +1482,6 @@ paths:
       summary: Update a session's title
       tags:
       - sessions
-  /v1/sessions/{id}/export:
-    get:
-      description: 'Returns the session as a single JSON line (downloadable attachment):
-        the session object with its traces, each trace carrying its full spans — the
-        same shape as GET /v1/sessions/{id}/traces with payload=full. detail=traces
-        exports turn headers only (no spans or links).'
-      operationId: exportSession
-      parameters:
-      - description: Session id (UUID)
-        in: path
-        name: id
-        required: true
-        schema:
-          type: string
-      - description: 'Export granularity: spans (default, traces with full spans)
-          or traces (turn headers only)'
-        in: query
-        name: detail
-        schema:
-          enum:
-          - spans
-          - traces
-          type: string
-      responses:
-        "200":
-          content:
-            application/x-ndjson:
-              schema:
-                type: string
-          description: JSONL body, one session object with nested traces (and spans
-            at detail=spans)
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Missing or malformed id, or unrecognized detail
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Session not found
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Failed to load or render the session
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Sessions not supported by this backend
-      summary: Export a session as JSONL
-      tags:
-      - sessions
   /v1/sessions/{id}/raw_turns:
     get:
       description: 'The raw layer''s wire log: one row per captured call or transcript
@@ -1793,40 +1529,6 @@ paths:
       summary: List a session's raw capture log (operator)
       tags:
       - sessions
-  /v1/sessions/{id}/skills:
-    get:
-      description: Every skill generated from the given session. Unpaginated — the
-        count is bounded by what was generated from that one session.
-      operationId: listSessionSkills
-      parameters:
-      - description: Session id
-        in: path
-        name: id
-        required: true
-        schema:
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/sessionSkillsResponse'
-          description: The session's skills
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Listing failed
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Backend does not support skills
-      summary: List a session's skills
-      tags:
-      - skills
   /v1/sessions/{id}/traces:
     get:
       description: Returns the session's user-visible turns as traces with nested
@@ -1883,530 +1585,6 @@ paths:
       summary: Get a session's trace/span projection
       tags:
       - sessions
-  /v1/sessions/export:
-    get:
-      description: Streams one JSON line per session in the given window, newest-first,
-        as a downloadable attachment. Each line is the session object with its traces,
-        each trace carrying its full spans — the same shape as GET /v1/sessions/{id}/traces
-        with payload=full. detail=traces exports turn headers only (no spans or links).
-        Defaults to the trailing 30 days. Not bounded by the /v1/sessions list cap
-        — pages internally.
-      operationId: exportSessions
-      parameters:
-      - description: 'Only include sessions with a turn started at or after this RFC3339
-          timestamp (activity window; default: now - 30 days)'
-        in: query
-        name: since
-        schema:
-          format: date-time
-          type: string
-      - description: Only include sessions with a turn started before this RFC3339
-          timestamp (activity window)
-        in: query
-        name: until
-        schema:
-          format: date-time
-          type: string
-      - description: 'Export granularity: spans (default, traces with full spans)
-          or traces (turn headers only)'
-        in: query
-        name: detail
-        schema:
-          enum:
-          - spans
-          - traces
-          type: string
-      responses:
-        "200":
-          content:
-            application/x-ndjson:
-              schema:
-                type: string
-          description: JSONL body, one JSON object per session with nested traces
-            (and spans at detail=spans)
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Malformed since/until, or unrecognized detail
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Failed to list or render sessions
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Sessions not supported by this backend
-      summary: Export sessions in a time window as JSONL
-      tags:
-      - sessions
-  /v1/skills:
-    get:
-      description: |-
-        One keyset page of the org's skills, newest-edited first, plus per-tab counts for the active search. Pagination mirrors /v1/sessions: pass the returned next_cursor to continue; its absence means the last page.
-
-        The counts are computed over the whole matching set rather than the loaded page, so a filtered tab shows a true total.
-      operationId: listSkills
-      parameters:
-      - description: Page size (default 24, max 100)
-        in: query
-        name: limit
-        schema:
-          minimum: 1
-          type: integer
-      - description: Opaque keyset cursor from a previous next_cursor. Reset it when
-          changing sort.
-        in: query
-        name: cursor
-        schema:
-          type: string
-      - description: Search over name, description, and tags
-        in: query
-        name: q
-        schema:
-          type: string
-      - description: Which slice to return
-        in: query
-        name: scope
-        schema:
-          enum:
-          - all
-          - mine
-          - team
-          type: string
-      - description: Ordering; defaults to most recently updated
-        in: query
-        name: sort
-        schema:
-          enum:
-          - downloads
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/skillsListResponse'
-          description: One page of skills
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Malformed cursor
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Listing failed
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Backend does not support skills
-      summary: List skills
-      tags:
-      - skills
-    post:
-      description: Creates a skill authored by hand, as opposed to the generator.
-        The caller supplies the content; nothing is inferred.
-      operationId: createSkill
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/createSkillRequest'
-        description: Skill to create
-        required: true
-      responses:
-        "201":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/skillResponse'
-          description: The created skill
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Invalid body or unknown type
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Create failed
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Backend does not support skills
-      summary: Create a skill
-      tags:
-      - skills
-  /v1/skills/{id}:
-    delete:
-      description: Deletes the skill and its version history. Only the creator may
-        delete; another member of the same org gets 403 rather than 404, so the skill's
-        existence is not hidden from someone who can already list it.
-      operationId: deleteSkill
-      parameters:
-      - description: Skill id
-        in: path
-        name: id
-        required: true
-        schema:
-          type: string
-      responses:
-        "204":
-          description: Deleted
-        "403":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Only the creator can delete this skill
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Skill not found
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Delete failed
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Backend does not support skills
-      summary: Delete a skill
-      tags:
-      - skills
-    get:
-      description: Returns one skill by its opaque id. The id is the route key; slug
-        is a cosmetic display label and is not addressable.
-      operationId: getSkill
-      parameters:
-      - description: Skill id
-        in: path
-        name: id
-        required: true
-        schema:
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/skillResponse'
-          description: The skill
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Skill not found
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Lookup failed
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Backend does not support skills
-      summary: Get a skill
-      tags:
-      - skills
-    put:
-      description: Partial update of the skill head. Every field is optional; omitted
-        fields are left as they are. Editing the head does not publish — use the versions
-        endpoint to snapshot.
-      operationId: updateSkill
-      parameters:
-      - description: Skill id
-        in: path
-        name: id
-        required: true
-        schema:
-          type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/updateSkillRequest'
-        description: Fields to change
-        required: true
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/skillResponse'
-          description: The updated skill
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Invalid body or unknown type
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Skill not found
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Save failed
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Backend does not support skills
-      summary: Update a skill
-      tags:
-      - skills
-  /v1/skills/{id}/duplicate:
-    post:
-      description: Forks a skill into a new one owned by the caller, with parentId
-        set to the source. The copy starts its own version history; the source is
-        untouched.
-      operationId: duplicateSkill
-      parameters:
-      - description: Skill id to duplicate
-        in: path
-        name: id
-        required: true
-        schema:
-          type: string
-      responses:
-        "201":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/skillResponse'
-          description: The duplicated skill
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Skill not found
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Duplicate failed
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Backend does not support skills
-      summary: Duplicate a skill
-      tags:
-      - skills
-  /v1/skills/{id}/skill.md:
-    get:
-      description: |-
-        Renders the skill as an on-disk SKILL.md, served as an attachment. The frontmatter name is the kebab slug, which is what a harness matches to the skill's directory — not the human display name.
-
-        Serving this counts a download, best-effort: a failed counter write never fails the download.
-      operationId: getSkillMarkdown
-      parameters:
-      - description: Skill id
-        in: path
-        name: id
-        required: true
-        schema:
-          type: string
-      responses:
-        "200":
-          content:
-            text/markdown:
-              schema:
-                type: string
-          description: SKILL.md document
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Skill not found
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Lookup failed
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Backend does not support skills
-      summary: Download a skill as SKILL.md
-      tags:
-      - skills
-  /v1/skills/{id}/versions:
-    get:
-      description: Full published history for one skill, newest first. Returned whole
-        rather than paged, so totalCount is always the length of versions.
-      operationId: listSkillVersions
-      parameters:
-      - description: Skill id
-        in: path
-        name: id
-        required: true
-        schema:
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/skillVersionsResponse'
-          description: The skill's versions
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Listing failed
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Backend does not support skills
-      summary: List a skill's versions
-      tags:
-      - skills
-    post:
-      description: 'Snapshots the skill''s current content as an immutable version
-        and advances the skill''s semver. Versions are history: the head content stays
-        on the skill row, so reading a skill never needs its versions.'
-      operationId: publishSkill
-      parameters:
-      - description: Skill id
-        in: path
-        name: id
-        required: true
-        schema:
-          type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/publishSkillRequest'
-        description: Version metadata
-        required: true
-      responses:
-        "201":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/skillVersionResponse'
-          description: The published version
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Skill not found
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Publish failed, or the version landed but the head could not
-            be advanced
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Backend does not support skills
-      summary: Publish a skill version
-      tags:
-      - skills
-  /v1/skills/generate:
-    post:
-      description: |-
-        Runs the LLM skill generator over the nominated sessions and persists the result. The client nominates sources and optional hints; the server is authoritative on the skill body.
-
-        Source sessions are read through an org-scoped in-process querier, so generation only ever sees sessions in the caller's tenant.
-      operationId: generateSkill
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/generateSkillRequest'
-        description: Source sessions and optional hints
-        required: true
-      responses:
-        "201":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/skillResponse'
-          description: The generated skill
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Invalid body, or sessionIds missing/empty
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: One or more source sessions were not found
-        "422":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Sources carried nothing the generator could use
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Generation or persistence failed, or no LLM provider is configured
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          description: Backend does not support skills
-      summary: Generate a skill from sessions
-      tags:
-      - skills
   /v1/stats:
     get:
       description: Returns counts plus cost / token / duration / tool-call / completed-count

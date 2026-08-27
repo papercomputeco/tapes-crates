@@ -9,11 +9,12 @@
 //! # The tables stay with the consumer
 //!
 //! Only the *mechanism* lives here. `EXPOSED` / `UNEXPOSED` are a statement
-//! about one client's surface: a CLI that authors skills locally deliberately
-//! does not expose a server-side skills store, and a client that does would
-//! have to. Sharing the tables would make the gate report on the union of two
-//! surfaces and silently stop protecting whichever client differs — which is
-//! precisely the failure the gate exists to prevent, reintroduced one layer up.
+//! about one client's surface: an operator CLI deliberately exposes the admin
+//! operations a personal CLI deliberately does not, and each needs its own
+//! answer on record. Sharing the tables would make the gate report on the
+//! union of two surfaces and silently stop protecting whichever client
+//! differs — which is precisely the failure the gate exists to prevent,
+//! reintroduced one layer up.
 //!
 //! # Usage
 //!

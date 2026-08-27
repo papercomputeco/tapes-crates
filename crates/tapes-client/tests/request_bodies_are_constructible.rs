@@ -28,48 +28,14 @@ use std::collections::BTreeMap;
 
 use tapes_client::core::models::params::ContractParams;
 use tapes_client::core::models::{
-    CreateSkillRequest, ExportDetail, ExportSessionParams, ExportSessionsParams,
-    GenerateSkillRequest, GenerateSkillRequestHint, McpRequest, PayloadDetail, PublishSkillRequest,
-    RawTurnAttributionRepairRequest, SearchSpansParams, SeedDemoRequest, SessionListParams,
-    SessionTracesParams, SessionUpdateRequest, SkillScope, SkillSort, SkillsListParams,
-    SortDirection, StatsParams, TraceListParams, TraceParams, UpdateSkillRequest,
+    McpRequest, PayloadDetail, RawTurnAttributionRepairRequest, SeedDemoRequest, SessionListParams,
+    SessionTracesParams, SessionUpdateRequest, SortDirection, StatsParams, TraceListParams,
+    TraceParams,
 };
 
 #[test]
 fn every_request_body_can_be_built_and_sent_by_a_consumer() {
     let bodies: Vec<serde_json::Value> = vec![
-        serde_json::to_value(CreateSkillRequest {
-            content: "# Gum".to_owned(),
-            description: "Chews well".to_owned(),
-            name: "gum".to_owned(),
-            tags: vec!["candy".to_owned()],
-            type_: "skill".to_owned(),
-        })
-        .unwrap(),
-        serde_json::to_value(UpdateSkillRequest {
-            content: Some("# Gum".to_owned()),
-            description: Some("Chews well".to_owned()),
-            name: Some("gum".to_owned()),
-            tags: Some(vec!["candy".to_owned()]),
-            type_: Some("skill".to_owned()),
-            visibility: Some("private".to_owned()),
-        })
-        .unwrap(),
-        serde_json::to_value(PublishSkillRequest {
-            changelog: "First cut".to_owned(),
-            content: "# Gum".to_owned(),
-        })
-        .unwrap(),
-        serde_json::to_value(GenerateSkillRequest {
-            hint: GenerateSkillRequestHint {
-                description: "Chews well".to_owned(),
-                name: "gum".to_owned(),
-                tags: vec!["candy".to_owned()],
-                type_: "skill".to_owned(),
-            },
-            session_ids: vec!["s-1".to_owned()],
-        })
-        .unwrap(),
         serde_json::to_value(SessionUpdateRequest {
             display_name: Some("A better title".to_owned()),
         })
@@ -134,29 +100,6 @@ fn every_parameter_set_can_be_built_by_a_consumer() {
             session_id: "s-1".to_owned(),
         }
         .values(),
-        SearchSpansParams {
-            query: "gum glow charm".to_owned(),
-            top_k: Some(5),
-        }
-        .values(),
-        ExportSessionParams {
-            detail: Some(ExportDetail::Spans),
-        }
-        .values(),
-        ExportSessionsParams {
-            since: Some("2020-01-01T00:00:00Z".to_owned()),
-            until: Some("2020-01-02T00:00:00Z".to_owned()),
-            detail: Some(ExportDetail::Traces),
-        }
-        .values(),
-        SkillsListParams {
-            limit: Some(1),
-            cursor: Some("c".to_owned()),
-            q: Some("rust".to_owned()),
-            scope: Some(SkillScope::Mine),
-            sort: Some(SkillSort::Downloads),
-        }
-        .values(),
         StatsParams {
             since: Some("2020-01-01T00:00:00Z".to_owned()),
             until: Some("2020-01-02T00:00:00Z".to_owned()),
@@ -175,13 +118,10 @@ fn a_partial_update_built_out_here_omits_what_it_does_not_set() {
     // The consumer-side statement of the rule the models' own tests pin: the
     // fields a caller leaves alone are absent from the bytes, so the server
     // has nothing to apply for them.
-    let rename = UpdateSkillRequest {
-        name: Some("gum glow charm".to_owned()),
-        ..Default::default()
-    };
+    let untouched = SessionUpdateRequest { display_name: None };
 
     assert_eq!(
-        serde_json::to_value(&rename).unwrap(),
-        serde_json::json!({"name": "gum glow charm"}),
+        serde_json::to_value(&untouched).unwrap(),
+        serde_json::json!({}),
     );
 }

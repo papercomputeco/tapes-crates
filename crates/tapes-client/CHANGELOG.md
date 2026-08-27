@@ -13,6 +13,45 @@ before the tag is cut.
 Pre-1.0, `0.x` versions carry the usual Cargo meaning: a breaking change bumps
 the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
+## [Unreleased]
+
+### Added
+
+- `TranscriptProjectionStats`, and `RederiveReport.transcript_projection`
+  carrying it: the derive report now describes the deliberately partial
+  transcript fallback, with `omitted_types` making forward schema skew
+  visible.
+
+### Changed
+
+- A refresh of the vendored read contract, from tapes v0.36.0 to v0.39.0.
+  The sessions listing's declared parameters are unchanged; its prose now
+  documents claim-gated filter params — an admitted cassette may claim extra
+  filter names on `/v1/sessions`, and an unclaimed name is ignored like any
+  unknown parameter — which is the server-side mechanism
+  `SessionListParams::claimed` rides on. The discovery document additionally
+  publishes an aggregated entity registry and per-cassette audience; both
+  stay unmodelled with the rest of that document, which the cassette surface
+  reads directly.
+
+### Removed
+
+- **Breaking**: the typed search, export, and skills surfaces. The sealed
+  contract no longer declares the three extracted read surfaces — they are
+  served by cassettes, and core's retirement-bound copies are gone — so the
+  operations, and with them this crate's typed spellings, no longer exist:
+  the `CoreClient` methods (`search_spans`, `export_session`,
+  `export_sessions`, `list_session_skills`, and the eleven skills methods),
+  their `ops` constants, the parameter structs and enums
+  (`SearchSpansParams`, `ExportSessionParams`, `ExportSessionsParams`,
+  `SkillsListParams`, `ExportDetail`, `SkillScope`, `SkillSort`), the
+  `models::skill` module, and the span search models (`SpanSearchOutput`,
+  `SpanSearchResult`). The cassette-route table that had been redirecting
+  these operations goes with them: what remains of each surface is what it
+  always was underneath — a cassette a deployment serves, reached through
+  the discovered surface (`cassettes::`) or a caller's own request against
+  its routes.
+
 ## [0.4.1] - 2026-08-18
 
 ### Fixed

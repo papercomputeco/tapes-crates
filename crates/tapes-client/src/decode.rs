@@ -22,7 +22,7 @@
 //!
 //! - **Rendering operations** decode into models, so a client can lay fields
 //!   out rather than print a document.
-//! - **Fidelity operations** — export, raw turns — stay [`Value`]. A typed
+//! - **Fidelity operations** — raw turns and their kin — stay [`Value`]. A typed
 //!   decode there silently truncates the archive an old client writes of a
 //!   newer server's data, and it fails at the *response* level, so one
 //!   unmodelled field can blank a whole page.

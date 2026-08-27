@@ -58,16 +58,12 @@ pub mod ops {
     pub const GET_SESSION_TRACES: &str = "getSessionTraces";
     /// `GET /v1/sessions/{id}/raw_turns`
     pub const LIST_RAW_TURNS: &str = "listRawTurns";
-    /// `GET /v1/sessions/{id}/export`
-    pub const EXPORT_SESSION: &str = "exportSession";
     /// `GET /v1/traces`
     pub const LIST_TRACES: &str = "listTraces";
     /// `GET /v1/traces/{trace_id}`
     pub const GET_TRACE: &str = "getTrace";
     /// `GET /v1/traces/{trace_id}/spans/{span_id}`
     pub const GET_SPAN: &str = "getSpan";
-    /// `GET /v1/search/spans`
-    pub const SEARCH_SPANS: &str = "searchSpans";
     /// `POST /v1/admin/seed/demo`
     pub const SEED_DEMO: &str = "seedDemo";
     /// `GET /v1/cassettes`
@@ -76,32 +72,8 @@ pub mod ops {
     pub const UPDATE_SESSION: &str = "updateSession";
     /// `DELETE /v1/sessions/{id}`
     pub const DELETE_SESSION: &str = "deleteSession";
-    /// `GET /v1/sessions/export`
-    pub const EXPORT_SESSIONS: &str = "exportSessions";
-    /// `GET /v1/sessions/{id}/skills`
-    pub const LIST_SESSION_SKILLS: &str = "listSessionSkills";
     /// `GET /v1/stats`
     pub const GET_STATS: &str = "getStats";
-    /// `GET /v1/skills`
-    pub const LIST_SKILLS: &str = "listSkills";
-    /// `POST /v1/skills`
-    pub const CREATE_SKILL: &str = "createSkill";
-    /// `GET /v1/skills/{id}`
-    pub const GET_SKILL: &str = "getSkill";
-    /// `PUT /v1/skills/{id}`
-    pub const UPDATE_SKILL: &str = "updateSkill";
-    /// `DELETE /v1/skills/{id}`
-    pub const DELETE_SKILL: &str = "deleteSkill";
-    /// `POST /v1/skills/{id}/duplicate`
-    pub const DUPLICATE_SKILL: &str = "duplicateSkill";
-    /// `GET /v1/skills/{id}/versions`
-    pub const LIST_SKILL_VERSIONS: &str = "listSkillVersions";
-    /// `POST /v1/skills/{id}/versions`
-    pub const PUBLISH_SKILL: &str = "publishSkill";
-    /// `POST /v1/skills/generate`
-    pub const GENERATE_SKILL: &str = "generateSkill";
-    /// `GET /v1/skills/{id}/skill.md` — the rendered SKILL.md document.
-    pub const GET_SKILL_MARKDOWN: &str = "getSkillMarkdown";
 }
 
 /// The core read surface, reduced from the vendored contract.
@@ -379,42 +351,34 @@ mod tests {
         // The asymmetry this closes: a missing path value cannot produce a
         // URL, so it was always caught, while a missing required query value
         // produces a perfectly well-formed URL that is not the request the
-        // contract describes. `searchSpans` without `query` would have gone
-        // out and come back as the server's own 400.
+        // contract describes. `listTraces` without `session_id` would have
+        // gone out and come back as the server's own 400.
         let surface = core().unwrap();
-        for (operation, missing) in [
-            (ops::SEARCH_SPANS, "query"),
-            (ops::LIST_TRACES, "session_id"),
-        ] {
-            let method = surface.method(operation).unwrap();
-            let err = call_for(method, Vec::new()).unwrap_err();
-            assert!(
-                err.to_string().contains(missing),
-                "{operation} must name {missing:?}: {err}",
-            );
-            assert!(
-                err.to_string().contains("query parameter"),
-                "{operation} must say where the parameter travels: {err}",
-            );
-        }
+        let method = surface.method(ops::LIST_TRACES).unwrap();
+        let err = call_for(method, Vec::new()).unwrap_err();
+        assert!(err.to_string().contains("session_id"), "got: {err}");
+        assert!(
+            err.to_string().contains("query parameter"),
+            "the error must say where the parameter travels: {err}",
+        );
     }
 
     #[test]
     fn supplying_a_required_query_parameter_is_all_that_is_asked() {
         // The other half of the gate: enforcement may not start demanding
-        // optional parameters. `searchSpans` requires `query` and not
-        // `top_k`, and every caller that sends the required one must still
+        // optional parameters. `listTraces` requires `session_id` and nothing
+        // else, and every caller that sends the required one must still
         // build.
         let surface = core().unwrap();
         let call = call_for(
-            surface.method(ops::SEARCH_SPANS).unwrap(),
-            vec![("query", "gum glow charm".to_owned())],
+            surface.method(ops::LIST_TRACES).unwrap(),
+            vec![("session_id", "s-1".to_owned())],
         )
         .unwrap();
-        assert_eq!(call.path, "/v1/search/spans");
+        assert_eq!(call.path, "/v1/traces");
         assert_eq!(
             call.query,
-            vec![("query".to_owned(), "gum glow charm".to_owned())],
+            vec![("session_id".to_owned(), "s-1".to_owned())]
         );
     }
 
@@ -432,12 +396,11 @@ mod tests {
     #[test]
     fn an_operation_that_requires_a_body_is_refused_without_one() {
         // Contract-invalid and invisible: the request is syntactically fine
-        // and means nothing. Every operation in this position is one this
-        // crate's consumers do not expose today, which is exactly why the
-        // gap could sit here unnoticed until one of them does.
+        // and means nothing, so the refusal has to happen before anything is
+        // sent.
         let surface = core().unwrap();
-        let method = surface.method("createSkill").unwrap();
-        let err = call_for(method, Vec::new()).unwrap_err();
+        let method = surface.method(ops::UPDATE_SESSION).unwrap();
+        let err = call_for(method, vec![("id", "s-1".to_owned())]).unwrap_err();
         assert!(
             err.to_string().contains("requires a request body"),
             "got: {err}",
@@ -463,11 +426,15 @@ mod tests {
     #[test]
     fn a_required_body_is_carried_on_the_call_when_it_is_supplied() {
         let surface = core().unwrap();
-        let method = surface.method("createSkill").unwrap();
-        let call =
-            call_for_with_body(method, Vec::new(), Some(r#"{"name":"x"}"#.to_owned())).unwrap();
-        assert_eq!(call.method, "POST");
-        assert_eq!(call.body.as_deref(), Some(r#"{"name":"x"}"#));
+        let method = surface.method(ops::UPDATE_SESSION).unwrap();
+        let call = call_for_with_body(
+            method,
+            vec![("id", "s-1".to_owned())],
+            Some(r#"{"display_name":"x"}"#.to_owned()),
+        )
+        .unwrap();
+        assert_eq!(call.method, "PATCH");
+        assert_eq!(call.body.as_deref(), Some(r#"{"display_name":"x"}"#));
     }
 
     #[test]
@@ -499,27 +466,14 @@ mod tests {
             ops::GET_SESSION,
             ops::GET_SESSION_TRACES,
             ops::LIST_RAW_TURNS,
-            ops::EXPORT_SESSION,
             ops::LIST_TRACES,
             ops::GET_TRACE,
             ops::GET_SPAN,
-            ops::SEARCH_SPANS,
             ops::SEED_DEMO,
             ops::LIST_CASSETTES,
             ops::UPDATE_SESSION,
             ops::DELETE_SESSION,
-            ops::EXPORT_SESSIONS,
-            ops::LIST_SESSION_SKILLS,
             ops::GET_STATS,
-            ops::LIST_SKILLS,
-            ops::CREATE_SKILL,
-            ops::GET_SKILL,
-            ops::UPDATE_SKILL,
-            ops::DELETE_SKILL,
-            ops::DUPLICATE_SKILL,
-            ops::LIST_SKILL_VERSIONS,
-            ops::PUBLISH_SKILL,
-            ops::GENERATE_SKILL,
         ] {
             assert!(surface.method(id).is_ok(), "{id:?} did not resolve");
         }

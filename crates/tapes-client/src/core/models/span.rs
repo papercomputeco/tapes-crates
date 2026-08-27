@@ -1,4 +1,4 @@
-//! Span shapes: the observed units of work, their edges, and search hits.
+//! Span shapes: the observed units of work and their edges.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -119,64 +119,4 @@ pub struct SpanLinkItem {
 
 impl ContractModel for SpanLinkItem {
     const SCHEMA: &'static str = "SpanLinkItem";
-}
-
-/// The span search response.
-///
-/// Models the contract's `SpanSearchOutput` schema.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-#[non_exhaustive]
-pub struct SpanSearchOutput {
-    /// The contract's `count`.
-    pub count: i32,
-
-    /// The contract's `query`.
-    pub query: String,
-
-    /// The contract's `results`.
-    #[serde(deserialize_with = "super::null_default")]
-    pub results: Vec<SpanSearchResult>,
-}
-
-impl ContractModel for SpanSearchOutput {
-    const SCHEMA: &'static str = "SpanSearchOutput";
-}
-
-/// One span hit with its trace/turn context.
-///
-/// Models the contract's `SpanSearchResult` schema.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-#[non_exhaustive]
-pub struct SpanSearchResult {
-    /// The contract's `model`.
-    pub model: String,
-
-    /// The contract's `score`.
-    pub score: f32,
-
-    /// The contract's `session_id`.
-    pub session_id: String,
-
-    /// Snippet previews the matched span's delta-only text.
-    pub snippet: String,
-
-    /// The contract's `span_id`.
-    pub span_id: String,
-
-    /// The contract's `started_at`, an RFC 3339 timestamp.
-    pub started_at: String,
-
-    /// The contract's `trace_id`.
-    pub trace_id: String,
-
-    /// The prompt of the turn (trace) the span belongs to. Served explicitly
-    /// (not omitempty) so a synthetic turn's empty prompt reaches consumers
-    /// as "" rather than a dropped key — see TraceItem.
-    pub user_prompt: String,
-}
-
-impl ContractModel for SpanSearchResult {
-    const SCHEMA: &'static str = "SpanSearchResult";
 }

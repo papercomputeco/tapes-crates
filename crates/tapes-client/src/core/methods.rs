@@ -34,13 +34,10 @@ use crate::cassettes::discovery::Discovery;
 use crate::core::contract::{self, core, ops};
 use crate::core::models::params::ContractParams;
 use crate::core::models::{
-    CreateSkillRequest, ExportSessionParams, ExportSessionsParams, GenerateSkillRequest,
-    PublishSkillRequest, RawTurnListResponse, SearchSpansParams, SeedDemoRequest, SeedResult,
-    SessionDetailResponse, SessionItem, SessionListParams, SessionListResponse,
-    SessionSkillsResponse, SessionTracesParams, SessionTracesResponse, SessionUpdateRequest,
-    SkillResponse, SkillVersionResponse, SkillVersionsResponse, SkillsListParams,
-    SkillsListResponse, SpanItem, SpanSearchOutput, StatsParams, StatsResponse, TraceDetail,
-    TraceListParams, TraceListResponse, TraceParams, UpdateSkillRequest,
+    RawTurnListResponse, SeedDemoRequest, SeedResult, SessionDetailResponse, SessionItem,
+    SessionListParams, SessionListResponse, SessionTracesParams, SessionTracesResponse,
+    SessionUpdateRequest, SpanItem, StatsParams, StatsResponse, TraceDetail, TraceListParams,
+    TraceListResponse, TraceParams,
 };
 use crate::decode;
 use crate::error::{Result, error};
@@ -71,54 +68,6 @@ impl<T> CoreClient<T> {
     pub fn into_transport(self) -> T {
         self.transport
     }
-}
-
-/// Send a sealed operation to the cassette that serves it now.
-///
-/// Three read surfaces were extracted from tapes core into cassettes —
-/// search, export, and skills — each serving its routes under
-/// `/v1/cassettes/<name>` with request and response shapes identical to the
-/// core routes they replace. Core's own copies are retirement-bound and no
-/// longer what deployments keep current, so every resolution of these
-/// operations is redirected here: the named methods, the generic
-/// [`CoreClient::call`] and [`CoreClient::stream`] escape hatches, and
-/// [`CoreClient::request_for`] all agree, because they all build their
-/// request through this.
-///
-/// Only the path moves — parameters, bodies, and models still come from the
-/// sealed contract, so a contract change to any of these shapes still lands
-/// at vendor time. `listSessionSkills` is the one reshape: core spelled it
-/// `GET /v1/sessions/{id}/skills`, and the skills cassette serves the same
-/// listing as a `session_id` filter on its own collection, so the path
-/// parameter becomes a query parameter.
-///
-/// A deployment that does not serve the cassette answers 404 where core once
-/// answered; typed access over the *discovered* surface, which would make
-/// that a first-class "not served here", is the successor to this table.
-fn reroute_to_cassette(operation_id: &str, request: &mut WireRequest<'static>) {
-    request.path = match operation_id {
-        ops::SEARCH_SPANS => "/v1/cassettes/search/spans",
-        ops::EXPORT_SESSION => "/v1/cassettes/export/sessions/{id}",
-        ops::EXPORT_SESSIONS => "/v1/cassettes/export/sessions",
-        ops::LIST_SKILLS | ops::CREATE_SKILL => "/v1/cassettes/skills",
-        ops::GET_SKILL | ops::UPDATE_SKILL | ops::DELETE_SKILL => "/v1/cassettes/skills/{id}",
-        ops::DUPLICATE_SKILL => "/v1/cassettes/skills/{id}/duplicate",
-        ops::GET_SKILL_MARKDOWN => "/v1/cassettes/skills/{id}/skill.md",
-        ops::LIST_SKILL_VERSIONS | ops::PUBLISH_SKILL => "/v1/cassettes/skills/{id}/versions",
-        ops::GENERATE_SKILL => "/v1/cassettes/skills/generate",
-        ops::LIST_SESSION_SKILLS => {
-            let session = request
-                .path_params
-                .iter()
-                .position(|(name, _)| name == "id")
-                .map(|index| request.path_params.remove(index));
-            if let Some((_, id)) = session {
-                request.query.push(("session_id".to_owned(), id));
-            }
-            "/v1/cassettes/skills"
-        }
-        _ => return,
-    };
 }
 
 impl<T: TapesTransport> CoreClient<T> {
@@ -232,7 +181,6 @@ impl<T: TapesTransport> CoreClient<T> {
         let method = core()?.method(operation_id)?;
         let mut request = contract::call_for_with_body(method, values, body)?;
         request.query.extend(claimed.iter().cloned());
-        reroute_to_cassette(operation_id, &mut request);
         let response = self
             .transport
             .send(&request)
@@ -255,9 +203,7 @@ impl<T: TapesTransport> CoreClient<T> {
         operation_id: &str,
         values: Vec<(&str, String)>,
     ) -> Result<WireRequest<'static>> {
-        let mut request = contract::call_for(core()?.method(operation_id)?, values)?;
-        reroute_to_cassette(operation_id, &mut request);
-        Ok(request)
+        contract::call_for(core()?.method(operation_id)?, values)
     }
 
     /// Call an operation with a typed parameter set.
@@ -374,17 +320,6 @@ impl<T: TapesTransport> CoreClient<T> {
             .await
     }
 
-    /// `GET /v1/cassettes/skills?session_id={id}` — the skills attributed to one
-    /// session, as the skills cassette spells it (see [`reroute_to_cassette`]).
-    ///
-    /// # Errors
-    ///
-    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
-    pub async fn list_session_skills(&self, id: &str) -> Result<SessionSkillsResponse> {
-        self.call(ops::LIST_SESSION_SKILLS, vec![("id", id.to_owned())])
-            .await
-    }
-
     /// `GET /v1/traces` — the trace summaries for one session.
     ///
     /// # Errors
@@ -420,17 +355,6 @@ impl<T: TapesTransport> CoreClient<T> {
         .await
     }
 
-    /// `GET /v1/cassettes/search/spans` — semantic search over span
-    /// embeddings, served by the search cassette (see
-    /// [`reroute_to_cassette`]).
-    ///
-    /// # Errors
-    ///
-    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
-    pub async fn search_spans(&self, params: &SearchSpansParams) -> Result<SpanSearchOutput> {
-        self.with_params(params).await
-    }
-
     /// `GET /v1/stats` — the aggregate rollups.
     ///
     /// # Errors
@@ -438,110 +362,6 @@ impl<T: TapesTransport> CoreClient<T> {
     /// Any contract, transport, status, or decode failure; see [`crate::Error`].
     pub async fn get_stats(&self, params: &StatsParams) -> Result<StatsResponse> {
         self.with_params(params).await
-    }
-
-    /// `GET /v1/cassettes/skills` — one page of the skills listing.
-    ///
-    /// # Errors
-    ///
-    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
-    pub async fn list_skills(&self, params: &SkillsListParams) -> Result<SkillsListResponse> {
-        self.with_params(params).await
-    }
-
-    /// Every skill the listing matches, following `next_cursor` to the end.
-    ///
-    /// # Errors
-    ///
-    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
-    pub async fn list_all_skills(&self, params: &SkillsListParams) -> Result<Vec<SkillResponse>> {
-        page::walk(|cursor| {
-            let mut params = params.clone();
-            params.cursor = cursor;
-            async move { Ok(self.list_skills(&params).await?.into_page()) }
-        })
-        .await
-    }
-
-    /// `GET /v1/cassettes/skills/{id}` — one skill.
-    ///
-    /// # Errors
-    ///
-    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
-    pub async fn get_skill(&self, id: &str) -> Result<SkillResponse> {
-        self.call(ops::GET_SKILL, vec![("id", id.to_owned())]).await
-    }
-
-    /// `POST /v1/cassettes/skills` — author a skill.
-    ///
-    /// # Errors
-    ///
-    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
-    pub async fn create_skill(&self, body: &CreateSkillRequest) -> Result<SkillResponse> {
-        self.with_body(ops::CREATE_SKILL, Vec::new(), body).await
-    }
-
-    /// `PUT /v1/cassettes/skills/{id}` — apply the present fields onto a skill.
-    ///
-    /// # Errors
-    ///
-    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
-    pub async fn update_skill(&self, id: &str, body: &UpdateSkillRequest) -> Result<SkillResponse> {
-        self.with_body(ops::UPDATE_SKILL, vec![("id", id.to_owned())], body)
-            .await
-    }
-
-    /// `DELETE /v1/cassettes/skills/{id}` — delete a skill.
-    ///
-    /// # Errors
-    ///
-    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
-    pub async fn delete_skill(&self, id: &str) -> Result<()> {
-        self.call(ops::DELETE_SKILL, vec![("id", id.to_owned())])
-            .await
-    }
-
-    /// `POST /v1/cassettes/skills/{id}/duplicate` — fork a skill.
-    ///
-    /// # Errors
-    ///
-    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
-    pub async fn duplicate_skill(&self, id: &str) -> Result<SkillResponse> {
-        self.call(ops::DUPLICATE_SKILL, vec![("id", id.to_owned())])
-            .await
-    }
-
-    /// `GET /v1/cassettes/skills/{id}/versions` — one skill's published history.
-    ///
-    /// # Errors
-    ///
-    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
-    pub async fn list_skill_versions(&self, id: &str) -> Result<SkillVersionsResponse> {
-        self.call(ops::LIST_SKILL_VERSIONS, vec![("id", id.to_owned())])
-            .await
-    }
-
-    /// `POST /v1/cassettes/skills/{id}/versions` — publish an immutable snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
-    pub async fn publish_skill(
-        &self,
-        id: &str,
-        body: &PublishSkillRequest,
-    ) -> Result<SkillVersionResponse> {
-        self.with_body(ops::PUBLISH_SKILL, vec![("id", id.to_owned())], body)
-            .await
-    }
-
-    /// `POST /v1/cassettes/skills/generate` — generate a skill from sessions.
-    ///
-    /// # Errors
-    ///
-    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
-    pub async fn generate_skill(&self, body: &GenerateSkillRequest) -> Result<SkillResponse> {
-        self.with_body(ops::GENERATE_SKILL, Vec::new(), body).await
     }
 
     /// `GET /v1/cassettes` — what this deployment serves.
@@ -583,34 +403,8 @@ impl<T: StreamingTransport> CoreClient<T> {
     /// Any contract or transport failure; see [`crate::Error`].
     pub async fn stream(&self, operation_id: &str, values: Vec<(&str, String)>) -> Result<T::Body> {
         let method = core()?.method(operation_id)?;
-        let mut request = contract::call_for(method, values)?;
-        reroute_to_cassette(operation_id, &mut request);
+        let request = contract::call_for(method, values)?;
         self.transport.send_stream(&request).await
-    }
-
-    /// `GET /v1/cassettes/export/sessions/{id}`, streamed.
-    ///
-    /// An export can be far larger than a session's working set, and there is
-    /// no reason to hold it in memory on the way to a file. It stays untyped
-    /// for the same reason: an archive written through a typed decode is an
-    /// archive of the fields this build happened to know about.
-    ///
-    /// # Errors
-    ///
-    /// Any contract or transport failure; see [`crate::Error`].
-    pub async fn export_session(&self, id: &str, params: &ExportSessionParams) -> Result<T::Body> {
-        let mut values = params.values();
-        values.push(("id", id.to_owned()));
-        self.stream(ops::EXPORT_SESSION, values).await
-    }
-
-    /// `GET /v1/cassettes/export/sessions`, streamed.
-    ///
-    /// # Errors
-    ///
-    /// Any contract or transport failure; see [`crate::Error`].
-    pub async fn export_sessions(&self, params: &ExportSessionsParams) -> Result<T::Body> {
-        self.stream(ops::EXPORT_SESSIONS, params.values()).await
     }
 }
 
@@ -618,7 +412,6 @@ impl<T: StreamingTransport> CoreClient<T> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::cassettes::spec::Location;
     use crate::core::models::params::PayloadDetail;
     use crate::path::{PathMode, call_url};
     use crate::transport::{TransportError, WireResponse};
@@ -818,19 +611,24 @@ mod tests {
         // The gap this closes: the body capability exists one layer down, and
         // a facade that routed around it would drop a payload passed here
         // while still producing a request that looked correct.
-        let client = client("http://127.0.0.1:8081", serde_json::json!({"id": "sk-1"}));
-        let skill = client
-            .create_skill(&CreateSkillRequest {
-                name: "gum".to_owned(),
-                ..Default::default()
-            })
+        let client = client(
+            "http://127.0.0.1:8081",
+            serde_json::json!({"session": {"id": "s-1"}}),
+        );
+        let updated = client
+            .update_session(
+                "s-1",
+                &SessionUpdateRequest {
+                    display_name: Some("gum glow charm".to_owned()),
+                },
+            )
             .await
             .unwrap();
 
-        assert_eq!(skill.id, "sk-1");
+        assert_eq!(updated.session.id, "s-1");
         let bodies = client.transport().bodies.borrow();
         let sent: Value = serde_json::from_str(bodies[0].as_deref().unwrap()).unwrap();
-        assert_eq!(sent["name"], "gum");
+        assert_eq!(sent["display_name"], "gum glow charm");
     }
 
     #[tokio::test]
@@ -840,7 +638,7 @@ mod tests {
         // original silence with an extra layer on top.
         let client = client("http://127.0.0.1:8081", Value::Null);
         let err = client
-            .call::<Value>(ops::CREATE_SKILL, Vec::new())
+            .call::<Value>(ops::UPDATE_SESSION, vec![("id", "s-1".to_owned())])
             .await
             .unwrap_err();
 
@@ -896,244 +694,21 @@ mod tests {
         }
     }
 
-    /// Every operation whose surface moved into a cassette, with the route
-    /// the request must now target. One table, asserted through the same
-    /// request-building path every caller uses — a route that reads
-    /// `/v1/skills` or `/v1/sessions/{id}/export` again is a client that
-    /// silently moved back to a retirement-bound core copy.
     #[tokio::test]
-    async fn extracted_operations_target_their_cassette_routes() {
-        let client = CoreClient::new(Recorder::new(
-            "http://127.0.0.1:8081",
-            vec![serde_json::json!({})],
-        ));
-        type Case = (&'static str, Vec<(&'static str, String)>, &'static str);
-        let id = ("id", "x-1".to_owned());
-        let cases: &[Case] = &[
-            (
-                ops::SEARCH_SPANS,
-                vec![("query", "q".to_owned())],
-                "/v1/cassettes/search/spans",
-            ),
-            (
-                ops::EXPORT_SESSION,
-                vec![id.clone()],
-                "/v1/cassettes/export/sessions/x-1",
-            ),
-            (
-                ops::EXPORT_SESSIONS,
-                vec![],
-                "/v1/cassettes/export/sessions",
-            ),
-            (ops::LIST_SKILLS, vec![], "/v1/cassettes/skills"),
-            (ops::GET_SKILL, vec![id.clone()], "/v1/cassettes/skills/x-1"),
-            (
-                ops::DELETE_SKILL,
-                vec![id.clone()],
-                "/v1/cassettes/skills/x-1",
-            ),
-            (
-                ops::DUPLICATE_SKILL,
-                vec![id.clone()],
-                "/v1/cassettes/skills/x-1/duplicate",
-            ),
-            (
-                ops::GET_SKILL_MARKDOWN,
-                vec![id.clone()],
-                "/v1/cassettes/skills/x-1/skill.md",
-            ),
-            (
-                ops::LIST_SKILL_VERSIONS,
-                vec![id.clone()],
-                "/v1/cassettes/skills/x-1/versions",
-            ),
-        ];
-        for (operation, values, expected) in cases {
-            let request = client
-                .request_for(operation, values.clone())
-                .unwrap_or_else(|e| panic!("{operation}: {e}"));
-            let url = call_url(
-                &Url::parse("http://127.0.0.1:8081").unwrap(),
-                &request,
-                PathMode::UnderBase,
-            )
-            .unwrap_or_else(|e| panic!("{operation}: {e}"));
-            assert!(
-                url.path().ends_with(expected.trim_start_matches('/')) || url.path() == *expected,
-                "{operation}: expected {expected}, got {}",
-                url.path()
-            );
-            assert!(
-                !url.path().contains("/v1/skills")
-                    && !url.path().contains("/v1/search")
-                    && !url.path().contains("/v1/sessions"),
-                "{operation}: still targets a core route: {}",
-                url.path()
-            );
-        }
-
-        // The body-bearing operations cannot be built through request_for
-        // (it refuses a required body), so they are asserted through the
-        // same call path a consumer uses.
-        let _: std::result::Result<Value, _> = client
-            .call_with_body(ops::GENERATE_SKILL, Vec::new(), Some("{}".to_owned()))
-            .await;
-        let _: std::result::Result<Value, _> = client
-            .call_with_body(ops::CREATE_SKILL, Vec::new(), Some("{}".to_owned()))
-            .await;
-        let _: std::result::Result<Value, _> = client
-            .call_with_body(
-                ops::PUBLISH_SKILL,
-                vec![("id", "x-1".to_owned())],
-                Some("{}".to_owned()),
-            )
-            .await;
-        let seen = client.transport().seen.borrow();
-        let tail: Vec<&String> = seen.iter().rev().take(3).collect();
-        assert!(
-            tail[2].contains("/v1/cassettes/skills/generate"),
-            "got {}",
-            tail[2]
-        );
-        assert!(tail[1].ends_with("/v1/cassettes/skills"), "got {}", tail[1]);
-        assert!(
-            tail[0].contains("/v1/cassettes/skills/x-1/versions"),
-            "got {}",
-            tail[0]
-        );
-    }
-
-    #[test]
-    fn session_skills_becomes_a_session_id_filter_on_the_skills_cassette() {
-        // The one reshape in the table: core's per-session skills listing is
-        // the cassette collection filtered by session_id, so the path
-        // parameter must travel as a query parameter — dropping it instead
-        // would silently widen the listing to every skill.
-        let client = CoreClient::new(Recorder::new(
-            "http://127.0.0.1:8081",
-            vec![serde_json::json!({})],
-        ));
-        let request = client
-            .request_for(ops::LIST_SESSION_SKILLS, vec![("id", "ses-9".to_owned())])
-            .unwrap();
-        let url = call_url(
-            &Url::parse("http://127.0.0.1:8081").unwrap(),
-            &request,
-            PathMode::UnderBase,
-        )
-        .unwrap();
-        assert!(
-            url.path().ends_with("/v1/cassettes/skills"),
-            "got {}",
-            url.path()
-        );
-        assert!(
-            url.query_pairs()
-                .any(|(k, v)| k == "session_id" && v == "ses-9"),
-            "session_id must survive as a query parameter, got {:?}",
-            url.query()
-        );
-    }
-
-    #[tokio::test]
-    async fn the_stream_escape_hatch_reroutes_like_the_typed_surface() {
-        // paperctl streams skill.md through the generic operation-id seam;
-        // the reroute must live below that seam, not only in named methods.
+    async fn the_stream_escape_hatch_builds_the_contract_url() {
+        // Fidelity reads travel through the generic operation-id seam as
+        // streams; the stream route must build the same contract URL as a
+        // buffered call, or the two ways of asking would disagree.
         let client = CoreClient::new(Recorder::new(
             "http://127.0.0.1:8081",
             vec![serde_json::json!({})],
         ));
         let _ = client
-            .stream(ops::GET_SKILL_MARKDOWN, vec![("id", "skl-1".to_owned())])
+            .stream(ops::LIST_RAW_TURNS, vec![("id", "s-1".to_owned())])
             .await
             .unwrap();
         let seen = client.transport().seen.borrow();
-        assert!(
-            seen[0].contains("/v1/cassettes/skills/skl-1/skill.md"),
-            "got {}",
-            seen[0]
-        );
-    }
-
-    #[test]
-    fn every_operation_on_an_extracted_route_is_rerouted() {
-        // The completeness gate over the table above, driven by the vendored
-        // contract itself: every operation whose sealed path lives on a
-        // surface that moved into a cassette must be rerouted. A contract
-        // refresh that adds an operation under /v1/skills (or a new extracted
-        // surface's routes) fails here until the table routes it — reaching
-        // core's retirement-bound copy silently is exactly the drift this
-        // gate exists to end.
-        let surface = core().unwrap();
-        let extracted = |path: &str| {
-            path.starts_with("/v1/search")
-                || path.starts_with("/v1/skills")
-                || path == "/v1/sessions/export"
-                || path == "/v1/sessions/{id}/export"
-                || path == "/v1/sessions/{id}/skills"
-        };
-
-        let ids: Vec<&str> = surface.operation_ids().collect();
-        let mut checked = 0;
-        for id in ids {
-            let method = surface.method(id).unwrap();
-            if !extracted(&method.path) {
-                continue;
-            }
-            checked += 1;
-
-            let values: Vec<(&str, String)> = method
-                .params
-                .iter()
-                .filter(|param| param.required || matches!(param.location, Location::Path))
-                .map(|param| (param.wire.as_str(), "x".to_owned()))
-                .collect();
-            let body = (method.body == Some(true)).then(|| "{}".to_owned());
-            let mut request = contract::call_for_with_body(method, values, body)
-                .unwrap_or_else(|error| panic!("{id}: {error}"));
-            reroute_to_cassette(id, &mut request);
-            assert!(
-                request.path.starts_with("/v1/cassettes/"),
-                "{id} still targets {} — add it to reroute_to_cassette",
-                request.path
-            );
-        }
-        assert_eq!(
-            checked, 14,
-            "the census of operations on extracted routes moved; route the newcomer above and update this count"
-        );
-    }
-
-    #[tokio::test]
-    async fn search_spans_targets_the_search_cassette_route() {
-        // The one deliberate departure from the operation table: span search
-        // is served by the search cassette, and the sealed operation only
-        // supplies the parameter plumbing. If this URL ever reads
-        // /v1/search/spans again, the client has silently moved back to the
-        // retirement-bound core route.
-        let client = client(
-            "http://127.0.0.1:8081",
-            serde_json::json!({"query": "q", "results": []}),
-        );
-        let _ = client
-            .search_spans(&SearchSpansParams {
-                query: "retry backoff".to_owned(),
-                top_k: Some(3),
-            })
-            .await
-            .unwrap();
-
-        let seen = client.transport().seen.borrow();
-        assert_eq!(seen.len(), 1);
-        assert!(
-            seen[0].contains("/v1/cassettes/search/spans?"),
-            "expected the cassette route, got {}",
-            seen[0]
-        );
-        assert!(
-            seen[0].contains("query=retry+backoff") || seen[0].contains("query=retry%20backoff")
-        );
-        assert!(seen[0].contains("top_k=3"));
+        assert_eq!(seen[0], "http://127.0.0.1:8081/v1/sessions/s-1/raw_turns");
     }
 
     #[tokio::test]

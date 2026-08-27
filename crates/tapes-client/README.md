@@ -123,8 +123,8 @@ let document: serde_json::Value = client.call("listSessions", vec![("limit", "25
 `CoreClient::call` is generic in its response type and reaches *every* operation
 by `operationId`, including the ones no named method covers. Reach for it in two
 places: an operation this crate has not typed yet, and the fidelity reads —
-export, raw turns — where a typed decode would silently write an archive of the
-fields this build happened to know about.
+raw turns among them — where a typed decode would silently write an archive of
+the fields this build happened to know about.
 
 The models decode permissively on purpose. Unknown fields pass (a newer server
 is not a malformed response), an absent field takes its default (the contract
@@ -291,21 +291,21 @@ implements `TapesTransport` and `StreamingTransport`, so everything downstream �
 Two behaviours may be *new* to you, both deliberately: redirects are refused
 (with a per-response origin check that also covers an injected client), and a
 streamed non-success status becomes `Error::ApiStatus` instead of a readable
-body. The second is what stops an export writing a JSON error page into the file
-a user asked for.
+body. The second is what stops a streamed error page becoming the file a user
+asked for.
 
 **2. Private response types become the shipped models.** Replace your own
 `SessionItem`/`SpanItem`/… with `tapes_client::core::models`, and your query
 parameter builders with the `*Params` structs. Two things to expect:
 
 - Response models are `#[non_exhaustive]`: decode them, do not construct them.
-  Request bodies (`CreateSkillRequest`, `SessionUpdateRequest`, …) are yours to
+  Request bodies (`SessionUpdateRequest`, `SeedDemoRequest`, …) are yours to
   build and are not marked, down to their nested components.
 - The partial-update bodies carry `Option` fields, and an unset one is absent
   from the bytes rather than sent empty. That is what makes
-  `UpdateSkillRequest { name: Some(..), ..Default::default() }` a rename
-  instead of a rename plus the erasure of everything it did not mention — the
-  server applies the properties the body carries and leaves the rest alone.
+  `SessionUpdateRequest { display_name: Some(..) }` a rename and
+  `SessionUpdateRequest::default()` no instruction at all — the server applies
+  the properties the body carries and leaves the rest alone.
 - Timestamps and enumerable strings stay `String`. The contract declares them
   that way, and a typed decode that rejected an unparseable timestamp — or an
   unfamiliar `status` — would blank a whole page over an additive change.

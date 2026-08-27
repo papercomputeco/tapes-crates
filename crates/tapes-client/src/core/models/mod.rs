@@ -84,7 +84,6 @@ pub mod params;
 pub mod protocol;
 pub mod raw_turn;
 pub mod session;
-pub mod skill;
 pub mod span;
 pub mod trace;
 
@@ -92,11 +91,11 @@ use serde::{Deserialize, Deserializer};
 
 pub use admin::{
     DeriveRunResponse, ReconcileStats, RederiveReport, SeedDemoRequest, SeedResult, StatsResponse,
+    TranscriptProjectionStats,
 };
 pub use params::{
-    ExportDetail, ExportSessionParams, ExportSessionsParams, PayloadDetail, SearchSpansParams,
-    SessionListParams, SessionTracesParams, SkillScope, SkillSort, SkillsListParams, SortDirection,
-    StatsParams, TraceListParams, TraceParams,
+    PayloadDetail, SessionListParams, SessionTracesParams, SortDirection, StatsParams,
+    TraceListParams, TraceParams,
 };
 pub use protocol::{ErrorResponse, McpError, McpRequest, McpResponse};
 pub use raw_turn::{
@@ -107,12 +106,7 @@ pub use session::{
     ModelUsage, SessionDetailResponse, SessionItem, SessionListResponse, SessionRollup,
     SessionTracesResponse, SessionUpdateRequest, SessionUsage, TreeTask,
 };
-pub use skill::{
-    CreateSkillRequest, GenerateSkillRequest, GenerateSkillRequestHint, PublishSkillRequest,
-    SessionSkillsResponse, SkillCounts, SkillResponse, SkillVersionResponse, SkillVersionsResponse,
-    SkillsListResponse, UpdateSkillRequest,
-};
-pub use span::{SpanItem, SpanLinkItem, SpanSearchOutput, SpanSearchResult};
+pub use span::{SpanItem, SpanLinkItem};
 pub use trace::{MainUsage, TraceDetail, TraceItem, TraceListResponse, TraceUsage};
 
 /// A type that models one named schema of the vendored contract.
@@ -186,28 +180,9 @@ mod tests {
     }
 
     #[test]
-    fn a_one_field_update_sends_exactly_that_field() {
-        // The failure this pins: `updateSkillRequest` is applied property by
-        // property, so a body that spelled all six would rename the skill and
-        // erase its content, description, tags, type, and visibility in the
-        // same call.
-        let rename = UpdateSkillRequest {
-            name: Some("gum glow charm".to_owned()),
-            ..Default::default()
-        };
-        let sent = serde_json::to_value(&rename).unwrap();
-
-        assert_eq!(sent, json!({"name": "gum glow charm"}));
-    }
-
-    #[test]
     fn an_empty_partial_update_sends_an_empty_document() {
-        // Nothing set means nothing said — not six empty properties, which is
+        // Nothing set means nothing said — not an empty property, which is
         // the same erasure spelled with a default constructor.
-        assert_eq!(
-            serde_json::to_value(UpdateSkillRequest::default()).unwrap(),
-            json!({}),
-        );
         assert_eq!(
             serde_json::to_value(SessionUpdateRequest::default()).unwrap(),
             json!({}),
@@ -230,19 +205,6 @@ mod tests {
             json!({"display_name": ""}),
         );
         assert_eq!(serde_json::to_value(&untouched).unwrap(), json!({}));
-    }
-
-    #[test]
-    fn a_present_but_empty_update_field_still_reaches_the_wire() {
-        // The other half of the rule: omitting is what `None` means, and an
-        // explicitly emptied field must not be mistaken for one. Clearing a
-        // skill's tag list is a legitimate edit.
-        let untag = UpdateSkillRequest {
-            tags: Some(Vec::new()),
-            ..Default::default()
-        };
-
-        assert_eq!(serde_json::to_value(&untag).unwrap(), json!({"tags": []}));
     }
 
     #[test]
