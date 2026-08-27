@@ -71,29 +71,6 @@ impl ContractEnum for PayloadDetail {
     }
 }
 
-/// The grain an export is written at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ExportDetail {
-    /// One record per span.
-    Spans,
-    /// One record per trace.
-    Traces,
-}
-
-impl ContractEnum for ExportDetail {
-    const DECLARED_BY: &'static [(&'static str, &'static str)] =
-        &[("exportSession", "detail"), ("exportSessions", "detail")];
-    const VALUES: &'static [&'static str] = &["spans", "traces"];
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Spans => "spans",
-            Self::Traces => "traces",
-        }
-    }
-}
-
 /// Which way a listing is ordered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -112,50 +89,6 @@ impl ContractEnum for SortDirection {
         match self {
             Self::Asc => "asc",
             Self::Desc => "desc",
-        }
-    }
-}
-
-/// Whose skills a listing covers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SkillScope {
-    /// Everything the caller may see.
-    All,
-    /// Only the caller's own.
-    Mine,
-    /// Everyone else's.
-    Team,
-}
-
-impl ContractEnum for SkillScope {
-    const DECLARED_BY: &'static [(&'static str, &'static str)] = &[("listSkills", "scope")];
-    const VALUES: &'static [&'static str] = &["all", "mine", "team"];
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::All => "all",
-            Self::Mine => "mine",
-            Self::Team => "team",
-        }
-    }
-}
-
-/// How a skills listing is ordered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SkillSort {
-    /// Most downloaded first.
-    Downloads,
-}
-
-impl ContractEnum for SkillSort {
-    const DECLARED_BY: &'static [(&'static str, &'static str)] = &[("listSkills", "sort")];
-    const VALUES: &'static [&'static str] = &["downloads"];
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Downloads => "downloads",
         }
     }
 }
@@ -281,96 +214,6 @@ impl ContractParams for TraceListParams {
     }
 }
 
-/// `GET /v1/search/spans` — semantic search over span embeddings.
-///
-/// `query` is required, for the same reason [`TraceListParams::session_id`] is.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SearchSpansParams {
-    /// The search text.
-    pub query: String,
-    /// How many hits to return.
-    pub top_k: Option<u32>,
-}
-
-impl ContractParams for SearchSpansParams {
-    const OPERATION: &'static str = "searchSpans";
-
-    fn values(&self) -> Vec<(&'static str, String)> {
-        let mut values = vec![("query", self.query.clone())];
-        push_num(&mut values, "top_k", self.top_k);
-        values
-    }
-}
-
-/// `GET /v1/sessions/{id}/export` — one session's export stream.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ExportSessionParams {
-    /// The grain to write.
-    pub detail: Option<ExportDetail>,
-}
-
-impl ContractParams for ExportSessionParams {
-    const OPERATION: &'static str = "exportSession";
-
-    fn values(&self) -> Vec<(&'static str, String)> {
-        let mut values = Vec::new();
-        push_enum(&mut values, "detail", self.detail);
-        values
-    }
-}
-
-/// `GET /v1/sessions/export` — every session in a window, streamed.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ExportSessionsParams {
-    /// Lower bound, as an RFC 3339 timestamp.
-    pub since: Option<String>,
-    /// Upper bound, as an RFC 3339 timestamp.
-    pub until: Option<String>,
-    /// The grain to write.
-    pub detail: Option<ExportDetail>,
-}
-
-impl ContractParams for ExportSessionsParams {
-    const OPERATION: &'static str = "exportSessions";
-
-    fn values(&self) -> Vec<(&'static str, String)> {
-        let mut values = Vec::new();
-        push(&mut values, "since", self.since.as_deref());
-        push(&mut values, "until", self.until.as_deref());
-        push_enum(&mut values, "detail", self.detail);
-        values
-    }
-}
-
-/// `GET /v1/skills` — the skills listing.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SkillsListParams {
-    /// How many skills to return.
-    pub limit: Option<u32>,
-    /// The cursor from a previous page's `next_cursor`.
-    pub cursor: Option<String>,
-    /// Free-text search.
-    pub q: Option<String>,
-    /// Whose skills to list.
-    pub scope: Option<SkillScope>,
-    /// How to order them.
-    pub sort: Option<SkillSort>,
-}
-
-impl ContractParams for SkillsListParams {
-    const OPERATION: &'static str = "listSkills";
-
-    fn values(&self) -> Vec<(&'static str, String)> {
-        let mut values = Vec::new();
-        push_num(&mut values, "limit", self.limit);
-        push(&mut values, "cursor", self.cursor.as_deref());
-        push(&mut values, "q", self.q.as_deref());
-        push_enum(&mut values, "scope", self.scope);
-        push_enum(&mut values, "sort", self.sort);
-        values
-    }
-}
-
 /// `GET /v1/stats` — the aggregate rollups.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StatsParams {
@@ -449,8 +292,8 @@ mod tests {
         // Empty is a value the server can reject in its own words; omitting it
         // is a differently-shaped request the contract layer would refuse.
         assert_eq!(
-            SearchSpansParams::default().values(),
-            vec![("query", String::new())],
+            TraceListParams::default().values(),
+            vec![("session_id", String::new())],
         );
     }
 }

@@ -67,8 +67,8 @@ the document by build-time gates.
 **Typed by default, generic when you mean it.** `CoreClient::call` is generic
 in its response type and reaches *every* operation by `operationId`,
 including ones no named method covers. Reach for it in two places: an
-operation the crate has not typed yet, and the fidelity reads — export, raw
-turns — where a typed decode would silently write an archive of only the
+operation the crate has not typed yet, and the fidelity reads — raw turns
+among them — where a typed decode would silently write an archive of only the
 fields this build happened to know about.
 
 The models decode permissively on purpose: unknown fields pass (a newer
@@ -137,8 +137,8 @@ selects the path join for a client mounted behind a gateway prefix, and
 are refused rather than followed, in two layers — the engine's client policy,
 and a per-response origin check that still holds when the client was
 injected. A streamed non-success status becomes an error instead of a
-readable body, which is what stops an export writing a JSON error page into
-the file a user asked for.
+readable body, which is what stops a streamed error page becoming the file a
+user asked for.
 
 The full worked example is in the crate's
 [README](https://github.com/papercomputeco/tapes-crates/blob/main/crates/tapes-client/README.md#authenticating-a-hook-not-a-transport)

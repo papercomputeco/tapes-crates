@@ -75,6 +75,14 @@ pub const UNMODELLED: Table<'static> = &[
         "part of the discovery document; see Discovery",
     ),
     ("Rejection", "part of the discovery document; see Discovery"),
+    (
+        "AdvertisedEntity",
+        "part of the discovery document; see Discovery",
+    ),
+    (
+        "EntityRelation",
+        "part of the discovery document; see Discovery",
+    ),
 ];
 
 /// One modelled schema, and the checks its model can be put through.
@@ -116,7 +124,7 @@ impl fmt::Debug for Entry {
 /// the type's own [`ContractModel::SCHEMA`] the way a repeated string could.
 #[must_use]
 pub fn registry() -> Vec<Entry> {
-    use super::{admin, protocol, raw_turn, session, skill, span, trace};
+    use super::{admin, protocol, raw_turn, session, span, trace};
     vec![
         Entry::of::<session::SessionItem>(),
         Entry::of::<session::SessionRollup>(),
@@ -134,29 +142,18 @@ pub fn registry() -> Vec<Entry> {
         Entry::of::<trace::TraceListResponse>(),
         Entry::of::<span::SpanItem>(),
         Entry::of::<span::SpanLinkItem>(),
-        Entry::of::<span::SpanSearchOutput>(),
-        Entry::of::<span::SpanSearchResult>(),
         Entry::of::<raw_turn::RawTurnHeaderItem>(),
         Entry::of::<raw_turn::RawTurnListResponse>(),
         Entry::of::<raw_turn::RawTurnAttribution>(),
         Entry::of::<raw_turn::RawTurnAttributionRepairRequest>(),
         Entry::of::<raw_turn::RawTurnAttributionRepairResult>(),
         Entry::of::<raw_turn::RepairPendingSession>(),
-        Entry::of::<skill::SkillResponse>(),
-        Entry::of::<skill::SkillsListResponse>(),
-        Entry::of::<skill::SkillCounts>(),
-        Entry::of::<skill::SkillVersionResponse>(),
-        Entry::of::<skill::SkillVersionsResponse>(),
-        Entry::of::<skill::SessionSkillsResponse>(),
-        Entry::of::<skill::CreateSkillRequest>(),
-        Entry::of::<skill::UpdateSkillRequest>(),
-        Entry::of::<skill::PublishSkillRequest>(),
-        Entry::of::<skill::GenerateSkillRequest>(),
         Entry::of::<admin::SeedResult>(),
         Entry::of::<admin::SeedDemoRequest>(),
         Entry::of::<admin::DeriveRunResponse>(),
         Entry::of::<admin::RederiveReport>(),
         Entry::of::<admin::ReconcileStats>(),
+        Entry::of::<admin::TranscriptProjectionStats>(),
         Entry::of::<admin::StatsResponse>(),
         Entry::of::<protocol::ErrorResponse>(),
         Entry::of::<protocol::McpRequest>(),
@@ -666,9 +663,8 @@ fn sample(schema: &Value, schemas: &Map<String, Value>, depth: usize) -> Value {
 mod tests {
     use super::*;
     use crate::core::models::params::{
-        ExportDetail, ExportSessionParams, ExportSessionsParams, PayloadDetail, SearchSpansParams,
-        SessionListParams, SessionTracesParams, SkillScope, SkillSort, SkillsListParams,
-        SortDirection, StatsParams, TraceListParams, TraceParams,
+        PayloadDetail, SessionListParams, SessionTracesParams, SortDirection, StatsParams,
+        TraceListParams, TraceParams,
     };
     use serde::{Deserialize, Serialize};
 
@@ -726,11 +722,19 @@ mod tests {
         // The partial-update bodies omit an unset field from the wire, which is
         // exactly what a dropped property looks like to the round trip. So the
         // gate has to keep telling the two apart, and this is where that is
-        // pinned: the model below carries one of `updateSkillRequest`'s six
-        // properties as an omittable `Option` and simply lacks the rest. The
-        // one it models is populated by the sample and survives; the five it
-        // does not are reported by name, exactly as a model with five plain
-        // missing fields would be.
+        // pinned: the model below carries one of a two-property schema's
+        // fields as an omittable `Option` and simply lacks the other. The one
+        // it models is populated by the sample and survives; the one it does
+        // not is reported by name, exactly as a plain missing field would be.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+            },
+        });
+        let schemas = Map::new();
+
         #[derive(Debug, Default, Serialize, Deserialize)]
         #[serde(default)]
         struct HalfAnUpdate {
@@ -738,25 +742,22 @@ mod tests {
             name: Option<String>,
         }
         impl ContractModel for HalfAnUpdate {
-            const SCHEMA: &'static str = "updateSkillRequest";
+            const SCHEMA: &'static str = "Synthetic";
         }
 
-        let report = report(&[Entry::of::<HalfAnUpdate>()], UNMODELLED).unwrap();
-        for dropped in ["content", "description", "tags", "type", "visibility"] {
-            assert!(
-                report.disagreements.iter().any(|problem| {
-                    problem.contains(&format!("updateSkillRequest.{dropped}"))
-                        && problem.contains("not carried by the model")
-                }),
-                "{dropped} was dropped by the model and should have been reported; got: {report:?}",
-            );
-        }
+        let problems = audit::<HalfAnUpdate>(&schema, &schemas);
         assert!(
-            !report
-                .disagreements
+            problems.iter().any(|problem| {
+                problem.contains("Synthetic.description")
+                    && problem.contains("not carried by the model")
+            }),
+            "the dropped property must be reported; got: {problems:?}",
+        );
+        assert!(
+            !problems
                 .iter()
-                .any(|problem| problem.contains("updateSkillRequest.name")),
-            "an Option field the sample populates is carried, not missing; got: {report:?}",
+                .any(|problem| problem.contains("Synthetic.name")),
+            "an Option field the sample populates is carried, not missing; got: {problems:?}",
         );
     }
 
@@ -868,29 +869,6 @@ mod tests {
             session_id: "s-1".to_owned(),
         })
         .unwrap();
-        check_params(&SearchSpansParams {
-            query: "gum glow charm".to_owned(),
-            top_k: Some(5),
-        })
-        .unwrap();
-        check_params(&ExportSessionParams {
-            detail: Some(ExportDetail::Spans),
-        })
-        .unwrap();
-        check_params(&ExportSessionsParams {
-            since: Some("2020-01-01T00:00:00Z".to_owned()),
-            until: Some("2020-01-02T00:00:00Z".to_owned()),
-            detail: Some(ExportDetail::Traces),
-        })
-        .unwrap();
-        check_params(&SkillsListParams {
-            limit: Some(1),
-            cursor: Some("c".to_owned()),
-            q: Some("rust".to_owned()),
-            scope: Some(SkillScope::Mine),
-            sort: Some(SkillSort::Downloads),
-        })
-        .unwrap();
         check_params(&StatsParams {
             since: Some("2020-01-01T00:00:00Z".to_owned()),
             until: Some("2020-01-02T00:00:00Z".to_owned()),
@@ -917,10 +895,7 @@ mod tests {
         assert_eq!(
             check_enums(&[
                 ClaimedEnum::of::<PayloadDetail>(),
-                ClaimedEnum::of::<ExportDetail>(),
                 ClaimedEnum::of::<SortDirection>(),
-                ClaimedEnum::of::<SkillScope>(),
-                ClaimedEnum::of::<SkillSort>(),
             ]),
             Ok(())
         );

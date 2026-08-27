@@ -17,31 +17,31 @@ it, and nothing at runtime reads it; it stays with its one consumer.
 
 ## Pin
 
-- Release tag: **v0.36.0** — papercomputeco/tapes, commit `56eddbf`
-  ("fix: a lone harness_session_id filters sessions across harnesses (#312)").
+- Release tag: **v0.39.0** — papercomputeco/tapes, commit `24bfa08`
+  ("fix: (mcp) surface cassette error bodies through bridged tool calls").
 - Vendored from the release asset, byte-for-byte:
-  - <https://github.com/papercomputeco/tapes/releases/download/v0.36.0/tapes-api-v0.36.0.yaml>
+  - <https://github.com/papercomputeco/tapes/releases/download/v0.39.0/tapes-api-v0.39.0.yaml>
 - The asset is what `tapes dev openapi api --docs-root . --out <file>` emits at
   the tag — the exact command `dagger call contracts` (`make contracts` in
-  tapes) runs; a local emission at `56eddbf` was verified byte-identical to the
+  tapes) runs; a local emission at `24bfa08` was verified byte-identical to the
   asset.
 
 ## Fingerprints
 
 Vendored file bytes (what `scripts/contracts-check.sh` verifies):
 
-- `tapes-api.yaml` sha256 `8c526d83c95e365b03352598dee633cc53caab8855dfa077d92a76211e2464c0`
+- `tapes-api.yaml` sha256 `af705bce8581e30b157750f48b09f5c410eb27010a34cf1e8af67fbf0277adfd`
 
 Prose-included document fingerprint (`CompiledDoc.Fingerprint()` as printed by
 `tapes dev openapi`; the ETag a server would serve for the same document):
 
-- api `sha256:73f783e3e52de5d4cfe7d40d6508f26adf91091af2006a1db614486daf3916d9`
+- api `sha256:ffb5e9af12929038d0a9b57595911ca80ddf6a4be63f172310973eb5bb0c0080`
 
 Prose-stripped contract seal (the value in tapes `api/CONTRACT` at the pinned
 tag; this changes only when the contract *shape* changes, so it is the identity
 a doc-comment edit does not move):
 
-- api `sha256:d63fbd0e6b75710e6e75b77f7aedc77058eb5ba99504264f747ea522a16c54c2`
+- api `sha256:e40e552f13831b11ee3d843f0226e475b91717ae4bf3b40b2599de9953ac2870`
 
 ## Updating
 

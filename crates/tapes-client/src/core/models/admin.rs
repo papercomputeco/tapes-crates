@@ -108,6 +108,10 @@ pub struct RederiveReport {
     #[serde(deserialize_with = "super::null_default")]
     pub reconcile: ReconcileStats,
 
+    /// The contract's `transcript_projection`.
+    #[serde(deserialize_with = "super::null_default")]
+    pub transcript_projection: TranscriptProjectionStats,
+
     /// UnattachedActions samples judged actions that found no matching
     /// tool_use (capped) — expected for non-tool events like subagent
     /// handbacks; anything else is matcher signal worth reading.
@@ -165,6 +169,41 @@ pub struct ReconcileStats {
 
 impl ContractModel for ReconcileStats {
     const SCHEMA: &'static str = "ReconcileStats";
+}
+
+/// The deliberately partial transcript fallback, described.
+///
+/// `omitted_types` makes forward schema skew visible: unsupported records
+/// remain immutable in raw turns, but do not poison records that can be
+/// projected.
+///
+/// Models the contract's `TranscriptProjectionStats` schema.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+#[non_exhaustive]
+pub struct TranscriptProjectionStats {
+    /// The contract's `files`.
+    pub files: i32,
+
+    /// The contract's `omitted_records`.
+    pub omitted_records: i32,
+
+    /// The contract's `omitted_types`.
+    #[serde(deserialize_with = "super::null_default")]
+    pub omitted_types: BTreeMap<String, i32>,
+
+    /// The contract's `projected_records`.
+    pub projected_records: i32,
+
+    /// The contract's `records`.
+    pub records: i32,
+
+    /// The contract's `suppressed_by_wire`.
+    pub suppressed_by_wire: bool,
+}
+
+impl ContractModel for TranscriptProjectionStats {
+    const SCHEMA: &'static str = "TranscriptProjectionStats";
 }
 
 /// The response for `GET /v1/stats`.
