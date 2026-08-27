@@ -13,10 +13,25 @@ before the tag is cut.
 Pre-1.0, `0.x` versions carry the usual Cargo meaning: a breaking change bumps
 the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
-## [Unreleased]
+## [0.5.0] - 2026-08-27
+
+Claim-gated session filters arrive as a typed seam, and a refresh of the
+vendored read contract to tapes v0.39.0 retires the typed spellings of the
+extracted search, export, and skills surfaces.
 
 ### Added
 
+- `SessionListParams.claimed` and `CoreClient::call_with_claimed`: repeatable
+  `(name, value)` filter pairs appended to the sessions-listing query after
+  the declared parameters, order and repeats preserved. The names are data
+  rather than contract — a cassette claims them on the live server at
+  admission — so they bypass the declared-parameter refusal without
+  loosening it, and the client never validates, normalizes, or drops one.
+  The bypass is scoped to the operations the vendored contract documents as
+  claim-bearing (`ops::CLAIM_BEARING_OPS`, today the sessions listing
+  alone): a non-empty claimed set on any other operation is refused before
+  anything is sent, and an empty set is equivalent to a plain call
+  everywhere. The typed and untyped spellings build identical requests.
 - `TranscriptProjectionStats`, and `RederiveReport.transcript_projection`
   carrying it: the derive report now describes the deliberately partial
   transcript fallback, with `omitted_types` making forward schema skew
