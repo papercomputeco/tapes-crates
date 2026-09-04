@@ -43,8 +43,8 @@
     },
     {
       "name": "pi",
-      "version": "0.80.10",
-      "upstream_version": "0.80.10",
+      "version": "0.84.4",
+      "upstream_version": "0.84.4",
       "discovery": {
         "kind": "npm",
         "source": "@earendil-works/pi-coding-agent",
