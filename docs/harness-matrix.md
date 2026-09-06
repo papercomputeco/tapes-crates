@@ -68,6 +68,7 @@ place. This is the current state, not an aspiration:
 | `opencode` | runs wherever `opencode` is installed | **skips** — `tapesctl` does not list `opencode` among its supported harnesses | packaged in the pinned nixpkgs; the client-side gap is real and visible |
 | `pi` | runs wherever `pi` is installed | runs with a client binary, after the capture plugin is installed into the sandbox | not in the flake's `matrix` shell, so both cells skip in CI — though the pinned nixpkgs does carry `pi-coding-agent` (see the follow-ups) |
 | `codex-app` | **skips**, always | **skips**, always | a long-lived host a consumer configures rather than starts: no one-shot invocation exists |
+| `cursor` | **skips**, always | **skips**, always | captured from `agent`'s `stream-json` stdout, not provider traffic, so there is nothing for this matrix to route to a mock |
 
 In CI the composition column skips entirely: both clients live in other
 repositories, and wiring a cross-repository build is follow-up rather than
@@ -257,6 +258,10 @@ executed a harness release.
   record names a source that can be asked. Everything else is in the record as
   `unwatched`, with its reason, and appears in the run's log rather than being
   omitted from it.
+- **`cursor` is manual today.** It is captured from `agent`'s stdout, not
+  provider traffic, so this matrix has no binary version to record and no
+  discovery source. `cursor_stream`'s tests and the server's
+  `transcript_cursor_test.go` check the stream format.
 - **`codex-app` is manual, permanently.** The desktop app self-updates on its own
   schedule, out of band from anything this repository could pin, and it has no
   one-shot invocation for a cell to drive.

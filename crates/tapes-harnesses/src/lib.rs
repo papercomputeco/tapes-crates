@@ -28,7 +28,7 @@
 //! - [`transcript`] — discovering and packaging harness transcripts for the
 //!   `POST /v1/ingest/transcript` lane.
 //!
-//! # The three ways a harness gets captured
+//! # The four ways a harness gets captured
 //!
 //! This is the distinction to hold on to, because it decides which modules
 //! apply to a given harness. It correlates with
@@ -41,6 +41,7 @@
 //! | **Launch redirect** — point the harness's base-URL knob at a proxy | the harness has such a knob (`claude`, `codex`, `opencode`) | [`launch`] |
 //! | **Installed plugin** — code runs *inside* the harness and stamps its own envelope | the harness has no such knob (`pi`) | [`plugin`] |
 //! | **Lifecycle hooks** — a hook plugin reports allowlisted evidence at session boundaries | the harness is configured rather than launched (`codex-app`) | [`plugin::codex_app`] and [`config`] |
+//! | **Structured stdout** — the harness prints its transcript as NDJSON and the consumer saves it | the CLI print mode emits structured events (`cursor`) | [`transcript::cursor_stream`] |
 //!
 //! A harness declares which of these it needs through
 //! [`harness::LaunchSupport`] and [`harness::PluginDelivery`]; nothing here

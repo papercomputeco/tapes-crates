@@ -15,6 +15,13 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
+### Added
+
+- Add the `cursor` harness (alias `cursor-agent`) and `transcript::cursor_stream`
+  helpers for argument planning, stream validation, spool discovery, and upload
+  payloads. Consumers opt into `LaunchSupport::StructuredStdout`; Cursor is
+  excluded from `supported_agents()`.
+
 ## [0.1.0] - 2026-08-13
 
 The first release. `0.1.0` is the contents of the crate at publish rather than
