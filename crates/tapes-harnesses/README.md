@@ -64,6 +64,9 @@ rather than hard-coding one, so a new entry appears in their surface without
 their doing anything. This crate also requires `tapes-capture` at a version, so
 an upgrade may carry one; the changelog says when it does.
 
+The `cursor` entry is excluded from `supported_agents()`. Its capture needs a
+consumer that spawns `agent`.
+
 Changes are recorded in [`CHANGELOG.md`](https://github.com/papercomputeco/tapes-crates/blob/main/crates/tapes-harnesses/CHANGELOG.md).
 
 ## License
