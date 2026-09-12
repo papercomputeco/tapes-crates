@@ -56,6 +56,32 @@ const GATEWAY_NONCE_ENV = "TAPES_GATEWAY_NONCE";
 // predates this variable asks for by saying nothing — its requests are
 // unchanged, down to the path.
 const GATEWAY_PROVIDER_ROUTES_ENV = "TAPES_GATEWAY_PROVIDER_ROUTES";
+const GATEWAY_PROVIDER_CONFIG_ENV = "TAPES_GATEWAY_PROVIDER_CONFIG";
+
+type LaunchProvider = Pick<Parameters<ExtensionAPI["registerProvider"]>[1], "api" | "models"> & {
+  name: string;
+  managed: boolean;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// JSON crosses a runtime boundary: the TypeScript provider type alone cannot
+// protect Pi's model discovery from null entries or missing required fields.
+function validLaunchModel(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const cost = value.cost;
+  return typeof value.id === "string" && value.id.trim().length > 0 &&
+    typeof value.name === "string" && value.name.trim().length > 0 &&
+    typeof value.reasoning === "boolean" &&
+    Array.isArray(value.input) && value.input.length > 0 &&
+    value.input.every(input => input === "text" || input === "image") &&
+    typeof value.contextWindow === "number" && Number.isSafeInteger(value.contextWindow) && value.contextWindow > 0 &&
+    typeof value.maxTokens === "number" && Number.isSafeInteger(value.maxTokens) && value.maxTokens > 0 &&
+    isRecord(cost) && ["input", "output", "cacheRead", "cacheWrite"].every(key =>
+      typeof cost[key] === "number" && Number.isFinite(cost[key]) && cost[key] >= 0);
+}
 
 // Where a labelled request puts the provider name. Underscore-led so it cannot
 // collide with a path a provider's own API serves.
@@ -125,6 +151,20 @@ export default function (pi: ExtensionAPI) {
   }
 
   const baseUrl = normalizeBaseUrl(rawBaseUrl);
+  // Optional launch-local model catalog. A dedicated provider avoids replacing
+  // the user's ordinary provider definitions or writing their auth/models files.
+  const rawProvider = process.env[GATEWAY_PROVIDER_CONFIG_ENV];
+  delete process.env[GATEWAY_PROVIDER_CONFIG_ENV];
+  const provider: LaunchProvider | undefined = rawProvider ? JSON.parse(rawProvider) : undefined;
+  if (rawProvider && (!provider ||
+    typeof provider.name !== "string" || !/^[a-z][a-z0-9-]*$/.test(provider.name) ||
+    (CAPTURED_PROVIDERS as readonly string[]).includes(provider.name) ||
+    provider.api !== "openai-completions" || !Array.isArray(provider.models) ||
+    provider.models.length === 0 || !provider.models.every(validLaunchModel) ||
+    typeof provider.managed !== "boolean"
+  )) {
+    throw new Error("Invalid launch provider configuration");
+  }
 
   // Any non-empty value asks for per-provider routes; unset and empty are the
   // single-upstream shape. Deliberately not a parse of `true`/`1`: a launcher
@@ -165,9 +205,18 @@ export default function (pi: ExtensionAPI) {
       ...envelope,
     };
 
-    for (const provider of CAPTURED_PROVIDERS) {
-      const url = providerBaseUrl(provider);
-      pi.registerProvider(provider, Object.keys(headers).length > 0 ? { baseUrl: url, headers } : { baseUrl: url });
+    if (provider) {
+      pi.registerProvider(provider.name, {
+        api: provider.api, models: provider.models, baseUrl, headers,
+        // Pi requires a nonempty credential even when the gateway owns auth.
+        // This sentinel is not a provider key and is scoped to this provider.
+        ...(provider.managed ? { apiKey: "tapes-platform-managed" } : {}),
+      });
+    } else {
+      for (const provider of CAPTURED_PROVIDERS) {
+        const url = providerBaseUrl(provider);
+        pi.registerProvider(provider, Object.keys(headers).length > 0 ? { baseUrl: url, headers } : { baseUrl: url });
+      }
     }
   };
 
@@ -187,6 +236,13 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("model_select", (event, ctx) => {
     const selectedProvider = event.model.provider;
+
+    if (provider) {
+      if (selectedProvider !== provider.name) {
+        ctx.ui.notify(`${selectedProvider} uses pi's normal endpoint; only ${provider.name} uses this gateway.`, "warning");
+      }
+      return;
+    }
 
     if (selectedProvider === "openai-codex") {
       return;

@@ -61,6 +61,11 @@
 /// crate's own asset falls back to [`DEFAULT_LABEL`] when nothing set it.
 pub const GATEWAY_LABEL_ENV: &str = "TAPES_GATEWAY_LABEL";
 
+/// Optional JSON provider descriptor supplied by the capture client for one
+/// launch: name, api, models, and managed (upstream credentials supplied by
+/// the gateway). No consumer-specific models or credentials live in the asset.
+pub const GATEWAY_PROVIDER_CONFIG_ENV: &str = "TAPES_GATEWAY_PROVIDER_CONFIG";
+
 /// Environment variable appended to the status label after the active schema.
 ///
 /// Display text. Exists because a product may need to say something about its
