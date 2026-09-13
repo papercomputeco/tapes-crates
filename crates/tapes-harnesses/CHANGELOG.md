@@ -15,6 +15,16 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-13
+
+### Added
+
+- Launch-local Pi providers through `TAPES_GATEWAY_PROVIDER_CONFIG`, with a
+  consumer-supplied model catalog and gateway-managed authentication. Ordinary
+  provider definitions and user auth files remain unchanged.
+- Runtime validation of required model fields before provider registration,
+  with capture nonce and session attribution preserved across registration.
+
 ## [0.1.0] - 2026-08-13
 
 The first release. `0.1.0` is the contents of the crate at publish rather than
