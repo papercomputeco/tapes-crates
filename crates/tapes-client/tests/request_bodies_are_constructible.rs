@@ -28,9 +28,9 @@ use std::collections::BTreeMap;
 
 use tapes_client::core::models::params::ContractParams;
 use tapes_client::core::models::{
-    McpRequest, PayloadDetail, RawTurnAttributionRepairRequest, SeedDemoRequest, SessionListParams,
-    SessionTracesParams, SessionUpdateRequest, SortDirection, StatsParams, TraceListParams,
-    TraceParams,
+    McpRequest, PayloadDetail, RawTurnAttributionRepairRequest, RawTurnListParams, SeedDemoRequest,
+    SessionListParams, SessionTracesParams, SessionUpdateRequest, SortDirection, StatsParams,
+    TraceListParams, TraceParams,
 };
 
 #[test]
@@ -90,10 +90,19 @@ fn every_parameter_set_can_be_built_by_a_consumer() {
         .values(),
         SessionTracesParams {
             payload: Some(PayloadDetail::Full),
+            limit: Some(50),
+            cursor: Some("c".to_owned()),
         }
         .values(),
         TraceParams {
             payload: Some(PayloadDetail::Preview),
+            limit: Some(200),
+            cursor: Some("c".to_owned()),
+        }
+        .values(),
+        RawTurnListParams {
+            limit: Some(200),
+            cursor: Some("c".to_owned()),
         }
         .values(),
         TraceListParams {

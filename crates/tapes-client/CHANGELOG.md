@@ -13,6 +13,74 @@ before the tag is cut.
 Pre-1.0, `0.x` versions carry the usual Cargo meaning: a breaking change bumps
 the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
+## [Unreleased]
+
+Three reads the tapes API now pages in place — a session's traces, a
+trace's spans, and a session's raw turns — arrive as typed pages with walk
+helpers that reassemble the whole, and the vendored read contract moves to
+the tapes commit that pages them.
+
+### Changed
+
+- **Breaking**: `SessionTracesParams` and `TraceParams` gain `limit` and
+  `cursor`, so a struct literal that named only `payload` no longer
+  compiles. Write `SessionTracesParams { payload: Some(..), ..Default::default() }`
+  (and the same for `TraceParams`); the README example already does.
+
+### Added
+
+- `SessionTracesParams.limit` / `.cursor`, `TraceParams.limit` / `.cursor`,
+  and a new `RawTurnListParams { limit, cursor }`: the page size and cursor
+  the three paged reads take, omitted when unset so the server's defaults
+  (50 traces, 200 spans, 200 raw turns) apply.
+- `next_cursor` on `SessionTracesResponse`, `TraceDetail`, and
+  `RawTurnListResponse`, plus the new `StandaloneTraceDetail` (the
+  `GET /v1/traces/{trace_id}` response: a `TraceDetail` page with the
+  required `session_id` the standalone caller needs to navigate). Empty on
+  the last page; on the `TraceDetail` copies the composite embeds it is
+  always empty, since there a trace is served whole.
+- `RawTurnHeaderItem.raw_response_bytes` and `.raw_response_dropped`: how
+  many verbatim upstream response bytes the raw layer kept for a turn, and
+  whether a verbatim response existed but was not retained — so `0` with the
+  flag set reads as a fidelity gap rather than a turn with no bytes.
+- Whole-read helpers over `page::walk`, so they stop on the same three
+  spellings of "no more pages" and the same repeated-cursor guard as
+  `list_all_sessions`: `CoreClient::get_whole_session_traces` (the first
+  page's `session` / `links` / `schema` with every page's `traces` appended),
+  `CoreClient::get_whole_trace` (the same for `spans`), and
+  `CoreClient::list_all_raw_turns` (every header). A caller that wants the
+  unpaged shape it had before switches to these and reads the same fields.
+- `RawTurnListResponse::into_page`, and `take_page` on
+  `SessionTracesResponse` and `StandaloneTraceDetail`: the page-convention
+  conversions the walks are built on, for a caller driving its own loop.
+
+### Changed
+
+- **Breaking**: `CoreClient::list_raw_turns` takes `&RawTurnListParams` after
+  the session id. A call site passing only the id becomes
+  `list_raw_turns(id, &RawTurnListParams::default())`, which sends the exact
+  request it did before.
+- **Breaking**: `CoreClient::get_trace` returns `StandaloneTraceDetail`
+  rather than `TraceDetail`, because the contract now declares that schema
+  for the operation. Every field a caller read is still there under the same
+  name; `session_id` is new and required. A caller that needs a
+  `TraceDetail` for the composite's embedded copies still has that type,
+  unchanged apart from `next_cursor`.
+- **Behavioural**: a single `get_session_traces`, `get_trace`, or
+  `list_raw_turns` call now returns **one page**, not the whole — the server
+  pages these in place, so a consumer that read the vector as complete must
+  either walk `next_cursor` or use the whole-read helper above. A page
+  shorter than `limit` is not the end; an empty `next_cursor` is.
+- A refresh of the vendored read contract, from tapes v0.39.0 to a
+  **pre-release pin** at branch `matt/pcc-1232-phase1` @ `ec32ba9` — the
+  commit that pages the three reads. `contracts/PROVENANCE.md` records the
+  emission it was vendored from; it must be re-pinned to the release asset
+  when tapes cuts the release, and until then the authoritative seal check
+  is `TAPES_REPO=/path/to/tapes make contracts-check`. Besides the paging,
+  the refresh brings only prose: the `SpanItem.payload` marker's
+  `preview_pending` state is now documented (the field's type and the
+  model are unchanged).
+
 ## [0.5.0] - 2026-08-27
 
 Claim-gated session filters arrive as a typed seam, and a refresh of the

@@ -139,6 +139,7 @@ pub fn registry() -> Vec<Entry> {
         Entry::of::<trace::TraceUsage>(),
         Entry::of::<trace::MainUsage>(),
         Entry::of::<trace::TraceDetail>(),
+        Entry::of::<trace::StandaloneTraceDetail>(),
         Entry::of::<trace::TraceListResponse>(),
         Entry::of::<span::SpanItem>(),
         Entry::of::<span::SpanLinkItem>(),
@@ -663,8 +664,8 @@ fn sample(schema: &Value, schemas: &Map<String, Value>, depth: usize) -> Value {
 mod tests {
     use super::*;
     use crate::core::models::params::{
-        PayloadDetail, SessionListParams, SessionTracesParams, SortDirection, StatsParams,
-        TraceListParams, TraceParams,
+        PayloadDetail, RawTurnListParams, SessionListParams, SessionTracesParams, SortDirection,
+        StatsParams, TraceListParams, TraceParams,
     };
     use serde::{Deserialize, Serialize};
 
@@ -808,9 +809,11 @@ mod tests {
 
     #[test]
     fn a_required_property_modelled_as_optional_is_reported() {
-        // The contract requires nothing today. The rule is read from the
-        // document rather than assumed, so this exercises the branch that will
-        // matter the first time a schema does mark one.
+        // The contract requires exactly one property today
+        // (`StandaloneTraceDetail.session_id`), which the gate holds strict
+        // through the registry above. The rule is read from the document
+        // rather than assumed, so this pins the branch on a synthetic schema
+        // where the model is deliberately lenient.
         let schema = json!({
             "type": "object",
             "required": ["id"],
@@ -859,10 +862,19 @@ mod tests {
         .unwrap();
         check_params(&SessionTracesParams {
             payload: Some(PayloadDetail::Full),
+            limit: Some(50),
+            cursor: Some("c".to_owned()),
         })
         .unwrap();
         check_params(&TraceParams {
             payload: Some(PayloadDetail::Preview),
+            limit: Some(200),
+            cursor: Some("c".to_owned()),
+        })
+        .unwrap();
+        check_params(&RawTurnListParams {
+            limit: Some(200),
+            cursor: Some("c".to_owned()),
         })
         .unwrap();
         check_params(&TraceListParams {

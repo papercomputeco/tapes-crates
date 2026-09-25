@@ -308,27 +308,57 @@ components:
           type: object
         provider:
           type: string
+        raw_response_bytes:
+          description: |-
+            RawResponseBytes is how many verbatim upstream response bytes the
+            raw layer retained for this turn, as they arrived on the wire and
+            before any reduction; 0 when none were kept.
+          format: int64
+          type: integer
+        raw_response_dropped:
+          description: |-
+            RawResponseDropped is true when the turn's verbatim response
+            existed but was not retained — it exceeded the 8 MiB ingest cap or
+            the producer withheld it — so raw_response_bytes=0 with this set is
+            a fidelity gap, not a turn that never had verbatim bytes.
+          type: boolean
         received_at:
           format: date-time
           type: string
         request_bytes:
+          description: |-
+            RequestBytes is the request size the capture adapter recorded at
+            capture time (meta.request_bytes), not a measurement of the stored
+            payload; 0 when the producer did not report one.
           format: int64
           type: integer
         request_id:
           type: string
         response_bytes:
+          description: |-
+            ResponseBytes is the response size the capture adapter recorded at
+            capture time (meta.response_bytes), not a measurement of the stored
+            payload; 0 when the producer did not report one.
           format: int64
           type: integer
         source:
           type: string
       type: object
     RawTurnListResponse:
-      description: RawTurnListResponse is a session's wire log.
+      description: |-
+        RawTurnListResponse is one page of a session's wire log, in raw turn
+        id order.
       properties:
         items:
           items:
             $ref: '#/components/schemas/RawTurnHeaderItem'
           type: array
+        next_cursor:
+          description: |-
+            NextCursor continues the walk from the last raw turn of this page
+            (pass it as `cursor`). Absent once the page reached the session's
+            last raw turn.
+          type: string
       type: object
     ReconcileStats:
       description: ReconcileStats reports the transcript↔wire fusion for one org.
@@ -636,13 +666,22 @@ components:
     SessionTracesResponse:
       description: |-
         SessionTracesResponse is the composite session view on the span
-        model. `schema` stamps the projection generation the rows were derived
-        against, so the presentational shape can version independently.
+        model — one page of it. `schema` stamps the projection generation the
+        rows were derived against, so the presentational shape can version
+        independently. The page is bounded in traces (`limit`) and in bytes;
+        `session` and `links` are whole on every page.
       properties:
         links:
           items:
             $ref: '#/components/schemas/SpanLinkItem'
           type: array
+        next_cursor:
+          description: |-
+            NextCursor continues the walk from the last trace of this page
+            (pass it as `cursor`). Absent once the page reached the session's
+            last trace. A page may close short of `limit` on its byte budget, so
+            its absence — not the page's length — is what means "no more".
+          type: string
         schema:
           type: string
         session:
@@ -703,8 +742,10 @@ components:
           type: string
         payload:
           description: |-
-            Payload marks a preview-truncated span so the console drills in for
-            the full payload; absent in full mode.
+            Payload marks a preview-mode span so the console drills in for the
+            full payload: "preview" when input/output are the stored previews,
+            "preview_pending" when the row has no stored preview yet (input and
+            output are then []). Absent in full mode.
           type: string
         raw_turn_id:
           format: int64
@@ -763,6 +804,35 @@ components:
           type: string
         to_trace_id:
           type: string
+      type: object
+    StandaloneTraceDetail:
+      description: |-
+        StandaloneTraceDetail is the standalone trace lookup's response: a
+        TraceDetail plus the owning session, which THIS caller — unlike the
+        session-scoped composite's — does not already know and needs to
+        navigate. A dedicated type (rather than an optional field on
+        TraceDetail) lets generated clients see the guarantee as required
+        here, while the composite schema advertises no field its payloads
+        never emit.
+      properties:
+        links:
+          items:
+            $ref: '#/components/schemas/SpanLinkItem'
+          type: array
+        next_cursor:
+          type: string
+        schema:
+          type: string
+        session_id:
+          type: string
+        spans:
+          items:
+            $ref: '#/components/schemas/SpanItem'
+          type: array
+        trace:
+          $ref: '#/components/schemas/TraceItem'
+      required:
+      - session_id
       type: object
     StatsResponse:
       description: |-
@@ -824,6 +894,14 @@ components:
           items:
             $ref: '#/components/schemas/SpanLinkItem'
           type: array
+        next_cursor:
+          description: |-
+            NextCursor continues the STANDALONE /v1/traces/{id} walk from the
+            last span of this page (pass it as `cursor`). Absent once the page
+            reached the trace's last span, and always absent on the copies the
+            composite embeds — there a trace is served whole, so the field
+            never appears on that wire.
+          type: string
         schema:
           type: string
         spans:
@@ -1486,7 +1564,10 @@ paths:
     get:
       description: 'The raw layer''s wire log: one row per captured call or transcript
         push, identity and sizes only. `source` distinguishes what crossed the wire
-        from what the harness pushed as its own account.'
+        from what the harness pushed as its own account. The response is one page:
+        the next `limit` headers in raw turn id order (default 200). `next_cursor`
+        continues the walk; its absence, not the page''s length, means the session''s
+        last raw turn was served.'
       operationId: listRawTurns
       parameters:
       - description: Session id (UUID)
@@ -1495,19 +1576,33 @@ paths:
         required: true
         schema:
           type: string
+      - description: Maximum number of raw turn headers in the page (default 200,
+          max 1000)
+        in: query
+        name: limit
+        schema:
+          minimum: 1
+          type: integer
+      - description: Opaque pagination cursor returned as next_cursor by a previous
+          page of the same session
+        in: query
+        name: cursor
+        schema:
+          type: string
       responses:
         "200":
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/RawTurnListResponse'
-          description: The session's raw turn headers
+          description: One page of the session's raw turn headers
         "400":
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-          description: Missing or malformed id
+          description: Missing or malformed id, limit, or cursor, or a cursor minted
+            for another session
         "404":
           content:
             application/json:
@@ -1531,9 +1626,14 @@ paths:
       - sessions
   /v1/sessions/{id}/traces:
     get:
-      description: Returns the session's user-visible turns as traces with nested
+      description: 'Returns the session''s user-visible turns as traces with nested
         spans (llm calls, tools, subagents, shadow calls, injected context) and dataflow
         links. Cross-trace links (compaction seams) are at the response top level.
+        The response is one page: the first `limit` traces in turn order (default
+        50), closed early once the page passes its byte budget. `next_cursor` continues
+        the walk; its absence, not the page''s length, means the session''s last trace
+        was served. `session` and `links` are whole on every page. The body streams
+        as it is read.'
       operationId: getSessionTraces
       parameters:
       - description: Session id (UUID)
@@ -1542,8 +1642,11 @@ paths:
         required: true
         schema:
           type: string
-      - description: 'Span payload mode: full (default) or preview (strings truncated;
-          fetch the span endpoint for full payloads)'
+      - description: 'Span payload mode: full (default) or preview. Preview serves
+          each span''s stored preview (strings truncated, image bytes dropped) and
+          marks it payload=preview; a span derived before previews were stored is
+          served with empty input/output and payload=preview_pending until backfilled.
+          Fetch the span endpoint for full payloads.'
         in: query
         name: payload
         schema:
@@ -1551,19 +1654,33 @@ paths:
           - full
           - preview
           type: string
+      - description: Maximum number of traces in the page (default 50, max 200); a
+          page may close short of it on its byte budget
+        in: query
+        name: limit
+        schema:
+          minimum: 1
+          type: integer
+      - description: Opaque pagination cursor returned as next_cursor by a previous
+          page of the same session
+        in: query
+        name: cursor
+        schema:
+          type: string
       responses:
         "200":
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SessionTracesResponse'
-          description: The session's traces and spans
+          description: One page of the session's traces and spans
         "400":
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-          description: Missing or malformed id
+          description: Missing or malformed id, limit, or cursor, or a cursor minted
+            for another session
         "404":
           content:
             application/json:
@@ -1679,8 +1796,16 @@ paths:
       - traces
   /v1/traces/{trace_id}:
     get:
-      description: 'Returns one user-visible turn: its spans nested by parent_span_id
-        and its dataflow links (links touching other traces included).'
+      description: 'Returns one page of a user-visible turn: its header, the next
+        `limit` spans in presentation order (seq), and its dataflow links (links touching
+        other traces included). The header and links are whole on every page; only
+        `spans` is paged. When more spans remain the page ends with `next_cursor`
+        — pass it back as `cursor` to continue; its absence marks the trace''s last
+        span. A page also closes at the next span boundary once it has emitted roughly
+        8 MiB before compression, so a page shorter than `limit` does not mean the
+        end. The body is streamed as spans are read: the status is committed before
+        the first span, so a mid-page failure truncates the document rather than returning
+        an error.'
       operationId: getTrace
       parameters:
       - description: Trace id
@@ -1689,8 +1814,11 @@ paths:
         required: true
         schema:
           type: string
-      - description: 'Span payload mode: full (default) or preview (strings truncated;
-          fetch the span endpoint for full payloads)'
+      - description: 'Span payload mode: full (default) or preview. Preview serves
+          each span''s stored preview (strings truncated, image bytes dropped) and
+          marks it payload=preview; a span derived before previews were stored is
+          served with empty input/output and payload=preview_pending until backfilled.
+          Fetch the span endpoint for full payloads.'
         in: query
         name: payload
         schema:
@@ -1698,13 +1826,32 @@ paths:
           - full
           - preview
           type: string
+      - description: Maximum number of spans in the page (default 200, max 1000);
+          a page may close short of it on its byte budget
+        in: query
+        name: limit
+        schema:
+          minimum: 1
+          type: integer
+      - description: Opaque pagination cursor returned as next_cursor by a previous
+          page of the same trace
+        in: query
+        name: cursor
+        schema:
+          type: string
       responses:
         "200":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TraceDetail'
-          description: The trace
+                $ref: '#/components/schemas/StandaloneTraceDetail'
+          description: One page of the trace's spans, with its header and links
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Malformed limit or cursor, or a cursor minted for another trace
         "404":
           content:
             application/json:
@@ -1723,7 +1870,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Traces not supported by this backend
-      summary: Get one trace with spans and links
+      summary: Get one trace with spans and links (paged)
       tags:
       - traces
   /v1/traces/{trace_id}/spans/{span_id}:

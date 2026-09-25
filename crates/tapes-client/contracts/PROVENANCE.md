@@ -17,31 +17,38 @@ it, and nothing at runtime reads it; it stays with its one consumer.
 
 ## Pin
 
-- Release tag: **v0.39.0** — papercomputeco/tapes, commit `24bfa08`
-  ("fix: (mcp) surface cassette error bodies through bridged tool calls").
-- Vendored from the release asset, byte-for-byte:
-  - <https://github.com/papercomputeco/tapes/releases/download/v0.39.0/tapes-api-v0.39.0.yaml>
-- The asset is what `tapes dev openapi api --docs-root . --out <file>` emits at
-  the tag — the exact command `dagger call contracts` (`make contracts` in
-  tapes) runs; a local emission at `24bfa08` was verified byte-identical to the
-  asset.
+- **Pre-release pin**: tapes branch `matt/pcc-1232-phase1` @ commit `ec32ba9`
+  ("fix(storage): backfill payload-less spans to empty previews"). No
+  published release carries these bytes yet; **re-pin to the release asset
+  when tapes cuts the release** — this entry must not land on `main` as-is.
+- Release tag: **v0.39.0** — the last published release this vendoring
+  descends from (papercomputeco/tapes at `24bfa08`). It is recorded so the
+  seal check can still name a release; the v0.39.0 asset is *expected* to
+  differ from the vendored bytes until the release above is cut, so the
+  authoritative check meanwhile is the local re-emission:
+  `TAPES_REPO=/path/to/tapes make contracts-check` with that checkout at
+  `ec32ba9`.
+- Vendored from a local emission at `ec32ba9`, byte-for-byte:
+  `GOEXPERIMENT=jsonv2 go run ./cli/tapes dev openapi api --docs-root . --out tapes-api.yaml`
+  — the exact command `dagger call contracts` (`make contracts` in tapes)
+  runs, and the one `scripts/contracts-check.sh` re-runs under `TAPES_REPO`.
 
 ## Fingerprints
 
 Vendored file bytes (what `scripts/contracts-check.sh` verifies):
 
-- `tapes-api.yaml` sha256 `af705bce8581e30b157750f48b09f5c410eb27010a34cf1e8af67fbf0277adfd`
+- `tapes-api.yaml` sha256 `5f864cec12802a7d2fc331f9bd16fef89154002bd801bb389f9bbd593db6752f`
 
 Prose-included document fingerprint (`CompiledDoc.Fingerprint()` as printed by
 `tapes dev openapi`; the ETag a server would serve for the same document):
 
-- api `sha256:ffb5e9af12929038d0a9b57595911ca80ddf6a4be63f172310973eb5bb0c0080`
+- api `sha256:8a2692ee065581c63d699a2c95eb70876431ddd45261e6b01c15fc28b67f96d1`
 
 Prose-stripped contract seal (the value in tapes `api/CONTRACT` at the pinned
-tag; this changes only when the contract *shape* changes, so it is the identity
-a doc-comment edit does not move):
+commit; this changes only when the contract *shape* changes, so it is the
+identity a doc-comment edit does not move):
 
-- api `sha256:e40e552f13831b11ee3d843f0226e475b91717ae4bf3b40b2599de9953ac2870`
+- api `sha256:10950f1124a77e16460a8a8a4e799d1776180c9e779ebc3c97a05ab9778c8fb9`
 
 ## Updating
 

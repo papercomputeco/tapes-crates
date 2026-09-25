@@ -154,8 +154,9 @@ and on [docs.rs](https://docs.rs/tapes-client/latest/tapes_client/http/).
   caller's type), and `json_typed` for both at once.
 - **`page`** — the cursor walk. Absent, `null`, and `""` are three spellings
   of "last page", which is exactly why reading them belongs in one place.
-  `list_all_sessions` and its siblings follow `next_cursor` to the end
-  through this one convention.
+  `list_all_sessions` and its siblings — `list_all_raw_turns`, and the
+  whole-envelope reads `get_whole_session_traces` and `get_whole_trace` —
+  follow `next_cursor` to the end through this one convention.
 - **`path`** — `call_url` with `PathMode::Direct` (a server's root) or
   `PathMode::UnderBase` (mounted under a gateway prefix). The caller says
   which; a builder that silently picks one is wrong for the other client.

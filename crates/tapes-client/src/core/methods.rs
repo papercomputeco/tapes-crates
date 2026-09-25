@@ -26,6 +26,8 @@
 //! more: the same operation table, the same routing, the same refusals. Anything
 //! else would be a second contract that can disagree with the first.
 
+use std::sync::OnceLock;
+
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use snafu::ResultExt;
@@ -34,10 +36,11 @@ use crate::cassettes::discovery::Discovery;
 use crate::core::contract::{self, core, ops};
 use crate::core::models::params::ContractParams;
 use crate::core::models::{
-    RawTurnListResponse, SeedDemoRequest, SeedResult, SessionDetailResponse, SessionItem,
-    SessionListParams, SessionListResponse, SessionTracesParams, SessionTracesResponse,
-    SessionUpdateRequest, SpanItem, StatsParams, StatsResponse, TraceDetail, TraceListParams,
-    TraceListResponse, TraceParams,
+    RawTurnHeaderItem, RawTurnListParams, RawTurnListResponse, SeedDemoRequest, SeedResult,
+    SessionDetailResponse, SessionItem, SessionListParams, SessionListResponse,
+    SessionTracesParams, SessionTracesResponse, SessionUpdateRequest, SpanItem,
+    StandaloneTraceDetail, StatsParams, StatsResponse, TraceListParams, TraceListResponse,
+    TraceParams,
 };
 use crate::decode;
 use crate::error::{Result, error};
@@ -296,7 +299,14 @@ impl<T: TapesTransport> CoreClient<T> {
             .await
     }
 
-    /// `GET /v1/sessions/{id}/traces` — the derived span read model.
+    /// `GET /v1/sessions/{id}/traces` — one page of the derived span read
+    /// model.
+    ///
+    /// The page is the first `limit` traces in turn order, closed early on
+    /// its byte budget; `session` and `links` are whole on every page. A page
+    /// shorter than `limit` is not the end — an empty `next_cursor` is. For
+    /// the whole session in one envelope, see
+    /// [`CoreClient::get_whole_session_traces`].
     ///
     /// # Errors
     ///
@@ -310,14 +320,91 @@ impl<T: TapesTransport> CoreClient<T> {
             .await
     }
 
-    /// `GET /v1/sessions/{id}/raw_turns` — the wire log behind a derivation.
+    /// The whole composite view of one session, following `next_cursor` to
+    /// the end.
+    ///
+    /// The first page's envelope — `session`, `links`, `schema` — with every
+    /// page's `traces` appended in order and `next_cursor` cleared: what the
+    /// unpaged response used to be. The cursor convention is
+    /// [`crate::page`]'s, so this walk stops on the same three spellings of
+    /// "no more pages" and shares the guard against a server that repeats a
+    /// cursor. `params.cursor` is the walk's to set; a value passed in is
+    /// replaced.
     ///
     /// # Errors
     ///
     /// Any contract, transport, status, or decode failure; see [`crate::Error`].
-    pub async fn list_raw_turns(&self, id: &str) -> Result<RawTurnListResponse> {
-        self.call(ops::LIST_RAW_TURNS, vec![("id", id.to_owned())])
+    pub async fn get_whole_session_traces(
+        &self,
+        id: &str,
+        params: &SessionTracesParams,
+    ) -> Result<SessionTracesResponse> {
+        // The first page's envelope, kept while `page::walk` owns the loop.
+        // A `OnceLock` rather than a `RefCell` so the future stays `Send`
+        // for whatever transport the caller bound; `set` on a later page is
+        // a no-op by design, because the envelope repeats on every page and
+        // the first one is as good as any.
+        let envelope: OnceLock<SessionTracesResponse> = OnceLock::new();
+        let traces = page::walk(|cursor| {
+            let mut params = params.clone();
+            params.cursor = cursor;
+            let envelope = &envelope;
+            async move {
+                let mut response = self.get_session_traces(id, &params).await?;
+                let page = response.take_page();
+                let _ = envelope.set(response);
+                Ok(page)
+            }
+        })
+        .await?;
+        // The walk fetched at least one page, so the envelope is set; the
+        // default is unreachable and exists only to avoid an unwrap.
+        let mut whole = envelope.into_inner().unwrap_or_default();
+        whole.traces = traces;
+        Ok(whole)
+    }
+
+    /// `GET /v1/sessions/{id}/raw_turns` — one page of the wire log behind a
+    /// derivation.
+    ///
+    /// The page is the next `limit` headers in raw turn id order; an empty
+    /// `next_cursor` is the end. For every header, see
+    /// [`CoreClient::list_all_raw_turns`].
+    ///
+    /// # Errors
+    ///
+    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
+    pub async fn list_raw_turns(
+        &self,
+        id: &str,
+        params: &RawTurnListParams,
+    ) -> Result<RawTurnListResponse> {
+        self.with_params_at(params, vec![("id", id.to_owned())])
             .await
+    }
+
+    /// Every raw turn header of one session, following `next_cursor` to the
+    /// end.
+    ///
+    /// The cursor convention is [`crate::page`]'s, so this walk and every
+    /// other listing's stop on the same three spellings of "no more pages"
+    /// and share the guard against a server that repeats a cursor.
+    /// `params.cursor` is the walk's to set; a value passed in is replaced.
+    ///
+    /// # Errors
+    ///
+    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
+    pub async fn list_all_raw_turns(
+        &self,
+        id: &str,
+        params: &RawTurnListParams,
+    ) -> Result<Vec<RawTurnHeaderItem>> {
+        page::walk(|cursor| {
+            let mut params = params.clone();
+            params.cursor = cursor;
+            async move { Ok(self.list_raw_turns(id, &params).await?.into_page()) }
+        })
+        .await
     }
 
     /// `GET /v1/traces` — the trace summaries for one session.
@@ -329,14 +416,61 @@ impl<T: TapesTransport> CoreClient<T> {
         self.with_params(params).await
     }
 
-    /// `GET /v1/traces/{trace_id}` — one trace with its spans.
+    /// `GET /v1/traces/{trace_id}` — one page of a trace's spans, with its
+    /// header, links, and owning session.
+    ///
+    /// Only `spans` is paged; `trace`, `links`, `schema`, and `session_id`
+    /// are whole on every page. A page shorter than `limit` is not the end —
+    /// an empty `next_cursor` is. For the whole trace in one envelope, see
+    /// [`CoreClient::get_whole_trace`].
     ///
     /// # Errors
     ///
     /// Any contract, transport, status, or decode failure; see [`crate::Error`].
-    pub async fn get_trace(&self, trace_id: &str, params: &TraceParams) -> Result<TraceDetail> {
+    pub async fn get_trace(
+        &self,
+        trace_id: &str,
+        params: &TraceParams,
+    ) -> Result<StandaloneTraceDetail> {
         self.with_params_at(params, vec![("trace_id", trace_id.to_owned())])
             .await
+    }
+
+    /// One whole trace, following `next_cursor` to its last span.
+    ///
+    /// The first page's envelope — `trace`, `links`, `schema`, `session_id` —
+    /// with every page's `spans` appended in order and `next_cursor` cleared:
+    /// what the unpaged response used to be. The cursor convention is
+    /// [`crate::page`]'s, so this walk stops on the same three spellings of
+    /// "no more pages" and shares the guard against a server that repeats a
+    /// cursor. `params.cursor` is the walk's to set; a value passed in is
+    /// replaced.
+    ///
+    /// # Errors
+    ///
+    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
+    pub async fn get_whole_trace(
+        &self,
+        trace_id: &str,
+        params: &TraceParams,
+    ) -> Result<StandaloneTraceDetail> {
+        // See `get_whole_session_traces` for why this is a `OnceLock`.
+        let envelope: OnceLock<StandaloneTraceDetail> = OnceLock::new();
+        let spans = page::walk(|cursor| {
+            let mut params = params.clone();
+            params.cursor = cursor;
+            let envelope = &envelope;
+            async move {
+                let mut response = self.get_trace(trace_id, &params).await?;
+                let page = response.take_page();
+                let _ = envelope.set(response);
+                Ok(page)
+            }
+        })
+        .await?;
+        let mut whole = envelope.into_inner().unwrap_or_default();
+        whole.spans = spans;
+        Ok(whole)
     }
 
     /// `GET /v1/traces/{trace_id}/spans/{span_id}` — one span, in full.
@@ -554,6 +688,7 @@ mod tests {
                 "s-1",
                 &SessionTracesParams {
                     payload: Some(PayloadDetail::Preview),
+                    ..Default::default()
                 },
             )
             .await
@@ -563,6 +698,117 @@ mod tests {
             "got: {:?}",
             client.transport().seen.borrow(),
         );
+    }
+
+    #[tokio::test]
+    async fn a_page_request_travels_under_the_contracts_own_names_on_every_paged_read() {
+        // The three reads the contract pages in place take `limit` and
+        // `cursor` under exactly those names, after any parameter they
+        // already had; a spelling of its own on any one of them would be a
+        // second pagination convention.
+        let client = client("http://127.0.0.1:8081", serde_json::json!({}));
+        let _ = client
+            .get_session_traces(
+                "s-1",
+                &SessionTracesParams {
+                    payload: Some(PayloadDetail::Full),
+                    limit: Some(50),
+                    cursor: Some("c1".to_owned()),
+                },
+            )
+            .await
+            .unwrap();
+        let _ = client
+            .get_trace(
+                "t-1",
+                &TraceParams {
+                    payload: None,
+                    limit: Some(200),
+                    cursor: Some("c2".to_owned()),
+                },
+            )
+            .await
+            .unwrap_err(); // `{}` lacks the required `session_id`; the URL was still built.
+        let _ = client
+            .list_raw_turns(
+                "s-1",
+                &RawTurnListParams {
+                    limit: Some(1000),
+                    cursor: Some("c3".to_owned()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let seen = client.transport().seen.borrow();
+        assert_eq!(
+            *seen,
+            vec![
+                "http://127.0.0.1:8081/v1/sessions/s-1/traces?payload=full&limit=50&cursor=c1",
+                "http://127.0.0.1:8081/v1/traces/t-1?limit=200&cursor=c2",
+                "http://127.0.0.1:8081/v1/sessions/s-1/raw_turns?limit=1000&cursor=c3",
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn a_standalone_trace_page_without_its_session_id_is_refused() {
+        // The one required property in the contract: a server that drops
+        // the guarantee it publishes is a decode failure, not a trace whose
+        // session happens to be "".
+        let client = client(
+            "http://127.0.0.1:8081",
+            serde_json::json!({"trace": {"trace_id": "t-1"}, "spans": []}),
+        );
+        let err = client
+            .get_trace("t-1", &TraceParams::default())
+            .await
+            .unwrap_err();
+        let crate::Error::Decode { source } = &err else {
+            panic!("expected a decode failure, got: {err}");
+        };
+        assert!(
+            source.to_string().contains("session_id"),
+            "the refusal must name the missing property: {source}",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_null_cursor_ends_a_whole_read_instead_of_failing_it() {
+        // The walker already reads absent, "" and null as the end of a
+        // listing; a typed final page spelling it as null must decode too,
+        // on every paged read, or an otherwise good read fails at its end.
+        let traces = client(
+            "http://127.0.0.1:8081",
+            serde_json::json!({"traces": [{"trace": {"trace_id": "t-1"}, "spans": []}], "next_cursor": null}),
+        );
+        let whole = traces
+            .get_whole_session_traces("s-1", &SessionTracesParams::default())
+            .await
+            .unwrap();
+        assert_eq!(whole.traces.len(), 1);
+        assert_eq!(whole.next_cursor, "");
+
+        let trace = client(
+            "http://127.0.0.1:8081",
+            serde_json::json!({"session_id": "s-1", "trace": {"trace_id": "t-1"}, "spans": [{"span_id": "sp-1"}], "next_cursor": null}),
+        );
+        let whole = trace
+            .get_whole_trace("t-1", &TraceParams::default())
+            .await
+            .unwrap();
+        assert_eq!(whole.spans.len(), 1);
+        assert_eq!(whole.next_cursor, "");
+
+        let turns = client(
+            "http://127.0.0.1:8081",
+            serde_json::json!({"items": [{"id": 7}], "next_cursor": null}),
+        );
+        let all = turns
+            .list_all_raw_turns("s-1", &RawTurnListParams::default())
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 1);
     }
 
     #[tokio::test]
@@ -590,6 +836,160 @@ mod tests {
             "got: {:?}",
             client.transport().seen.borrow(),
         );
+    }
+
+    #[tokio::test]
+    async fn a_session_traces_walk_keeps_the_first_envelope_and_appends_every_page() {
+        // The composite is paged in `traces` alone: `session`, `links`, and
+        // `schema` repeat on every page, so the whole-session helper keeps
+        // one copy of them and concatenates the paged vector — leaving
+        // exactly what the unpaged response used to look like.
+        let client = CoreClient::new(Recorder::new(
+            "http://127.0.0.1:8081",
+            vec![
+                serde_json::json!({
+                    "schema": "20260615",
+                    "session": {"id": "s-1"},
+                    "links": [{"from_span_id": "a", "to_span_id": "b"}],
+                    "traces": [{"trace": {"trace_id": "t-1"}}],
+                    "next_cursor": "c1",
+                }),
+                serde_json::json!({
+                    "schema": "20260615",
+                    "session": {"id": "s-1"},
+                    "links": [{"from_span_id": "a", "to_span_id": "b"}],
+                    "traces": [{"trace": {"trace_id": "t-2"}}],
+                }),
+            ],
+        ));
+        let whole = client
+            .get_whole_session_traces(
+                "s-1",
+                &SessionTracesParams {
+                    payload: Some(PayloadDetail::Preview),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(whole.session.id, "s-1");
+        assert_eq!(whole.schema, "20260615");
+        assert_eq!(
+            whole.links.len(),
+            1,
+            "the envelope is kept once, not per page"
+        );
+        assert_eq!(
+            whole
+                .traces
+                .iter()
+                .map(|t| t.trace.trace_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["t-1", "t-2"],
+        );
+        assert_eq!(whole.next_cursor, "", "a whole response has no next page");
+        let seen = client.transport().seen.borrow();
+        assert_eq!(seen.len(), 2);
+        assert!(seen[1].contains("cursor=c1"), "got: {seen:?}");
+        assert!(
+            seen.iter().all(|url| url.contains("payload=preview")),
+            "every page of a walk must carry the caller's parameters: {seen:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_trace_walk_keeps_the_first_envelope_and_appends_every_span_page() {
+        let client = CoreClient::new(Recorder::new(
+            "http://127.0.0.1:8081",
+            vec![
+                serde_json::json!({
+                    "session_id": "s-1",
+                    "trace": {"trace_id": "t-1"},
+                    "links": [{"from_span_id": "a", "to_span_id": "b"}],
+                    "spans": [{"span_id": "sp-1"}, {"span_id": "sp-2"}],
+                    "next_cursor": "c1",
+                }),
+                serde_json::json!({
+                    "session_id": "s-1",
+                    "trace": {"trace_id": "t-1"},
+                    "links": [{"from_span_id": "a", "to_span_id": "b"}],
+                    "spans": [{"span_id": "sp-3"}],
+                    "next_cursor": "",
+                }),
+            ],
+        ));
+        let whole = client
+            .get_whole_trace("t-1", &TraceParams::default())
+            .await
+            .unwrap();
+
+        assert_eq!(whole.session_id, "s-1");
+        assert_eq!(whole.trace.trace_id, "t-1");
+        assert_eq!(
+            whole.links.len(),
+            1,
+            "the envelope is kept once, not per page"
+        );
+        assert_eq!(
+            whole
+                .spans
+                .iter()
+                .map(|s| s.span_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sp-1", "sp-2", "sp-3"],
+        );
+        assert_eq!(whole.next_cursor, "");
+        assert!(
+            client.transport().seen.borrow()[1].ends_with("/v1/traces/t-1?cursor=c1"),
+            "got: {:?}",
+            client.transport().seen.borrow(),
+        );
+    }
+
+    #[tokio::test]
+    async fn a_raw_turn_walk_follows_the_cursor_to_the_end() {
+        let client = CoreClient::new(Recorder::new(
+            "http://127.0.0.1:8081",
+            vec![
+                serde_json::json!({"items": [{"id": 1}], "next_cursor": "c1"}),
+                serde_json::json!({"items": [{"id": 2, "raw_response_dropped": true}]}),
+            ],
+        ));
+        let turns = client
+            .list_all_raw_turns("s-1", &RawTurnListParams::default())
+            .await
+            .unwrap();
+
+        assert_eq!(turns.iter().map(|t| t.id).collect::<Vec<_>>(), vec![1, 2]);
+        assert!(turns[1].raw_response_dropped);
+        assert!(
+            client.transport().seen.borrow()[1].ends_with("/v1/sessions/s-1/raw_turns?cursor=c1"),
+            "got: {:?}",
+            client.transport().seen.borrow(),
+        );
+    }
+
+    #[tokio::test]
+    async fn a_whole_read_stops_on_a_repeated_cursor_rather_than_hanging() {
+        // The whole-envelope helpers ride `page::walk`, so they inherit its
+        // guard: a server that hands back the cursor it was just given ends
+        // the walk after one repeat instead of paging forever.
+        let client = client(
+            "http://127.0.0.1:8081",
+            serde_json::json!({
+                "session_id": "s-1",
+                "trace": {"trace_id": "t-1"},
+                "spans": [{"span_id": "sp-1"}],
+                "next_cursor": "stuck",
+            }),
+        );
+        let whole = client
+            .get_whole_trace("t-1", &TraceParams::default())
+            .await
+            .unwrap();
+        assert_eq!(client.transport().seen.borrow().len(), 2);
+        assert_eq!(whole.spans.len(), 2);
     }
 
     #[tokio::test]

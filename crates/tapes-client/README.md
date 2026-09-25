@@ -107,7 +107,15 @@ let client = CoreClient::new(DirectHttp::new(base));
 let page = client.list_sessions(&SessionListParams { limit: Some(25), ..Default::default() }).await?;
 let all  = client.list_all_sessions(&SessionListParams::default()).await?; // follows next_cursor
 let one  = client.get_session("s-1").await?;
-let spans = client.get_session_traces("s-1", &SessionTracesParams { payload: Some(PayloadDetail::Preview) }).await?;
+
+// The composite, a trace, and the raw-turn log are paged in place: one call
+// is one page, and `next_cursor` (not the page's length) says whether there
+// is more. The whole-read helpers walk to the end and hand back the first
+// page's envelope with every page's vector appended.
+let first = client.get_session_traces("s-1", &SessionTracesParams { payload: Some(PayloadDetail::Preview), ..Default::default() }).await?;
+let whole = client.get_whole_session_traces("s-1", &SessionTracesParams::default()).await?; // session + links + every trace
+let trace = client.get_whole_trace("t-1", &TraceParams::default()).await?;                  // header + links + every span
+let turns = client.list_all_raw_turns("s-1", &RawTurnListParams::default()).await?;         // every raw turn header
 ```
 
 The shape of a sealed response is not a consumer's opinion — it is published,
