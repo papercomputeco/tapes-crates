@@ -124,6 +124,13 @@ pub struct TraceDetail {
     #[serde(deserialize_with = "super::null_default")]
     pub links: Vec<SpanLinkItem>,
 
+    /// Continues the standalone `GET /v1/traces/{id}` walk from the last span
+    /// of this page (pass it as `cursor`). Empty once the page reached the
+    /// trace's last span — and always empty on the copies the composite
+    /// session response embeds, where a trace is served whole.
+    #[serde(deserialize_with = "super::null_default")]
+    pub next_cursor: String,
+
     /// The contract's `schema`.
     pub schema: String,
 
@@ -138,6 +145,75 @@ pub struct TraceDetail {
 
 impl ContractModel for TraceDetail {
     const SCHEMA: &'static str = "TraceDetail";
+}
+
+/// The standalone trace lookup's response: one page of a trace's spans, with
+/// its header, its links, and the owning session — which this caller, unlike
+/// the session-scoped composite's, does not already know and needs to
+/// navigate.
+///
+/// `session_id` is the one property in the whole contract marked `required`,
+/// so it is the one field here without a default: a document missing it is
+/// refused rather than read as `""`, because the schema publishes it as a
+/// guarantee and a client that silently defaulted it would hide a server
+/// that broke one.
+///
+/// Models the contract's `StandaloneTraceDetail` schema.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct StandaloneTraceDetail {
+    /// The trace's whole link set — every edge touching this trace, other
+    /// traces included — repeated on every page.
+    #[serde(default, deserialize_with = "super::null_default")]
+    pub links: Vec<SpanLinkItem>,
+
+    /// Continues the walk from the last span of this page (pass it as
+    /// `cursor`). Empty once the page reached the trace's last span. A page
+    /// may close short of `limit` on its byte budget, so its absence — not the
+    /// page's length — is what means "no more".
+    #[serde(default, deserialize_with = "super::null_default")]
+    pub next_cursor: String,
+
+    /// The contract's `schema`.
+    #[serde(default)]
+    pub schema: String,
+
+    /// The session this trace belongs to. Required by the contract.
+    pub session_id: String,
+
+    /// This page's spans, in presentation order (`seq`).
+    #[serde(default, deserialize_with = "super::null_default")]
+    pub spans: Vec<SpanItem>,
+
+    /// The trace header, repeated on every page.
+    #[serde(default, deserialize_with = "super::null_default")]
+    pub trace: TraceItem,
+}
+
+impl ContractModel for StandaloneTraceDetail {
+    const SCHEMA: &'static str = "StandaloneTraceDetail";
+}
+
+impl StandaloneTraceDetail {
+    /// Take this page's paged part out, leaving the envelope behind.
+    ///
+    /// Only `spans` is paged; `trace`, `links`, `schema`, and `session_id`
+    /// repeat on every page and stay put. What comes out is exactly
+    /// [`crate::page::Page`], so a walk over a trace's spans reaches the same
+    /// loop, the same three spellings of "no more pages", and the same guard
+    /// against a repeated cursor as every listing. `next_cursor` goes with the
+    /// page — it belongs to the walk, not to the trace — so the envelope left
+    /// behind is what a whole trace looks like once the walk is done.
+    ///
+    /// Not `into_page`: the envelope carries facts a page cannot, and a
+    /// conversion that discarded them would have to be undone by every walk.
+    #[must_use]
+    pub fn take_page(&mut self) -> crate::page::Page<SpanItem> {
+        crate::page::Page {
+            items: std::mem::take(&mut self.spans),
+            next_cursor: Some(std::mem::take(&mut self.next_cursor)),
+        }
+    }
 }
 
 /// The summaries list for one session. `schema` stamps the projection

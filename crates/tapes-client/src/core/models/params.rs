@@ -161,11 +161,20 @@ impl ContractParams for SessionListParams {
     }
 }
 
-/// `GET /v1/sessions/{id}/traces` — the derived span read model.
+/// `GET /v1/sessions/{id}/traces` — one page of the derived span read model.
+///
+/// The response is paged in traces: the first `limit` of them in turn order,
+/// closed early once the page passes its byte budget, so a page shorter than
+/// `limit` does not mean the end — only an absent `next_cursor` does.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionTracesParams {
     /// How much of each span's payload to carry.
     pub payload: Option<PayloadDetail>,
+    /// How many traces to return in the page (server default 50, max 200).
+    pub limit: Option<u32>,
+    /// The cursor from a previous page's `next_cursor`, minted for the same
+    /// session.
+    pub cursor: Option<String>,
 }
 
 impl ContractParams for SessionTracesParams {
@@ -174,15 +183,27 @@ impl ContractParams for SessionTracesParams {
     fn values(&self) -> Vec<(&'static str, String)> {
         let mut values = Vec::new();
         push_enum(&mut values, "payload", self.payload);
+        push_num(&mut values, "limit", self.limit);
+        push(&mut values, "cursor", self.cursor.as_deref());
         values
     }
 }
 
-/// `GET /v1/traces/{trace_id}` — one trace with its spans.
+/// `GET /v1/traces/{trace_id}` — one page of a trace's spans.
+///
+/// Only `spans` is paged; the header and links are whole on every page. A
+/// page also closes at the next span boundary once it has emitted roughly
+/// 8 MiB, so a page shorter than `limit` does not mean the end — only an
+/// absent `next_cursor` does.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TraceParams {
     /// How much of each span's payload to carry.
     pub payload: Option<PayloadDetail>,
+    /// How many spans to return in the page (server default 200, max 1000).
+    pub limit: Option<u32>,
+    /// The cursor from a previous page's `next_cursor`, minted for the same
+    /// trace.
+    pub cursor: Option<String>,
 }
 
 impl ContractParams for TraceParams {
@@ -191,6 +212,33 @@ impl ContractParams for TraceParams {
     fn values(&self) -> Vec<(&'static str, String)> {
         let mut values = Vec::new();
         push_enum(&mut values, "payload", self.payload);
+        push_num(&mut values, "limit", self.limit);
+        push(&mut values, "cursor", self.cursor.as_deref());
+        values
+    }
+}
+
+/// `GET /v1/sessions/{id}/raw_turns` — one page of a session's wire log.
+///
+/// Paged in rows only: the listing is payload-free, so a header count bounds
+/// its bytes and the page carries no byte budget.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RawTurnListParams {
+    /// How many raw turn headers to return in the page (server default 200,
+    /// max 1000).
+    pub limit: Option<u32>,
+    /// The cursor from a previous page's `next_cursor`, minted for the same
+    /// session.
+    pub cursor: Option<String>,
+}
+
+impl ContractParams for RawTurnListParams {
+    const OPERATION: &'static str = "listRawTurns";
+
+    fn values(&self) -> Vec<(&'static str, String)> {
+        let mut values = Vec::new();
+        push_num(&mut values, "limit", self.limit);
+        push(&mut values, "cursor", self.cursor.as_deref());
         values
     }
 }

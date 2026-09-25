@@ -20,9 +20,10 @@
 //!
 //! # The decoding rules, and why each one is what it is
 //!
-//! The contract's schemas declare no required properties: the server omits an
-//! empty field rather than sending it. Every rule below follows from that, and
-//! from one more: **an additive server change must never break a consumer.**
+//! The contract's schemas declare almost no required properties: the server
+//! omits an empty field rather than sending it. Every rule below follows from
+//! that, and from one more: **an additive server change must never break a
+//! consumer.**
 //!
 //! - **Unknown fields pass silently.** No `deny_unknown_fields`, anywhere. A
 //!   field this build has never heard of is a newer server, not a malformed
@@ -30,7 +31,11 @@
 //!   outage for every older client. What catches the addition instead is the
 //!   [`coverage`] gate, at build time, where a human can decide about it.
 //! - **An absent field decodes to its default.** Container-level
-//!   `#[serde(default)]`, on every model.
+//!   `#[serde(default)]`, on every model — except where the contract marks a
+//!   property `required`, which today is exactly one field
+//!   ([`StandaloneTraceDetail::session_id`]). There the model defaults every
+//!   *other* field and leaves that one strict, so a document missing the
+//!   guarantee the schema publishes is refused rather than read as `""`.
 //! - **A null in a composite position decodes to its default too.** A nil map,
 //!   slice, or struct pointer that is not omitted arrives as `null`, and a
 //!   model that errored on one would let a single empty projection blank an
@@ -94,8 +99,8 @@ pub use admin::{
     TranscriptProjectionStats,
 };
 pub use params::{
-    PayloadDetail, SessionListParams, SessionTracesParams, SortDirection, StatsParams,
-    TraceListParams, TraceParams,
+    PayloadDetail, RawTurnListParams, SessionListParams, SessionTracesParams, SortDirection,
+    StatsParams, TraceListParams, TraceParams,
 };
 pub use protocol::{ErrorResponse, McpError, McpRequest, McpResponse};
 pub use raw_turn::{
@@ -107,7 +112,9 @@ pub use session::{
     SessionTracesResponse, SessionUpdateRequest, SessionUsage, TreeTask,
 };
 pub use span::{SpanItem, SpanLinkItem};
-pub use trace::{MainUsage, TraceDetail, TraceItem, TraceListResponse, TraceUsage};
+pub use trace::{
+    MainUsage, StandaloneTraceDetail, TraceDetail, TraceItem, TraceListResponse, TraceUsage,
+};
 
 /// A type that models one named schema of the vendored contract.
 ///

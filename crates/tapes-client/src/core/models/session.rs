@@ -244,7 +244,9 @@ impl ContractModel for SessionDetailResponse {
     const SCHEMA: &'static str = "SessionDetailResponse";
 }
 
-/// The composite session view on the span model.
+/// The composite session view on the span model — one page of it. The page
+/// is bounded in traces (`limit`) and in bytes; `session` and `links` are
+/// whole on every page.
 ///
 /// Models the contract's `SessionTracesResponse` schema.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -254,6 +256,13 @@ pub struct SessionTracesResponse {
     /// The contract's `links`.
     #[serde(deserialize_with = "super::null_default")]
     pub links: Vec<SpanLinkItem>,
+
+    /// Continues the walk from the last trace of this page (pass it as
+    /// `cursor`). Empty once the page reached the session's last trace. A
+    /// page may close short of `limit` on its byte budget, so its absence —
+    /// not the page's length — is what means "no more".
+    #[serde(deserialize_with = "super::null_default")]
+    pub next_cursor: String,
 
     /// The contract's `schema`.
     pub schema: String,
@@ -308,6 +317,29 @@ impl SessionListResponse {
         crate::page::Page {
             items: self.items,
             next_cursor: Some(self.next_cursor),
+        }
+    }
+}
+
+impl SessionTracesResponse {
+    /// Take this page's paged part out, leaving the envelope behind.
+    ///
+    /// Only `traces` is paged; `session`, `links`, and `schema` repeat on
+    /// every page and stay put. What comes out is exactly
+    /// [`crate::page::Page`], so a walk over a session's traces reaches the
+    /// same loop, the same three spellings of "no more pages", and the same
+    /// guard against a repeated cursor as every listing. `next_cursor` goes
+    /// with the page — it belongs to the walk, not to the session — so the
+    /// envelope left behind is what the whole composite looks like once the
+    /// walk is done.
+    ///
+    /// Not `into_page`: the envelope carries facts a page cannot, and a
+    /// conversion that discarded them would have to be undone by every walk.
+    #[must_use]
+    pub fn take_page(&mut self) -> crate::page::Page<TraceDetail> {
+        crate::page::Page {
+            items: std::mem::take(&mut self.traces),
+            next_cursor: Some(std::mem::take(&mut self.next_cursor)),
         }
     }
 }

@@ -43,8 +43,10 @@ pub struct SpanItem {
     /// The contract's `parent_span_id`.
     pub parent_span_id: String,
 
-    /// Payload marks a preview-truncated span so the console drills in for
-    /// the full payload; absent in full mode.
+    /// Payload marks a preview-mode span so the console drills in for the
+    /// full payload: `"preview"` when input/output are the stored previews,
+    /// `"preview_pending"` when the row has no stored preview yet (input and
+    /// output are then `[]`). Absent in full mode.
     pub payload: String,
 
     /// The contract's `raw_turn_id`.
