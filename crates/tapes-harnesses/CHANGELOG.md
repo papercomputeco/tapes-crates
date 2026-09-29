@@ -15,7 +15,7 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-09-29
+## [0.1.2] - 2026-09-29
 
 ### Added
 
