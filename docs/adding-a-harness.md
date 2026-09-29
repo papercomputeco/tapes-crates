@@ -35,7 +35,7 @@ pub const GEMINI: Harness = Harness {
     plugin: PluginDelivery::None,
 };
 
-pub const REGISTRY: &[Harness] = &[CLAUDE, CODEX, GEMINI, OPENCODE, PI];
+pub const REGISTRY: &[Harness] = &[CLAUDE, CODEX, GEMINI, OPENCODE, PI, CURSOR];
 ```
 
 That declaration is load-bearing, not documentation. `supported_agents()` picks
@@ -83,6 +83,10 @@ endpoint and appends nothing to it.
 If the agent exposes no base-URL knob at all, there is nothing for a recipe to
 set and capture needs code running *inside* the agent instead. Declare
 `LaunchSupport::ConsumerOwned` and see the next step. `PI` is that case.
+Cursor is the other case. Its print mode writes the transcript to stdout, so
+it needs neither a recipe nor a plugin. Declare `LaunchSupport::StructuredStdout`;
+the argv and stream format are in `transcript::cursor_stream`, and the consumer
+spawns `agent` and saves its stdout.
 
 ## Step 2b — a plugin artifact, if capture needs code inside the agent
 
@@ -193,6 +197,13 @@ uploads. If your agent writes a tree this crate can locate, add a
 home-directory override the agent itself honours, in one place, the way
 `CodexRollouts` delegates for `$CODEX_HOME`.
 
+If the agent writes its transcript only to the stdout of a process the
+consumer launches, do not invent a transcript directory. `transcript::cursor_stream`
+builds the argv, lists `.jsonl` files under a spool root the consumer
+supplies, and loads each into a `CursorTranscript` whose `payload` carries the
+session id and cwd. The consumer supplies only the org id and auth subject,
+and owns spawning, saving, delivery, and retry.
+
 Discovery and packaging in `crates/tapes-harnesses/src/transcript/` are shared. Delivery, auth, and
 retry are not — they belong to each consumer, and always will.
 
@@ -235,6 +246,8 @@ The canonical name, and the most load-bearing string in the crate:
   `HARNESS_ID_CODEX`, `HARNESS_ID_OPENCODE`, `HARNESS_ID_PI` today — rather
   than being spelled inline here. `registry_ids_are_the_envelope_ids` pins the
   two together.
+  Cursor uses no `X-Tapes-*` envelope. Its `HARNESS_ID_CURSOR` lives in
+  `crates/tapes-harnesses/src/harness.rs` instead.
 - It is what `supported_agents()` returns, and so the name a consumer offers.
 - It is what `LaunchRecipe::harness()` must return; each recipe pins that in
   its own test (`crates/tapes-harnesses/src/launch/claude.rs`, `crates/tapes-harnesses/src/launch/codex.rs`,
@@ -300,6 +313,10 @@ not in whether one happens:
 - **`ConsumerOwned`** means launchable, but the harness has no base-URL knob for
   a recipe to set, so capture depends on an installed extension plus whatever
   argv loads it — and that argv is not shared yet. `PI` is the only one.
+- **`StructuredStdout`** means this crate plans the argv and the consumer runs
+  the process, saves its stdout, and uploads the file. The entry is excluded
+  from `supported_agents()` because a generic consumer cannot do that. `CURSOR`
+  is the only one.
 - **`Unsupported`** keeps the harness out of every consumer's launchable list
   while leaving the rest of the entry — id, User-Agent rule, attribution
   strategy — fully in force. A harness you can capture but not start is a
@@ -361,15 +378,15 @@ claude` says the harness needs no plugin, writes nothing at all, and exits zero
 
 ## Partial entries and full ones
 
-The registry holds five entries and not all of them are complete:
+The registry holds six entries and not all of them are complete:
 
-| field | `CLAUDE` | `CODEX` | `CODEX_APP` | `OPENCODE` | `PI` |
-| --- | --- | --- | --- | --- | --- |
-| `user_agent` | `Prefix("claude")` | `None` | `None` | `None` | `None` |
-| `launch` | `Recipe` | `Recipe` | `Unsupported` | `Recipe` | `ConsumerOwned` |
-| `attribution` | `SessionsDir` | `OpenRollout` | `LifecycleHooks` | `SelfAttributing` | `SelfAttributing` |
-| `transcripts` | `ClaudeProjects` | `CodexRollouts` | `CodexRollouts` | `None` | `None` |
-| `plugin` | `None` | `None` | `HookManifestTemplates` | `BundledExtension` | `BundledExtension` |
+| field | `CLAUDE` | `CODEX` | `CODEX_APP` | `OPENCODE` | `PI` | `CURSOR` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `user_agent` | `Prefix("claude")` | `None` | `None` | `None` | `None` | `None` |
+| `launch` | `Recipe` | `Recipe` | `Unsupported` | `Recipe` | `ConsumerOwned` | `StructuredStdout` |
+| `attribution` | `SessionsDir` | `OpenRollout` | `LifecycleHooks` | `SelfAttributing` | `SelfAttributing` | `None` |
+| `transcripts` | `ClaudeProjects` | `CodexRollouts` | `CodexRollouts` | `None` | `None` | `None` |
+| `plugin` | `None` | `None` | `HookManifestTemplates` | `BundledExtension` | `BundledExtension` | `None` |
 
 `OPENCODE` spent a long stretch as the honest partial entry — a recipe with
 `AttributionStrategy::None` — and that state is still the shape most new
@@ -407,6 +424,12 @@ entry is necessary and not sufficient — the remaining work is the attribution
 capability here, and then a pull request against the consumer (paper's
 `SUPPORTED_AGENTS` filters to the attribution-capable subset, so a partial
 entry is invisible to `paper start` by construction, not by oversight).
+
+Cursor records sessions from structured stdout. The init event supplies
+the session id. `TranscriptSource::None` means there is no transcript tree
+to discover. `StructuredStdout` keeps Cursor out of `supported_agents()`,
+so each consumer must implement its capture lane and expose it explicitly.
+`find()` accepts `cursor` and `cursor-agent`.
 
 ## Proving a new attribution lane
 
@@ -524,6 +547,11 @@ against the whole registry, so `cargo test` is the checklist:
   breaks two test suites the day it becomes real.
 - Outside the registry module: a new `HARNESS_ID_*` const in `crates/tapes-capture/src/envelope.rs`,
   and a `harness()` test in your `crates/tapes-harnesses/src/launch/` recipe if you add one.
+  Cursor's ID lives in `crates/tapes-harnesses/src/harness.rs` instead.
+- The registry completeness gate requires one
+  `tapes-mock-upstream::recipe::OneShotRecipe`, one `harness-versions.json`
+  entry, and one row in `docs/harness-matrix.md`. A harness the matrix cannot
+  run still gets all three. Its `unsupported` reason says why.
 
 **Downstream, but only when a consumer bumps its pin.** Both consumers depend on
 this crate by git revision, so nothing breaks in paper or tapesctl the moment

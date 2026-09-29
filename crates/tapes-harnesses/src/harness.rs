@@ -47,6 +47,9 @@ use tapes_capture::envelope::{
     HARNESS_ID_CLAUDE, HARNESS_ID_CODEX, HARNESS_ID_CODEX_APP, HARNESS_ID_OPENCODE, HARNESS_ID_PI,
 };
 
+/// Cursor's harness id for transcript capture.
+pub const HARNESS_ID_CURSOR: &str = "cursor";
+
 /// How a request's `User-Agent` identifies a harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -86,6 +89,9 @@ pub enum LaunchSupport {
     /// to load it. The asset and its environment contract are shared; the argv
     /// is not, yet.
     ConsumerOwned,
+    /// This crate plans the argv ([`crate::transcript::cursor_stream`]); the
+    /// consumer runs the process, saves its stdout, and uploads the file.
+    StructuredStdout,
     /// This crate cannot plan a launch for the harness.
     Unsupported,
 }
@@ -256,10 +262,14 @@ impl Harness {
 
     /// Whether a consumer can launch this harness at all — through a shared
     /// recipe or its own assets. [`supported_agents`] is this predicate over
-    /// the registry.
+    /// the registry. Returns false for [`LaunchSupport::StructuredStdout`]: the
+    /// consumer must add its own capture code first.
     #[must_use]
     pub const fn is_launchable(&self) -> bool {
-        !matches!(self.launch, LaunchSupport::Unsupported)
+        matches!(
+            self.launch,
+            LaunchSupport::Recipe | LaunchSupport::ConsumerOwned
+        )
     }
 
     /// How a capture client recovers this harness's session identity.
@@ -409,12 +419,28 @@ pub const PI: Harness = Harness {
     plugin: PluginDelivery::BundledExtension(crate::plugin::PI_ARTIFACTS),
 };
 
+/// Cursor CLI, captured from its `stream-json` stdout.
+///
+/// Cursor's `agent` binary has no provider base-URL knob and writes no
+/// transcript tree, so no recipe or plugin applies. The consumer runs `agent`
+/// with the argv from [`crate::transcript::cursor_stream::plan_args`], saves
+/// stdout, and uploads it through the transcript lane.
+pub const CURSOR: Harness = Harness {
+    id: HARNESS_ID_CURSOR,
+    aliases: &["cursor-agent"],
+    user_agent: UserAgentMatch::None,
+    launch: LaunchSupport::StructuredStdout,
+    attribution: AttributionStrategy::None,
+    transcripts: TranscriptSource::None,
+    plugin: PluginDelivery::None,
+};
+
 /// Every harness this crate knows about.
 ///
 /// Order is the order a consumer should present them in: the harnesses with
 /// full capture support first (with the Codex app beside the Codex CLI it is
 /// a sibling of), then the partial entries.
-pub const REGISTRY: &[Harness] = &[CLAUDE, CODEX, CODEX_APP, OPENCODE, PI];
+pub const REGISTRY: &[Harness] = &[CLAUDE, CODEX, CODEX_APP, OPENCODE, PI, CURSOR];
 
 /// Every registered harness.
 #[must_use]
@@ -468,7 +494,9 @@ impl crate::attribution::pipeline::UserAgentHarness for RegistryUserAgents {
 /// This is the list each consumer's `start` command should offer, derived
 /// rather than restated: a closed-source client's supported-agent list and
 /// tapesctl's harness argument both come from here, so a harness added to
-/// [`REGISTRY`] appears in both without either being edited.
+/// [`REGISTRY`] appears in both without either being edited. A
+/// [`LaunchSupport::StructuredStdout`] harness is excluded; a consumer that
+/// captures it adds the name itself.
 #[must_use]
 pub fn supported_agents() -> Vec<&'static str> {
     REGISTRY
@@ -552,6 +580,8 @@ mod tests {
         // vice-versa: neither name can drift into resolving as the other.
         assert_eq!(find("codex-app").map(Harness::id), Some("codex-app"));
         assert_eq!(find("codex-desktop").map(Harness::id), Some("codex-app"));
+        assert_eq!(find("cursor").map(Harness::id), Some("cursor"));
+        assert_eq!(find("CURSOR-AGENT").map(Harness::id), Some("cursor"));
         assert!(find("gemini").is_none());
         assert!(find("").is_none());
     }
@@ -627,6 +657,9 @@ mod tests {
         );
         // pi is launchable but has no recipe here; the distinction survives.
         assert_eq!(PI.launch(), LaunchSupport::ConsumerOwned);
+        assert_eq!(CURSOR.launch(), LaunchSupport::StructuredStdout);
+        assert!(!CURSOR.is_launchable());
+        assert!(!supported_agents().contains(&"cursor"));
         assert_eq!(CLAUDE.launch(), LaunchSupport::Recipe);
     }
 

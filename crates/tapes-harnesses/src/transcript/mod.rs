@@ -21,6 +21,8 @@
 //!   writes no per-session transcript tree; the spawn edge lives in its rollout
 //!   files as `sub_agent_activity` records, and this module derives the anchor
 //!   rows that carry it down the same lane.
+//! * [`cursor_stream`] — Cursor's `stream-json` format. Build the `agent` argv,
+//!   read the session id from a saved stream, and load one for upload.
 //!
 //! The seed's `Transcript { path, harness }` placeholder is gone;
 //! [`files::TranscriptFile`] is the real shape, and it carries the subagent id and
@@ -49,6 +51,7 @@
 //! disk are the spool; there is no client-side queue to lose.
 
 pub mod codex_anchors;
+pub mod cursor_stream;
 pub mod files;
 pub mod payload;
 pub mod sweep;

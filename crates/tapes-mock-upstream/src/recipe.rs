@@ -344,6 +344,23 @@ pub const PI_ONE_SHOT: OneShotRecipe = OneShotRecipe {
     tolerated_exit: None,
 };
 
+/// Cursor CLI is captured from its stdout, so this matrix skips it. The launch
+/// fields are placeholders [`OneShotRecipe::plan`] never reads.
+pub const CURSOR_ONE_SHOT: OneShotRecipe = OneShotRecipe {
+    harness_id: harness::CURSOR.id(),
+    binary: "agent",
+    version_args: &["--version"],
+    argv: &[],
+    surface: Surface::AnyCapturedProvider,
+    pointing: Pointing::None,
+    sandbox_env: &[],
+    extra_env: &[],
+    unsupported: Some(
+        "cursor capture uses the CLI's stream-json stdout, not a provider-proxy recipe.",
+    ),
+    tolerated_exit: None,
+};
+
 /// Every one-shot recipe, one per registry harness.
 pub const RECIPES: &[OneShotRecipe] = &[
     CLAUDE_ONE_SHOT,
@@ -351,6 +368,7 @@ pub const RECIPES: &[OneShotRecipe] = &[
     CODEX_APP_ONE_SHOT,
     OPENCODE_ONE_SHOT,
     PI_ONE_SHOT,
+    CURSOR_ONE_SHOT,
 ];
 
 /// The one-shot recipe for `harness`.
@@ -762,6 +780,18 @@ mod tests {
             .expect_err("codex-app has no one-shot launch");
         assert!(error.to_string().contains("codex-app"));
         assert!(error.to_string().contains("configures rather than starts"));
+    }
+
+    #[test]
+    fn cursor_recipe_reports_structured_stdout_instead_of_claiming_a_proxy_plan() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let error = CURSOR_ONE_SHOT
+            .plan(&context(sandbox.path()))
+            .expect_err("cursor has no provider-proxy matrix recipe");
+        let message = error.to_string();
+        assert!(message.contains("cursor capture uses"));
+        assert!(message.contains("stream-json stdout"));
+        assert!(message.contains("not a provider-proxy recipe"));
     }
 
     /// Claude's plan carries the base-URL variable from the shared launch

@@ -1,6 +1,6 @@
 ---
 title: tapes-harnesses
-description: The harness-knowledge crate — the registry and its five axes, the three capture mechanisms, launch recipes, plugin artifacts, attribution lanes, and transcript discovery.
+description: The harness-knowledge crate — the registry and its five axes, the four capture mechanisms, launch recipes, plugin artifacts, attribution lanes, and transcript discovery.
 sidebar:
   order: 3
 ---
@@ -32,7 +32,8 @@ user-typed name through the aliases, `for_user_agent` resolves a request's
 `User-Agent`, and `supported_agents` is the launchable subset. Consumers
 derive their supported-agent lists from the registry rather than hard-coding
 one, so a new entry appears in their surface without their doing anything —
-adding a harness is additive.
+adding a harness is additive. The `cursor` entry is excluded from that list;
+`find` still resolves it.
 
 This compiles and runs against the published crate:
 
@@ -66,7 +67,8 @@ they are the vocabulary the rest of the crate speaks:
   `None`, or a case-insensitive `Prefix`.
 - **`LaunchSupport`** — whether this crate can plan a launch: `Recipe` (the
   crate ships one), `ConsumerOwned` (launchable, but the consumer plans the
-  argv itself), or `Unsupported`.
+  argv itself), `StructuredStdout` (the crate plans the argv and the consumer
+  runs the process and saves its stdout), or `Unsupported`.
 - **`AttributionStrategy`** — how a capture client recovers a session's
   identity: `SessionsDir`, `OpenRollout`, `SelfAttributing`,
   `LifecycleHooks`, or `None`.
@@ -89,6 +91,7 @@ without a breaking change.
 | `codex-app` | none | `Unsupported` | `LifecycleHooks` | `CodexRollouts` | `HookManifestTemplates` |
 | `opencode` | none | `Recipe` | `SelfAttributing` | `None` | `BundledExtension` |
 | `pi` | none | `ConsumerOwned` | `SelfAttributing` | `None` | `BundledExtension` |
+| `cursor` | none | `StructuredStdout` | `None` | `None` | `None` |
 
 Only Claude is identified by User-Agent; the others are recognised by route,
 launch marker, lifecycle report, or their own envelope. Note that `codex-app`
@@ -96,7 +99,9 @@ is a distinct harness, not an alias of `codex`: it shares Codex's wire
 protocol and rollout tree, but it is a long-lived host a consumer configures
 rather than launches, and its identity arrives through lifecycle hook reports.
 
-## The three ways a harness gets captured
+Cursor has no proxy traffic. A consumer records `agent`'s stdout.
+
+## The four ways a harness gets captured
 
 This is the distinction to hold on to, because it decides which modules apply
 to a given harness. It correlates with `AttributionStrategy` but is not the
@@ -108,12 +113,19 @@ the traffic is reached at all.
 | **Launch redirect** — point the harness's base-URL knob at a proxy | the harness has such a knob (`claude`, `codex`, `opencode`) | `launch` |
 | **Installed plugin** — code runs *inside* the harness and stamps its own envelope | the harness has no such knob (`pi`) | `plugin` |
 | **Lifecycle hooks** — a hook plugin reports allowlisted evidence at session boundaries | the harness is configured rather than launched (`codex-app`) | `plugin::codex_app` and `config` |
+| **Structured stdout** — the launched harness emits its transcript as NDJSON | the consumer owns the process and records stdout (`cursor`) | `transcript::cursor_stream` |
 
 opencode deliberately has both of the first two: its provider endpoints live
 in a config document a recipe can plan, but it publishes no session file a
 client could attribute from, so the bundled extension both redirects and
 stamps the envelope from inside. The registry declares the combination
 because the two compose.
+
+Cursor uses only structured stdout. `transcript::cursor_stream::plan_args`
+builds the `agent` argv for `stream-json` mode and refuses flags that would
+change the output, exit early, detach the process, or resume another session;
+`load` checks a saved stream's `system`/`init` event and prepares the upload
+records. The module never runs the binary.
 
 ## Launch recipes
 
@@ -174,6 +186,8 @@ The per-harness lanes match the `AttributionStrategy` axis:
 - **`LifecycleHooks`** (codex-app): identity arrives as hook reports at
   session, prompt, stop, and subagent boundaries. There is no launched PID to
   anchor peer trust on, so the evidence is allowlisted instead.
+- **`None`** (cursor): there is no proxy traffic to attribute, so the session
+  id comes from the recorded `stream-json` stdout instead.
 
 ## Transcripts
 
@@ -183,7 +197,10 @@ transcript lane uploads. `transcript::sweep` discovers sessions under a
 transcript root (including a startup sweep that recovers sessions which began
 and ended while a client was down), `trigger` is the push policy, and
 `payload` is the ingest payload shape. Delivery, auth, and retry are the
-consumer's.
+consumer's. Cursor has no tree; `transcript::cursor_stream` lists `.jsonl`
+files under a spool root the consumer supplies and loads each into a
+`CursorTranscript` whose `payload` carries the session id and cwd. The spool
+root must be a private same-user directory.
 
 ## Config patch grammars
 
