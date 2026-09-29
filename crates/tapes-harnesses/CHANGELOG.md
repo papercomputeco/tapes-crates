@@ -15,6 +15,8 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-29
+
 ### Added
 
 - Add the `cursor` harness (alias `cursor-agent`) and `transcript::cursor_stream`

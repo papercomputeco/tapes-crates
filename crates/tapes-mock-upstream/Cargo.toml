@@ -94,7 +94,7 @@ tapes-capture = { path = "../tapes-capture", version = "0.1.0", features = [
 # iterates `REGISTRY` rather than a list written here — so a harness added to
 # the registry shows up in the matrix as a failure to write a recipe, not as a
 # silent absence.
-tapes-harnesses = { path = "../tapes-harnesses", version = "0.1.0" }
+tapes-harnesses = { path = "../tapes-harnesses", version = "0.2.0" }
 
 base64 = "0.22"
 percent-encoding = "2"
