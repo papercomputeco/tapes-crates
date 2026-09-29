@@ -152,6 +152,13 @@ nix develop
 make check   # build + fmt-check + clippy + test
 ```
 
+The bundled Pi extension also has behavior tests using Node's built-in runner
+(Node 24+, no npm install required). CI runs these alongside the Rust checks:
+
+```bash
+node --experimental-strip-types --test scripts/pi-gateway.test.mjs
+```
+
 Every crate denies `unwrap`, `expect`, and `panic` through the workspace lint
 table; return `Result` and surface errors through the crate error types
 instead.

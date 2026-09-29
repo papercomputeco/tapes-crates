@@ -15,7 +15,7 @@
 # other crates needed a `default-members` list to be included at all.
 [package]
 name = "tapes-harnesses"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 rust-version = "1.88"
 license.workspace = true

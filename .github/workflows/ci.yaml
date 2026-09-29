@@ -82,6 +82,11 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - name: Pi gateway extension behavior
+        run: node --experimental-strip-types --test scripts/pi-gateway.test.mjs
       # The envelope corpus is vendored, so its DIGEST is checked here the way
       # the read contract's fingerprint is checked in `contract-seal` above.
       # It rides this job rather than getting its own because, unlike that one,
@@ -100,4 +105,3 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test
       - run: cargo test --all-features
-
