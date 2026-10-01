@@ -17,21 +17,13 @@ it, and nothing at runtime reads it; it stays with its one consumer.
 
 ## Pin
 
-- **Pre-release pin**: tapes branch `matt/pcc-1232-phase1` @ commit `ec32ba9`
-  ("fix(storage): backfill payload-less spans to empty previews"). No
-  published release carries these bytes yet; **re-pin to the release asset
-  when tapes cuts the release** — this entry must not land on `main` as-is.
-- Release tag: **v0.39.0** — the last published release this vendoring
-  descends from (papercomputeco/tapes at `24bfa08`). It is recorded so the
-  seal check can still name a release; the v0.39.0 asset is *expected* to
-  differ from the vendored bytes until the release above is cut, so the
-  authoritative check meanwhile is the local re-emission:
-  `TAPES_REPO=/path/to/tapes make contracts-check` with that checkout at
-  `ec32ba9`.
-- Vendored from a local emission at `ec32ba9`, byte-for-byte:
-  `GOEXPERIMENT=jsonv2 go run ./cli/tapes dev openapi api --docs-root . --out tapes-api.yaml`
-  — the exact command `dagger call contracts` (`make contracts` in tapes)
-  runs, and the one `scripts/contracts-check.sh` re-runs under `TAPES_REPO`.
+- Release tag: **v0.49.0** (papercomputeco/tapes at `35ded6d`, "fix(storage):
+  backfill payload-less spans to empty previews" — the squash of tapes#359,
+  which pages the composite, per-trace and raw-turn reads in place).
+- Asset: `https://github.com/papercomputeco/tapes/releases/download/v0.49.0/tapes-api-v0.49.0.yaml`,
+  copied byte-for-byte. The bytes are identical to the pre-release emission
+  this crate was developed against, so the fingerprints below did not move
+  on re-pin.
 
 ## Fingerprints
 

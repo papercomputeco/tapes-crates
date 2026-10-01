@@ -71,15 +71,10 @@ the tapes commit that pages them.
   pages these in place, so a consumer that read the vector as complete must
   either walk `next_cursor` or use the whole-read helper above. A page
   shorter than `limit` is not the end; an empty `next_cursor` is.
-- A refresh of the vendored read contract, from tapes v0.39.0 to a
-  **pre-release pin** at branch `matt/pcc-1232-phase1` @ `ec32ba9` — the
-  commit that pages the three reads. `contracts/PROVENANCE.md` records the
-  emission it was vendored from; it must be re-pinned to the release asset
-  when tapes cuts the release, and until then the authoritative seal check
-  is `TAPES_REPO=/path/to/tapes make contracts-check`. Besides the paging,
-  the refresh brings only prose: the `SpanItem.payload` marker's
-  `preview_pending` state is now documented (the field's type and the
-  model are unchanged).
+- A refresh of the vendored read contract, from tapes v0.39.0 to v0.49.0 —
+  the release that pages the three reads. Besides the paging, the refresh
+  brings only prose: the `SpanItem.payload` marker's `preview_pending` state
+  is now documented (the field's type and the model are unchanged).
 
 ## [0.5.0] - 2026-08-27
 
