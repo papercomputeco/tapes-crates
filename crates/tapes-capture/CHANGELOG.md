@@ -36,8 +36,9 @@ a nested launch which launch it runs inside.
   means "same harness as the request", so every envelope produced before it
   keeps its meaning and no existing constructor emits it.
   `TapesAttribution::with_parent_harness_id` sets it and `from_headers` reads
-  it back. The shared fixture corpus does not carry a case for it yet; the
-  fixture reader accepts a `parent_harness_id` field for when it does.
+  it back. The vendored fixture corpus pins it (`codex-with-cross-harness-parent`,
+  `hermes-session`, `error-parent-harness-id-empty`), and the fixture reader
+  carries the cases' `parent_harness_id` field.
 - `envelope::HARNESS_ID_HERMES` (`hermes`).
 - `launch`: the launch-lineage contract. `LAUNCH_ID_ENV`
   (`TAPES_LAUNCH_ID`) and `LAUNCH_HARNESS_ID_ENV` (`TAPES_LAUNCH_HARNESS_ID`)
