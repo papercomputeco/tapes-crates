@@ -127,7 +127,13 @@ hermes has both too, split differently: its `custom` provider in
 request's kwargs but not the client's base URL), and the bundled plugin only
 stamps the envelope. `HermesRecipe` plans a relocated `HERMES_HOME` holding
 that config, the plugin, and the `plugins.enabled` entry hermes requires before
-it loads any user plugin.
+it loads any user plugin. hermes's auxiliary calls (title generation,
+compression, vision, web_extract, session_search, skills_hub, mcp) bypass the
+middleware; the plugin stamps them through hermes's shared auxiliary kwargs
+builder with `x-tapes-harness-metadata` `{"aux_task": …}`, and the planned
+config's `model.default_headers` carries a static `x-tapes-harness-id: hermes`
+as a floor. The remaining gap: an auxiliary call in a process running several
+concurrent sessions may attach to the most recent one.
 
 Cursor uses only structured stdout. `transcript::cursor_stream::plan_args`
 builds the `agent` argv for `stream-json` mode and refuses flags that would

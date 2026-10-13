@@ -31,6 +31,13 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
   request middleware stamps the `X-Tapes-*` envelope (including a delegated
   subagent's parent session and `x-tapes-parent-harness-id`) and the
   capture-nonce echo on requests bound for `TAPES_GATEWAY_URL`.
+- hermes auxiliary calls (title generation, compression, vision, web_extract,
+  session_search, skills_hub, mcp) carry the same envelope as main turns, plus
+  `x-tapes-harness-metadata` `{"aux_task": …}`. The plugin stamps them through
+  hermes's shared auxiliary kwargs builder, guarded by version; the planned
+  `config.yaml` also sets `model.default_headers` to a static
+  `x-tapes-harness-id: hermes`. In a process running several concurrent
+  sessions, an auxiliary call may attach to the most recent one.
 - `LaunchError::SerializeHermesConfig`.
 
 ### Changed

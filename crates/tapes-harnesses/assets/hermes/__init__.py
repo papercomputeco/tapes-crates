@@ -8,6 +8,16 @@ envelope to every outbound model request's ``extra_headers`` — hermes's own
 session id, the parent session for a delegated subagent, the working
 directory, the hermes version, and the capture-nonce echo.
 
+The same envelope reaches hermes's *auxiliary* calls — title generation,
+compression summaries, vision, web extraction, session search, skills hub,
+MCP sampling — which never run through request middleware. Those all build
+their request kwargs through ``agent.auxiliary_client._build_call_kwargs``, so
+the plugin wraps that one function (see ``_install_auxiliary_stamping``) and
+adds the envelope plus ``x-tapes-harness-metadata`` ``{"aux_task": <task>}``
+to the kwargs it returns. The session id comes from the session the request
+middleware last saw in this execution context, falling back to the last one
+seen anywhere in the process for a thread that did not inherit the context.
+
 It does **not** redirect. hermes reads its endpoint from ``config.yaml``
 (``model.provider: custom`` plus ``model.base_url``), and middleware can
 rewrite a request's kwargs but not the client's base URL, so pointing hermes
@@ -25,6 +35,11 @@ sessions.
 
 from __future__ import annotations
 
+import base64
+import contextvars
+import inspect
+import json
+import logging
 import os
 import sys
 import threading
@@ -47,6 +62,8 @@ GATEWAY_NONCE_HEADER = "x-tapes-gateway-nonce"
 
 HARNESS_ID = "hermes"
 
+_logger = logging.getLogger(__name__)
+
 # The envelope this plugin stamps, in the crate's lower-case wire spelling.
 ENVELOPE = {
     "harness_id": "x-tapes-harness-id",
@@ -55,7 +72,21 @@ ENVELOPE = {
     "cwd": "x-tapes-cwd",
     "parent_session_id": "x-tapes-parent-harness-session-id",
     "parent_harness_id": "x-tapes-parent-harness-id",
+    "metadata": "x-tapes-harness-metadata",
 }
+
+# The envelope's byte budgets, mirroring tapes-capture: the whole x-tapes-*
+# set within 8 KiB (name + value bytes), the metadata blob within 4 KiB of raw
+# JSON. Metadata is the first thing dropped, then the other optional fields;
+# the harness id and session id always stay.
+X_TAPES_TOTAL_BUDGET = 8 * 1024
+X_TAPES_METADATA_RAW_CAP = 4 * 1024
+# Optional fields in the order they are given up under budget pressure.
+_DROP_ORDER = ("metadata", "cwd", "version", "parent_harness_id", "parent_session_id")
+
+# The longest aux task name carried in metadata. hermes's names are short
+# (`title_generation`); the cap only keeps a pathological value bounded.
+_AUX_TASK_CAP = 128
 
 # Everything the envelope's working-directory encoding leaves alone: visible
 # ASCII except `%`, `"` and `\`. Mirrors the Rust producer's escape set (controls,
@@ -84,6 +115,20 @@ if _state is None:
     # child session id -> parent session id, fed by the `subagent_start` hook.
     _state.parents = {}
     _state.lock = threading.Lock()
+    # The session the request middleware saw last, per execution context and
+    # process-wide. Auxiliary calls carry no session id of their own (hermes's
+    # `main_runtime` has model, provider and endpoint, but not the session), so
+    # they borrow this. The context variable is right whenever the auxiliary
+    # call runs where the main turn did; the process-wide value covers a
+    # background thread that did not inherit the context (title generation
+    # runs on one). With one agent per process — a launched hermes — the two
+    # always agree. With several concurrent sessions in one process (hermes's
+    # gateway mode) a thread-spawned auxiliary call may attach to whichever
+    # session made the most recent main request.
+    _state.active_session = contextvars.ContextVar("tapes_hermes_active_session", default=None)
+    _state.last_session = None
+    _state.aux_original = None
+    _state.aux_skip_logged = False
     sys.modules[_STATE_KEY] = _state
 
 # A re-executed module inherits the state but must still never leave the secret
@@ -194,6 +239,65 @@ def envelope_headers(session_id: Any, cwd: Optional[str] = None) -> Dict[str, st
     return headers
 
 
+def _metadata_value(metadata: Dict[str, Any]) -> Optional[str]:
+    """base64url (no padding) of compact JSON, or ``None`` over the raw cap —
+    the same encoding the Rust producer uses."""
+    raw = json.dumps(metadata, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    if len(raw) > X_TAPES_METADATA_RAW_CAP:
+        return None
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _envelope_cost(headers: Dict[str, str]) -> int:
+    return sum(
+        len(name) + len(value.encode("utf-8"))
+        for name, value in headers.items()
+        if name.startswith("x-tapes-")
+    )
+
+
+def fit_budget(headers: Dict[str, str]) -> Dict[str, str]:
+    """Drop optional envelope fields, metadata first, until the set fits."""
+    headers = dict(headers)
+    for field in _DROP_ORDER:
+        if _envelope_cost(headers) <= X_TAPES_TOTAL_BUDGET:
+            break
+        headers.pop(ENVELOPE[field], None)
+        if field == "parent_session_id":
+            headers.pop(ENVELOPE["parent_harness_id"], None)
+    return headers
+
+
+def _merge_headers(existing: Any, headers: Dict[str, str]) -> Dict[str, Any]:
+    """Merge ``headers`` into an ``extra_headers`` value, replacing any
+    envelope header already present under another casing so the request
+    carries exactly one spelling of each."""
+    merged = dict(existing) if isinstance(existing, dict) else {}
+    stamped = {name.lower() for name in headers}
+    merged = {k: v for k, v in merged.items() if str(k).lower() not in stamped}
+    merged.update(headers)
+    return merged
+
+
+def _remember_session(session_id: Any) -> None:
+    sid = _header_safe(session_id)
+    if sid is None:
+        return
+    _state.active_session.set(sid)
+    with _state.lock:
+        _state.last_session = sid
+
+
+def current_session() -> Optional[str]:
+    """The session an auxiliary call belongs to: this context's, else the
+    process's most recent (see the state notes above for the caveat)."""
+    sid = _state.active_session.get()
+    if sid:
+        return sid
+    with _state.lock:
+        return _state.last_session
+
+
 def on_subagent_start(
     parent_session_id: Any = None, child_session_id: Any = None, **_: Any
 ) -> None:
@@ -221,24 +325,135 @@ def llm_request_middleware(
         return None
     if not is_gateway_address(base_url, gateway):
         return None
-    headers = envelope_headers(session_id)
+    headers = fit_budget(envelope_headers(session_id))
     if not headers:
         return None
+    _remember_session(session_id)
     if _state.nonce:
         headers[GATEWAY_NONCE_HEADER] = _state.nonce
-    existing = request.get("extra_headers")
-    merged = dict(existing) if isinstance(existing, dict) else {}
-    # Drop any envelope header already present under another casing, so the
-    # request carries exactly one spelling of each and it is this one.
-    stamped = {name.lower() for name in headers}
-    merged = {k: v for k, v in merged.items() if str(k).lower() not in stamped}
-    merged.update(headers)
     request = dict(request)
-    request["extra_headers"] = merged
+    request["extra_headers"] = _merge_headers(request.get("extra_headers"), headers)
     return {"request": request, "source": "tapes-gateway", "reason": "capture envelope"}
+
+
+# --- auxiliary calls ---------------------------------------------------------
+#
+# Why `_build_call_kwargs` and not `call_llm`: the callers bind `call_llm` at
+# import (`from agent.auxiliary_client import call_llm` in the title generator
+# and the compressor), so replacing the module attribute after they loaded
+# reaches none of them. `_build_call_kwargs` is looked up as a module global at
+# every call, and it is the one function every auxiliary path — sync, async,
+# streaming, the max-tokens and payment retries, the provider fallback chain —
+# builds its `chat.completions.create(**kwargs)` from. It is also handed the
+# *client's* resolved base URL, which is exactly what the gateway check needs.
+# What it is not handed is the task name; that is read from the enclosing
+# `call_llm` / `async_call_llm` frame's `task` local, and an aux call whose frame
+# cannot be found is still stamped, as task `auxiliary`.
+
+_AUX_MODULE = "agent.auxiliary_client"
+_AUX_ENTRY_POINTS = ("call_llm", "async_call_llm")
+_AUX_FRAME_DEPTH = 12
+
+
+def _aux_task_from_stack() -> str:
+    frame = sys._getframe(2)
+    for _ in range(_AUX_FRAME_DEPTH):
+        if frame is None:
+            break
+        if (
+            frame.f_code.co_name in _AUX_ENTRY_POINTS
+            and frame.f_globals.get("__name__") == _AUX_MODULE
+        ):
+            task = frame.f_locals.get("task")
+            if isinstance(task, str) and task.strip():
+                return task.strip()[:_AUX_TASK_CAP]
+            break
+        frame = frame.f_back
+    return "auxiliary"
+
+
+def auxiliary_headers(base_url: Any, task: str) -> Dict[str, str]:
+    """The envelope for one auxiliary call, or ``{}`` when it must go bare:
+    nothing is being captured, the call is not bound for the capture proxy, or
+    no main request has named a session yet."""
+    gateway = _gateway_url()
+    if gateway is None or not is_gateway_address(base_url, gateway):
+        return {}
+    headers = envelope_headers(current_session())
+    if not headers:
+        return {}
+    metadata = _metadata_value({"aux_task": task})
+    if metadata:
+        headers[ENVELOPE["metadata"]] = metadata
+    headers = fit_budget(headers)
+    if _state.nonce:
+        headers[GATEWAY_NONCE_HEADER] = _state.nonce
+    return headers
+
+
+def _wrap_build_call_kwargs(original: Any, signature: inspect.Signature) -> Any:
+    def build_call_kwargs(*args: Any, **kwargs: Any) -> Any:
+        result = original(*args, **kwargs)
+        try:
+            if isinstance(result, dict):
+                base_url = signature.bind_partial(*args, **kwargs).arguments.get("base_url")
+                headers = auxiliary_headers(base_url, _aux_task_from_stack())
+                if headers:
+                    result["extra_headers"] = _merge_headers(result.get("extra_headers"), headers)
+        except Exception:
+            # Attribution is best-effort; the call itself must never fail here.
+            pass
+        return result
+
+    build_call_kwargs.__tapes_wrapped__ = True
+    build_call_kwargs.__wrapped__ = original
+    return build_call_kwargs
+
+
+def _skip_auxiliary(reason: str) -> None:
+    if not _state.aux_skip_logged:
+        _state.aux_skip_logged = True
+        _logger.warning(
+            "tapes-gateway: auxiliary calls will not carry the capture envelope (%s); "
+            "they still carry the static harness id from config.yaml",
+            reason,
+        )
+
+
+def _install_auxiliary_stamping() -> bool:
+    """Wrap hermes's auxiliary kwargs builder, once, if this hermes has the
+    shape it was written against. Returns whether stamping is installed."""
+    try:
+        import importlib
+
+        aux = importlib.import_module(_AUX_MODULE)
+    except Exception as exc:
+        _skip_auxiliary(f"{_AUX_MODULE} did not import: {exc}")
+        return False
+    if not all(callable(getattr(aux, name, None)) for name in _AUX_ENTRY_POINTS):
+        _skip_auxiliary("call_llm/async_call_llm not found")
+        return False
+    current = getattr(aux, "_build_call_kwargs", None)
+    # A reload re-wraps the original rather than stacking a second wrapper.
+    original = _state.aux_original or current
+    if not callable(original):
+        _skip_auxiliary("_build_call_kwargs not found")
+        return False
+    try:
+        signature = inspect.signature(original)
+    except (TypeError, ValueError):
+        _skip_auxiliary("_build_call_kwargs has no inspectable signature")
+        return False
+    if "base_url" not in signature.parameters:
+        _skip_auxiliary("_build_call_kwargs takes no base_url")
+        return False
+    _state.aux_original = original
+    aux._build_call_kwargs = _wrap_build_call_kwargs(original, signature)
+    return True
 
 
 def register(ctx: Any) -> None:
     """hermes plugin entry point."""
     ctx.register_hook("subagent_start", on_subagent_start)
     ctx.register_middleware("llm_request", llm_request_middleware)
+    _install_auxiliary_stamping()

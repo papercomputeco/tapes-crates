@@ -53,11 +53,23 @@
 //!
 //! Only traffic through the `custom` provider is redirected. The planned
 //! config declares no other provider, no fallback chain, and no per-task
-//! auxiliary endpoint, so nothing in it routes around the proxy — but
-//! hermes's auxiliary tasks (title generation, compression summaries) do not
-//! run through request middleware, so those calls reach the proxy without an
-//! envelope and file as `unknown`. And a user who switches provider inside the
-//! session leaves capture, which is worth a consumer's warning.
+//! auxiliary endpoint, so nothing in it routes around the proxy, and a user
+//! who switches provider inside the session leaves capture — worth a
+//! consumer's warning.
+//!
+//! hermes's auxiliary calls (title generation, compression, vision,
+//! web_extract, session_search, skills_hub, mcp) skip request middleware; the
+//! plugin stamps them separately, tagging each with
+//! `x-tapes-harness-metadata` `{"aux_task": …}`. Their session id is the one
+//! the main loop last used — per execution context, falling back to the
+//! process's most recent for a background thread — so in a process running
+//! several concurrent sessions an auxiliary call may attach to the most
+//! recent one. The config also sets `model.default_headers` to a static
+//! `x-tapes-harness-id: hermes`, so if the plugin's auxiliary hook cannot
+//! install on some hermes release those calls still name the harness. That
+//! floor alone is not a complete envelope (it has no session id); a capture
+//! client applying tapes-capture's completeness rule still files such a call
+//! as unattributed.
 
 use std::path::{Path, PathBuf};
 
@@ -160,6 +172,17 @@ impl HermesRecipe {
         if let Some(api_mode) = &self.api_mode {
             model.insert("api_mode".to_owned(), json!(api_mode));
         }
+        // A static harness id on every request hermes makes to this provider,
+        // main and auxiliary alike — hermes merges `model.default_headers`
+        // into both clients. It is the floor under the plugin: should the
+        // plugin's auxiliary stamping not install on some hermes release, an
+        // auxiliary call still names its harness rather than arriving bare.
+        // The plugin's per-request `extra_headers` override it with the full
+        // envelope wherever it runs.
+        model.insert(
+            "default_headers".to_owned(),
+            json!({ tapes_capture::envelope::X_TAPES_HARNESS_ID: HARNESS_ID }),
+        );
         json!({
             "model": Value::Object(model),
             // Stated empty rather than left to defaults: any provider the
@@ -247,6 +270,11 @@ mod tests {
         assert_eq!(doc["model"]["default"], "mock-model");
         assert!(doc["model"].get("api_key").is_none(), "no key → no api_key");
         assert!(doc["model"].get("api_mode").is_none());
+        // The static floor for auxiliary calls the plugin cannot reach.
+        assert_eq!(
+            doc["model"]["default_headers"],
+            json!({ "x-tapes-harness-id": "hermes" })
+        );
         assert_eq!(
             plan.config_files[0].path,
             PathBuf::from(HOME).join("config.yaml")

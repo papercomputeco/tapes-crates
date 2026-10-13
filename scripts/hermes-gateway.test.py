@@ -5,16 +5,59 @@
 # llm_request middleware over a request kwargs dict — with no hermes install
 # and no network. The Rust tests pin the spellings in the asset; this proves the
 # behaviour behind them.
+import asyncio
+import base64
 import importlib.util
+import json
+import logging
 import os
 import pathlib
 import sys
+import threading
+import types
 import unittest
 
 ASSET = pathlib.Path(__file__).resolve().parent.parent / "crates/tapes-harnesses/assets/hermes/__init__.py"
 STATE_KEY = "_tapes_gateway_hermes_state"
 KEYS = ("TAPES_GATEWAY_URL", "TAPES_GATEWAY_NONCE")
 GATEWAY = "http://127.0.0.1:1234/launches/l1/openai/v1"
+
+
+# A stand-in for hermes 0.19.0's agent/auxiliary_client.py, reduced to the shape
+# the plugin depends on: call_llm / async_call_llm whose `task` is a local, and
+# which build their create() kwargs through the module-global _build_call_kwargs
+# (looked up at call time, as real hermes does — including on retry paths).
+FAKE_AUX_SOURCE = """
+def _build_call_kwargs(provider, model, messages, temperature=None, max_tokens=None,
+                       tools=None, timeout=30.0, extra_body=None, reasoning_config=None,
+                       base_url=None):
+    return {"model": model, "messages": messages, "timeout": timeout}
+
+def _retry(base_url):
+    return _build_call_kwargs("custom", "m", [], base_url=base_url)
+
+def call_llm(task=None, *, base_url=None, messages=(), retry=False):
+    if retry:
+        return _retry(base_url)
+    return _build_call_kwargs("custom", "m", list(messages), base_url=base_url)
+
+async def async_call_llm(task=None, *, base_url=None, messages=()):
+    return _build_call_kwargs("custom", "m", list(messages), base_url=base_url)
+"""
+
+
+def install_fake_aux(source=FAKE_AUX_SOURCE):
+    package = types.ModuleType("agent")
+    package.__path__ = []
+    module = types.ModuleType("agent.auxiliary_client")
+    exec(source, module.__dict__)
+    sys.modules["agent"] = package
+    sys.modules["agent.auxiliary_client"] = module
+    return module
+
+
+def decode_metadata(value):
+    return json.loads(base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)))
 
 
 def load():
@@ -36,12 +79,14 @@ class FakeContext:
         self.middleware.setdefault(kind, []).append(callback)
 
 
-class HermesGatewayPlugin(unittest.TestCase):
+class PluginCase(unittest.TestCase):
     def setUp(self):
         self.saved = {key: os.environ.get(key) for key in KEYS}
         for key in KEYS:
             os.environ.pop(key, None)
         sys.modules.pop(STATE_KEY, None)
+        sys.modules.pop("agent", None)
+        sys.modules.pop("agent.auxiliary_client", None)
 
     def tearDown(self):
         for key, value in self.saved.items():
@@ -50,6 +95,8 @@ class HermesGatewayPlugin(unittest.TestCase):
             else:
                 os.environ[key] = value
         sys.modules.pop(STATE_KEY, None)
+        sys.modules.pop("agent", None)
+        sys.modules.pop("agent.auxiliary_client", None)
 
     def launch(self, nonce="launch-nonce"):
         os.environ["TAPES_GATEWAY_URL"] = GATEWAY
@@ -81,6 +128,9 @@ class HermesGatewayPlugin(unittest.TestCase):
             middleware_schema_version="hermes.middleware.v1",
         )
 
+
+
+class HermesGatewayPlugin(PluginCase):
     def test_registers_one_hook_and_one_request_middleware(self):
         _, ctx = self.launch()
         self.assertEqual(list(ctx.hooks), ["subagent_start"])
@@ -174,5 +224,139 @@ class HermesGatewayPlugin(unittest.TestCase):
         self.assertEqual(headers["x-tapes-harness-id"], "hermes")
 
 
+class AuxiliaryCalls(PluginCase):
+    """Auxiliary calls skip request middleware; the plugin stamps them through
+    hermes's shared kwargs builder instead."""
+
+    def launch_with_aux(self, nonce="launch-nonce"):
+        aux = install_fake_aux()
+        plugin, ctx = self.launch(nonce=nonce)
+        # A main turn names the session, as hermes's loop would before any
+        # title or compression call.
+        self.assertIsNotNone(self.request(ctx, session_id="sess-main"))
+        return plugin, ctx, aux
+
+    def assert_aux_envelope(self, kwargs, task, session="sess-main"):
+        headers = kwargs["extra_headers"]
+        self.assertEqual(headers["x-tapes-harness-id"], "hermes")
+        self.assertEqual(headers["x-tapes-harness-session-id"], session)
+        self.assertEqual(headers["x-tapes-gateway-nonce"], "launch-nonce")
+        self.assertIn("x-tapes-cwd", headers)
+        self.assertEqual(decode_metadata(headers["x-tapes-harness-metadata"]), {"aux_task": task})
+
+    def test_title_generation_on_the_main_thread_carries_the_session(self):
+        _, _, aux = self.launch_with_aux()
+        self.assert_aux_envelope(aux.call_llm(task="title_generation", base_url=GATEWAY), "title_generation")
+
+    def test_title_generation_on_a_background_thread_carries_the_session(self):
+        _, _, aux = self.launch_with_aux()
+        out = {}
+        # A plain thread does not inherit the main context's variables, so this
+        # exercises the process-wide fallback.
+        worker = threading.Thread(target=lambda: out.update(kw=aux.call_llm(task="title_generation", base_url=GATEWAY)))
+        worker.start()
+        worker.join()
+        self.assert_aux_envelope(out["kw"], "title_generation")
+
+    def test_retry_paths_and_async_calls_are_stamped_with_their_task(self):
+        _, _, aux = self.launch_with_aux()
+        self.assert_aux_envelope(aux.call_llm(task="compression", base_url=GATEWAY, retry=True), "compression")
+        kwargs = asyncio.run(aux.async_call_llm(task="vision", base_url=GATEWAY))
+        self.assert_aux_envelope(kwargs, "vision")
+
+    def test_the_context_session_wins_over_the_process_fallback(self):
+        _, ctx, aux = self.launch_with_aux()
+        import contextvars
+
+        def in_other_session():
+            self.request(ctx, session_id="sess-other")
+            return aux.call_llm(task="compression", base_url=GATEWAY)
+
+        kwargs = contextvars.copy_context().run(in_other_session)
+        self.assertEqual(kwargs["extra_headers"]["x-tapes-harness-session-id"], "sess-other")
+
+    def test_a_delegated_subagents_aux_call_carries_its_parent(self):
+        _, ctx, aux = self.launch_with_aux()
+        (hook,) = ctx.hooks["subagent_start"]
+        hook(parent_session_id="sess-main", child_session_id="sess-child")
+        self.request(ctx, session_id="sess-child")
+        headers = aux.call_llm(task="web_extract", base_url=GATEWAY)["extra_headers"]
+        self.assertEqual(headers["x-tapes-parent-harness-session-id"], "sess-main")
+        self.assertEqual(headers["x-tapes-parent-harness-id"], "hermes")
+
+    def test_an_off_gateway_aux_call_is_untouched(self):
+        _, _, aux = self.launch_with_aux()
+        for base_url in ["https://openrouter.ai/api/v1", "http://127.0.0.1:1235/v1", None]:
+            self.assertNotIn("extra_headers", aux.call_llm(task="title_generation", base_url=base_url))
+
+    def test_no_aux_stamp_before_any_session_or_without_a_gateway(self):
+        aux = install_fake_aux()
+        _, _ = self.launch()
+        self.assertNotIn("extra_headers", aux.call_llm(task="title_generation", base_url=GATEWAY))
+        os.environ.pop("TAPES_GATEWAY_URL")
+        self.assertNotIn("extra_headers", aux.call_llm(task="title_generation", base_url=GATEWAY))
+
+    def test_a_reload_wraps_the_original_once(self):
+        _, _, aux = self.launch_with_aux()
+        plugin = load()
+        plugin.register(FakeContext())
+        self.assertTrue(aux._build_call_kwargs.__tapes_wrapped__)
+        self.assertFalse(getattr(aux._build_call_kwargs.__wrapped__, "__tapes_wrapped__", False))
+        self.assert_aux_envelope(aux.call_llm(task="mcp", base_url=GATEWAY), "mcp")
+
+    def test_a_hermes_without_the_expected_shape_is_left_alone(self):
+        # No auxiliary module at all: register must not raise.
+        _, ctx = self.launch()
+        self.assertIsNotNone(self.request(ctx))
+        sys.modules.pop(STATE_KEY, None)
+        # A builder without base_url: skipped, not wrapped.
+        aux = install_fake_aux(FAKE_AUX_SOURCE.replace("reasoning_config=None,\n                       base_url=None", "reasoning_config=None").replace(", base_url=base_url", ""))
+        plugin, _ = self.launch()
+        self.assertFalse(hasattr(aux._build_call_kwargs, "__tapes_wrapped__"))
+        # Missing call_llm: skipped too.
+        sys.modules.pop(STATE_KEY, None)
+        aux = install_fake_aux("def _build_call_kwargs(base_url=None):\n    return {}\n")
+        self.launch()
+        self.assertFalse(hasattr(aux._build_call_kwargs, "__tapes_wrapped__"))
+
+    def test_the_static_config_header_is_what_an_unpatched_aux_call_keeps(self):
+        # With stamping skipped the plugin adds nothing; the harness id then
+        # comes only from the recipe's model.default_headers, which hermes's
+        # aux client merges itself — pinned on the Rust side. Here: the plugin
+        # does not strip a client-level header it never sees.
+        aux = install_fake_aux("def _build_call_kwargs(base_url=None):\n    return {'extra_headers': {'x-tapes-harness-id': 'hermes'}}\n")
+        self.launch()
+        self.assertEqual(aux._build_call_kwargs(base_url=GATEWAY), {"extra_headers": {"x-tapes-harness-id": "hermes"}})
+
+    def test_metadata_encoding_is_compact_base64url_without_padding(self):
+        plugin, _ = self.launch()
+        value = plugin._metadata_value({"aux_task": "title_generation"})
+        self.assertNotIn("=", value)
+        self.assertEqual(base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)), b'{"aux_task":"title_generation"}')
+        self.assertIsNone(plugin._metadata_value({"aux_task": "x" * 5000}))
+
+    def test_the_header_budget_drops_metadata_then_cwd_but_keeps_identity(self):
+        plugin, _ = self.launch()
+        meta = plugin._metadata_value({"aux_task": "t" * 3000})
+        headers = plugin.envelope_headers("s", cwd="/" + "d" * 6000)
+        headers["x-tapes-harness-metadata"] = meta
+        fitted = plugin.fit_budget(headers)
+        self.assertLessEqual(plugin._envelope_cost(fitted), plugin.X_TAPES_TOTAL_BUDGET)
+        self.assertNotIn("x-tapes-harness-metadata", fitted)
+        self.assertIn("x-tapes-cwd", fitted)
+        huge = plugin.fit_budget(plugin.envelope_headers("s", cwd="/" + "d" * 9000))
+        self.assertNotIn("x-tapes-cwd", huge)
+        self.assertEqual(huge["x-tapes-harness-session-id"], "s")
+        self.assertEqual(huge["x-tapes-harness-id"], "hermes")
+
+    def test_an_aux_task_name_is_bounded(self):
+        _, _, aux = self.launch_with_aux()
+        headers = aux.call_llm(task="z" * 1000, base_url=GATEWAY)["extra_headers"]
+        self.assertEqual(len(decode_metadata(headers["x-tapes-harness-metadata"])["aux_task"]), 128)
+
+
 if __name__ == "__main__":
+    # The plugin warns once when it cannot hook auxiliary calls; most cases
+    # here load it without a fake hermes on purpose.
+    logging.disable(logging.WARNING)
     unittest.main(verbosity=2)

@@ -382,6 +382,15 @@ const HERMES_PLUGIN_DIR: &[&str] = &[".hermes", "plugins", "tapes-gateway"];
 /// which is what makes hermes
 /// [`crate::harness::AttributionStrategy::SelfAttributing`].
 ///
+/// hermes's auxiliary calls (title generation, compression, vision, and the
+/// rest) skip that middleware, so the module also wraps
+/// `agent.auxiliary_client._build_call_kwargs` — the one builder every
+/// auxiliary path shares — and stamps the same envelope there, plus
+/// `x-tapes-harness-metadata` `{"aux_task": …}`, borrowing the session the main
+/// loop last used (per execution context, else process-wide). The wrap is
+/// version-guarded and skipped, with one warning, on a hermes whose shape
+/// differs.
+///
 /// It stamps only requests whose provider base URL lies on the proxy named by
 /// [`GATEWAY_URL_ENV`], compared as parsed URLs; a fallback provider or an
 /// auxiliary model on its own endpoint is left untouched, so the nonce never
@@ -437,8 +446,9 @@ mod tests {
     use crate::harness::{PluginDelivery, REGISTRY};
     use tapes_capture::envelope::{
         HARNESS_ID_HERMES, HARNESS_ID_OPENCODE, HARNESS_ID_PI, X_TAPES_CWD, X_TAPES_HARNESS_ID,
-        X_TAPES_HARNESS_SESSION_ID, X_TAPES_HARNESS_VERSION, X_TAPES_PARENT_HARNESS_ID,
-        X_TAPES_PARENT_HARNESS_SESSION_ID,
+        X_TAPES_HARNESS_METADATA, X_TAPES_HARNESS_SESSION_ID, X_TAPES_HARNESS_VERSION,
+        X_TAPES_METADATA_RAW_CAP, X_TAPES_PARENT_HARNESS_ID, X_TAPES_PARENT_HARNESS_SESSION_ID,
+        X_TAPES_TOTAL_BUDGET,
     };
 
     /// Every artifact the crate ships, however it is reached from the registry.
@@ -1125,12 +1135,30 @@ mod tests {
             X_TAPES_CWD,
             X_TAPES_PARENT_HARNESS_SESSION_ID,
             X_TAPES_PARENT_HARNESS_ID,
+            X_TAPES_HARNESS_METADATA,
         ] {
             assert!(
                 contents.contains(&format!("\"{header}\"")),
                 "the asset does not stamp {header}"
             );
         }
+    }
+
+    /// The plugin enforces the envelope's byte budgets itself (its auxiliary
+    /// stamp adds metadata), so its copies of the caps must be the crate's.
+    #[test]
+    fn the_hermes_plugin_budgets_the_envelope_as_this_crate_does() {
+        let contents = HERMES_GATEWAY_PLUGIN.contents();
+        assert_eq!(X_TAPES_TOTAL_BUDGET, 8 * 1024);
+        assert_eq!(X_TAPES_METADATA_RAW_CAP, 4 * 1024);
+        assert!(contents.contains("X_TAPES_TOTAL_BUDGET = 8 * 1024\n"));
+        assert!(contents.contains("X_TAPES_METADATA_RAW_CAP = 4 * 1024\n"));
+        // Auxiliary calls are stamped through the one builder every aux path
+        // shares, behind the same gateway check as the main path.
+        assert!(contents.contains("aux._build_call_kwargs = _wrap_build_call_kwargs("));
+        assert!(
+            contents.contains("if gateway is None or not is_gateway_address(base_url, gateway):")
+        );
     }
 
     /// The nonce and envelope go only to the gateway, decided by a parsed-URL
