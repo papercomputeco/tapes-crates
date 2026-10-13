@@ -44,7 +44,8 @@
 use std::path::PathBuf;
 
 use tapes_capture::envelope::{
-    HARNESS_ID_CLAUDE, HARNESS_ID_CODEX, HARNESS_ID_CODEX_APP, HARNESS_ID_OPENCODE, HARNESS_ID_PI,
+    HARNESS_ID_CLAUDE, HARNESS_ID_CODEX, HARNESS_ID_CODEX_APP, HARNESS_ID_HERMES,
+    HARNESS_ID_OPENCODE, HARNESS_ID_PI,
 };
 
 /// Cursor's harness id for transcript capture.
@@ -419,6 +420,33 @@ pub const PI: Harness = Harness {
     plugin: PluginDelivery::BundledExtension(crate::plugin::PI_ARTIFACTS),
 };
 
+/// hermes-agent (Nous Research) — the third self-attributing harness, on
+/// opencode's road rather than pi's.
+///
+/// hermes has a redirect story without any plugin: a `custom` provider in
+/// `$HERMES_HOME/config.yaml` points it anywhere, which
+/// [`crate::launch::HermesRecipe`] plans — so [`LaunchSupport::Recipe`]. What
+/// config cannot do is attribute: hermes keeps its sessions in SQLite and
+/// publishes nothing by PID. The bundled plugin
+/// ([`crate::plugin::HERMES_GATEWAY_PLUGIN`]) stamps the complete envelope,
+/// including a delegated subagent's parent session, through hermes's LLM
+/// request middleware. Unlike opencode's, it does not redirect: middleware
+/// cannot change the client's base URL, so the recipe is the only pointing
+/// mechanism and the plugin is attribution alone.
+///
+/// The recipe relocates hermes's whole home and writes the plugin into it, for
+/// the same reason opencode's does: hermes loads user plugins only when
+/// `config.yaml` enables them, and the recipe owns that file.
+pub const HERMES: Harness = Harness {
+    id: HARNESS_ID_HERMES,
+    aliases: &["hermes-agent"],
+    user_agent: UserAgentMatch::None,
+    launch: LaunchSupport::Recipe,
+    attribution: AttributionStrategy::SelfAttributing,
+    transcripts: TranscriptSource::None,
+    plugin: PluginDelivery::BundledExtension(crate::plugin::HERMES_ARTIFACTS),
+};
+
 /// Cursor CLI, captured from its `stream-json` stdout.
 ///
 /// Cursor's `agent` binary has no provider base-URL knob and writes no
@@ -440,7 +468,7 @@ pub const CURSOR: Harness = Harness {
 /// Order is the order a consumer should present them in: the harnesses with
 /// full capture support first (with the Codex app beside the Codex CLI it is
 /// a sibling of), then the partial entries.
-pub const REGISTRY: &[Harness] = &[CLAUDE, CODEX, CODEX_APP, OPENCODE, PI, CURSOR];
+pub const REGISTRY: &[Harness] = &[CLAUDE, CODEX, CODEX_APP, OPENCODE, PI, HERMES, CURSOR];
 
 /// Every registered harness.
 #[must_use]
@@ -564,6 +592,7 @@ mod tests {
         );
         assert_eq!(OPENCODE.id(), tapes_capture::envelope::HARNESS_ID_OPENCODE);
         assert_eq!(PI.id(), tapes_capture::envelope::HARNESS_ID_PI);
+        assert_eq!(HERMES.id(), tapes_capture::envelope::HARNESS_ID_HERMES);
         // And none of them collides with the miss sentinel.
         for harness in REGISTRY {
             assert_ne!(harness.id(), tapes_capture::envelope::HARNESS_ID_UNKNOWN);
@@ -582,6 +611,8 @@ mod tests {
         assert_eq!(find("codex-desktop").map(Harness::id), Some("codex-app"));
         assert_eq!(find("cursor").map(Harness::id), Some("cursor"));
         assert_eq!(find("CURSOR-AGENT").map(Harness::id), Some("cursor"));
+        assert_eq!(find("hermes").map(Harness::id), Some("hermes"));
+        assert_eq!(find("Hermes-Agent").map(Harness::id), Some("hermes"));
         assert!(find("gemini").is_none());
         assert!(find("").is_none());
     }
@@ -653,7 +684,7 @@ mod tests {
     fn supported_agents_is_the_launchable_subset_in_registry_order() {
         assert_eq!(
             supported_agents(),
-            vec!["claude", "codex", "opencode", "pi"]
+            vec!["claude", "codex", "opencode", "pi", "hermes"]
         );
         // pi is launchable but has no recipe here; the distinction survives.
         assert_eq!(PI.launch(), LaunchSupport::ConsumerOwned);
@@ -685,7 +716,7 @@ mod tests {
             .filter(|h| h.attribution() == AttributionStrategy::SelfAttributing)
             .map(Harness::id)
             .collect();
-        assert_eq!(self_attributing, vec!["opencode", "pi"]);
+        assert_eq!(self_attributing, vec!["opencode", "pi", "hermes"]);
     }
 
     /// opencode's whole shape: still launchable through the crate's config
@@ -711,6 +742,28 @@ mod tests {
         let artifacts = find("opencode").expect("registered").plugin_artifacts();
         assert_eq!(artifacts.len(), 1);
         assert_eq!(artifacts[0].file_name(), "tapes-gateway.ts");
+    }
+
+    /// hermes's whole shape: recipe-launched (the recipe writes the `custom`
+    /// provider into a relocated `config.yaml`), self-attributing through the
+    /// bundled middleware plugin, no transcript tree (SQLite), and a plugin
+    /// that is two files — a module and its manifest — in one directory.
+    #[test]
+    fn hermes_is_self_attributing_and_recipe_launchable() {
+        assert_eq!(HERMES.launch(), LaunchSupport::Recipe);
+        assert!(supported_agents().contains(&"hermes"));
+        assert_eq!(HERMES.attribution(), AttributionStrategy::SelfAttributing);
+        assert_eq!(HERMES.transcripts(), TranscriptSource::None);
+        assert_eq!(HERMES.user_agent(), UserAgentMatch::None);
+        let artifacts = find("hermes").expect("registered").plugin_artifacts();
+        let names: Vec<&str> = artifacts.iter().map(|a| a.file_name()).collect();
+        assert_eq!(names, vec!["__init__.py", "plugin.yaml"]);
+        assert!(
+            artifacts
+                .iter()
+                .all(|a| a.install_dir_components() == artifacts[0].install_dir_components()),
+            "a hermes directory plugin's files must share one directory"
+        );
     }
 
     /// The path a `plugin install` walks, end to end: a user types a name, the

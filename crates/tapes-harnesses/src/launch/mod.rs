@@ -32,6 +32,7 @@
 //! | which env var carries the base URL | what that URL's path prefix is |
 //! | codex's `-c` provider-config grammar | which route each auth mode maps to |
 //! | opencode's `opencode.json` provider shape | where to materialise it, and cleanup |
+//! | hermes's `config.yaml` custom-provider shape | which hermes home to plan, and whether it persists |
 //! | that codex treats a blank `env_key` as absent | which credential to supply |
 //! | that provider-display and attribution knobs exist | their branding and header names |
 //!
@@ -66,6 +67,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod hermes;
 pub mod opencode;
 
 use std::path::PathBuf;
@@ -76,6 +78,7 @@ pub use claude::{ANTHROPIC_BASE_URL_ENV, ClaudeRecipe};
 pub use codex::{
     CODEX_API_KEY_ENV, CodexAuth, CodexRecipe, codex_auth_file, env_has_value, resolve_codex_auth,
 };
+pub use hermes::{HERMES_HOME_ENV, HermesRecipe};
 pub use opencode::{
     OPENCODE_CONFIG_HOME_ENV, OpenCodeProvider, OpenCodeRecipe, opencode_auth_file,
     opencode_user_config_candidates,
@@ -204,6 +207,13 @@ pub enum LaunchError {
     /// An opencode config document could not be serialised to JSON.
     #[snafu(display("could not serialise the opencode config document"))]
     SerializeOpenCodeConfig {
+        /// Underlying serialisation failure.
+        source: serde_json::Error,
+    },
+
+    /// A hermes `config.yaml` document could not be serialised.
+    #[snafu(display("could not serialise the hermes config document"))]
+    SerializeHermesConfig {
         /// Underlying serialisation failure.
         source: serde_json::Error,
     },

@@ -35,7 +35,7 @@ pub const GEMINI: Harness = Harness {
     plugin: PluginDelivery::None,
 };
 
-pub const REGISTRY: &[Harness] = &[CLAUDE, CODEX, GEMINI, OPENCODE, PI, CURSOR];
+pub const REGISTRY: &[Harness] = &[CLAUDE, CODEX, CODEX_APP, OPENCODE, PI, HERMES, GEMINI, CURSOR];
 ```
 
 That declaration is load-bearing, not documentation. `supported_agents()` picks
@@ -72,7 +72,9 @@ of that, and therefore owns cleanup.
 
 `crates/tapes-harnesses/src/launch/claude.rs` is the smallest complete example (one environment
 variable). `crates/tapes-harnesses/src/launch/codex.rs` shows a config-flag grammar with fallible
-planning; `crates/tapes-harnesses/src/launch/opencode.rs` shows a recipe that emits a config document.
+planning; `crates/tapes-harnesses/src/launch/opencode.rs` shows a recipe that emits a config document;
+`crates/tapes-harnesses/src/launch/hermes.rs` shows one that relocates the harness's home and writes
+its config, its capture plugin, and the config entry that enables that plugin.
 
 The line to hold is *harness* knowledge versus *deployment* knowledge. Which
 environment variable carries the base URL is yours. What that URL's path prefix
@@ -207,6 +209,19 @@ and owns spawning, saving, delivery, and retry.
 Discovery and packaging in `crates/tapes-harnesses/src/transcript/` are shared. Delivery, auth, and
 retry are not — they belong to each consumer, and always will.
 
+## Step 4b — launch lineage
+
+If your harness can run shell commands, a user can start *another* captured
+harness from inside it. Nothing harness-specific is needed for that lineage
+to survive: every launcher exports `TAPES_LAUNCH_ID` and
+`TAPES_LAUNCH_HARNESS_ID` to its child (`tapes_capture::launch`), and a
+launcher that finds them in its own environment reports them as its parent.
+What your plugin must do is **leave those two variables alone** — unlike the
+capture nonce, they exist to reach the harness's subprocesses. If the harness
+has its own in-process subagents, stamp their parent on
+`x-tapes-parent-harness-session-id` with `x-tapes-parent-harness-id` set to
+your own id, as the hermes plugin does from its `subagent_start` hook.
+
 ## Step 5 — the envelope
 
 If the agent needs a metadata field no existing envelope header carries, stop
@@ -243,7 +258,8 @@ The canonical name, and the most load-bearing string in the crate:
 
 - It is the `X-Tapes-Harness-Id` value, so it must already exist as a
   `HARNESS_ID_*` const in `crates/tapes-capture/src/envelope.rs` — `HARNESS_ID_CLAUDE`,
-  `HARNESS_ID_CODEX`, `HARNESS_ID_OPENCODE`, `HARNESS_ID_PI` today — rather
+  `HARNESS_ID_CODEX`, `HARNESS_ID_CODEX_APP`, `HARNESS_ID_OPENCODE`,
+  `HARNESS_ID_PI`, `HARNESS_ID_HERMES` today — rather
   than being spelled inline here. `registry_ids_are_the_envelope_ids` pins the
   two together.
   Cursor uses no `X-Tapes-*` envelope. Its `HARNESS_ID_CURSOR` lives in
@@ -251,7 +267,7 @@ The canonical name, and the most load-bearing string in the crate:
 - It is what `supported_agents()` returns, and so the name a consumer offers.
 - It is what `LaunchRecipe::harness()` must return; each recipe pins that in
   its own test (`crates/tapes-harnesses/src/launch/claude.rs`, `crates/tapes-harnesses/src/launch/codex.rs`,
-  `crates/tapes-harnesses/src/launch/opencode.rs`).
+  `crates/tapes-harnesses/src/launch/opencode.rs`, `crates/tapes-harnesses/src/launch/hermes.rs`).
 - It is the key the tapes deriver reads on the far side of the wire, which is
   why renaming one is a two-repository change and not a rename.
 
@@ -331,9 +347,10 @@ modules happen to exist:
 
 - `SelfAttributing` is why `Attributed::stamp` preserves a complete inbound
   envelope instead of overwriting it with `harness_id: unknown`.
-  `pi_is_the_self_attributing_variant` pins that exactly one harness is in that
-  state, so a second one is a deliberate decision rather than a silent
-  generalisation of that branch.
+  `pi_is_the_self_attributing_variant` pins the exact set in that state
+  (`opencode`, `pi`, `hermes` today), so each addition is a deliberate decision
+  rather than a silent generalisation of that branch — and each one must stamp
+  the *complete* envelope from inside, which `src/plugin.rs` pins per asset.
 - `None` means traffic is still captured, under `harness_id: unknown`. It costs
   the session its identity, not its turns.
 
@@ -378,15 +395,15 @@ claude` says the harness needs no plugin, writes nothing at all, and exits zero
 
 ## Partial entries and full ones
 
-The registry holds six entries and not all of them are complete:
+The registry holds seven entries and not all of them are complete:
 
-| field | `CLAUDE` | `CODEX` | `CODEX_APP` | `OPENCODE` | `PI` | `CURSOR` |
-| --- | --- | --- | --- | --- | --- | --- |
-| `user_agent` | `Prefix("claude")` | `None` | `None` | `None` | `None` | `None` |
-| `launch` | `Recipe` | `Recipe` | `Unsupported` | `Recipe` | `ConsumerOwned` | `StructuredStdout` |
-| `attribution` | `SessionsDir` | `OpenRollout` | `LifecycleHooks` | `SelfAttributing` | `SelfAttributing` | `None` |
-| `transcripts` | `ClaudeProjects` | `CodexRollouts` | `CodexRollouts` | `None` | `None` | `None` |
-| `plugin` | `None` | `None` | `HookManifestTemplates` | `BundledExtension` | `BundledExtension` | `None` |
+| field | `CLAUDE` | `CODEX` | `CODEX_APP` | `OPENCODE` | `PI` | `HERMES` | `CURSOR` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `user_agent` | `Prefix("claude")` | `None` | `None` | `None` | `None` | `None` | `None` |
+| `launch` | `Recipe` | `Recipe` | `Unsupported` | `Recipe` | `ConsumerOwned` | `Recipe` | `StructuredStdout` |
+| `attribution` | `SessionsDir` | `OpenRollout` | `LifecycleHooks` | `SelfAttributing` | `SelfAttributing` | `SelfAttributing` | `None` |
+| `transcripts` | `ClaudeProjects` | `CodexRollouts` | `CodexRollouts` | `None` | `None` | `None` | `None` |
+| `plugin` | `None` | `None` | `HookManifestTemplates` | `BundledExtension` | `BundledExtension` | `BundledExtension` | `None` |
 
 `OPENCODE` spent a long stretch as the honest partial entry — a recipe with
 `AttributionStrategy::None` — and that state is still the shape most new
@@ -538,9 +555,9 @@ against the whole registry, so `cargo test` is the checklist:
 - `harnesses_without_a_user_agent_rule_claim_nothing` and
   `declared_transcript_trees_resolve_to_a_path` both loop the registry, so a new
   entry is covered without being named.
-- `pi_is_the_self_attributing_variant` fails if a second `SelfAttributing`
-  harness appears — deliberately, since the envelope-preserving branch needs
-  revisiting rather than silently generalising.
+- `pi_is_the_self_attributing_variant` fails if the `SelfAttributing` set
+  changes — deliberately, so each new self-attributing harness is a decision
+  backed by per-asset envelope tests rather than a silent generalisation.
 - `names_resolve_case_insensitively_through_aliases` asserts `find("gemini")` is
   `None`. Step 1's example is not idle: `gemini` is currently pinned as *absent*
   here, and separately in tapesctl's plugin tests, so that particular name
@@ -553,10 +570,16 @@ against the whole registry, so `cargo test` is the checklist:
   entry, and one row in `docs/harness-matrix.md`. A harness the matrix cannot
   run still gets all three. Its `unsupported` reason says why.
 
-**Downstream, but only when a consumer bumps its pin.** Both consumers depend on
-this crate by git revision, so nothing breaks in paper or tapesctl the moment
-you land here — it breaks for whoever bumps the pin next, which is why the
-failures below are worth naming in your pull request description.
+**Downstream, but only when a consumer takes the release.** Both consumers
+depend on these crates by crates.io version, so nothing breaks in paper or
+tapesctl the moment you land here — or even when the release is published.
+It breaks for whoever next bumps the `tapes-harnesses` (and, for an envelope or
+launch-contract change, `tapes-capture`) requirement in that consumer's
+`Cargo.toml`, which is why the failures below are worth naming in your pull
+request description and in the crate's `CHANGELOG.md`. A pre-1.0 minor bump
+(`0.1` → `0.2`) is not picked up by a caret requirement at all, so for a
+breaking release the bump is always a deliberate edit on the consumer's side;
+see `docs/releasing.md` for the order the crates publish in.
 
 In paper (`platform/paper`):
 

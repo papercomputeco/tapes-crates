@@ -15,6 +15,29 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
+### Added
+
+- The `hermes` harness (hermes-agent, alias `hermes-agent`): `Recipe`-launched,
+  `SelfAttributing`, no transcript tree, and a bundled plugin. It now appears in
+  `supported_agents()`, after `pi`.
+- `launch::HermesRecipe` and `launch::HERMES_HOME_ENV`: plans a relocated
+  `HERMES_HOME` whose `config.yaml` declares a `custom` provider at the proxy
+  endpoint, enables the capture plugin, and carries the plugin's files. It
+  copies nothing from the user's own hermes home — no `.env`, no `auth.json`.
+- `plugin::HERMES_GATEWAY_PLUGIN`, `plugin::HERMES_GATEWAY_MANIFEST`, and
+  `plugin::HERMES_GATEWAY_PLUGIN_NAME`: a hermes directory plugin whose LLM
+  request middleware stamps the `X-Tapes-*` envelope (including a delegated
+  subagent's parent session and `x-tapes-parent-harness-id`) and the
+  capture-nonce echo on requests bound for `TAPES_GATEWAY_URL`.
+- `LaunchError::SerializeHermesConfig`.
+
+### Changed
+
+- **Breaking**: requires `tapes-capture` 0.2, whose `TapesAttribution` this
+  crate's attribution API returns.
+- `REGISTRY` and `supported_agents()` include `hermes`; a consumer test that
+  pins either list literally needs the new entry.
+
 ## [0.1.2] - 2026-09-29
 
 ### Added

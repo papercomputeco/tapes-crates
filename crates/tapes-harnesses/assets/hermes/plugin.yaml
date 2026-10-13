@@ -1,0 +1,6 @@
+name: tapes-gateway
+version: "1.0.0"
+description: "Stamps the X-Tapes-* capture envelope on requests to a capture proxy named by TAPES_GATEWAY_URL; inert when it is unset."
+kind: standalone
+hooks:
+  - subagent_start
