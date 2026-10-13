@@ -48,21 +48,26 @@ is invisible until a session lands mis-attributed:
 * **Producer** (this crate) — `envelope::inject_tapes_attribution` turns a
   resolved session identity into the on-wire header set: percent-encoding, the
   256-byte session-name cap, base64url metadata, and the 8 KiB budget.
-* **Parser** — `tapes-extproc`'s `ParseSessionEnvelope`, and the tapes ingest
-  reader, read that header set back into an envelope.
+* **Parser** — the tapes capture extproc's `ParseSessionEnvelope`
+  (`extproc/headers/` in `tapes`), and the tapes ingest reader, read that
+  header set back into an envelope. Both live in `tapes` and test against the
+  upstream corpus directly, so they need no vendored copy.
 
-Every side table-tests against this one corpus. There are three vendored copies
-in total and **all must be refreshed from the same upstream SHA**:
+Every side table-tests against this one corpus. There are two vendored copies
+in total and **both must be refreshed from the same upstream SHA**:
 
 | Repo | Path |
 | --- | --- |
 | `tapes-harnesses` (here) | `crates/tapes-capture/vendor/tapes-envelope-fixtures/` |
 | `platform/paper` | `crates/paper-daemon/vendor/tapes-envelope-fixtures/` |
-| `tapes-extproc` | `internal/headers/testdata/envelope/` |
+
+The retired standalone `tapes-extproc` repository carried a third copy under
+`internal/headers/testdata/envelope/`; nothing deploys from it, so it is no
+longer refreshed.
 
 ## The seal
 
-Vendoring three copies only buys parity if the three are the same bytes, and
+Vendoring two copies only buys parity if the two are the same bytes, and
 nothing about copying guarantees that. A hand-edit to one leaves two
 implementations testing against different corpora while both stay green — the
 same invisible drift the corpus exists to prevent, moved up a level.
