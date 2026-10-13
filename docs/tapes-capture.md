@@ -41,10 +41,11 @@ table-test against one shared fixture corpus (see
 | `x-tapes-cwd` | no | Working directory, percent-encoded UTF-8. |
 | `x-tapes-session-name` | no | User-given session name, percent-encoded, capped at 256 raw bytes. |
 | `x-tapes-parent-harness-session-id` | no | Fork-parent's harness session id, when the client recovered lineage. |
+| `x-tapes-parent-harness-id` | no | The harness that parent session belongs to. Emitted only beside `x-tapes-parent-harness-session-id`; absent means the parent ran under the same harness as the request, which is what every older envelope meant. It is what makes **cross-harness** lineage expressible — a parent session id is only unique within its own harness. |
 | `x-tapes-harness-metadata` | no | base64url (no padding) of a JSON object, capped at 4 KiB raw, dropped first under budget pressure. |
 
 The harness-id vocabulary is declared in this crate: `unknown`, `claude`,
-`codex`, `codex-app`, `opencode`, `pi`. The arrow points the way that first
+`codex`, `codex-app`, `hermes`, `opencode`, `pi`. The arrow points the way that first
 looks backwards — the harness registry in `tapes-harnesses` takes its ids
 *from* this list rather than declaring them and having the envelope import
 them back. Harness ids are envelope vocabulary, they are what goes on the
@@ -154,6 +155,46 @@ protocol. The other three (`TAPES_GATEWAY_LABEL`, `TAPES_GATEWAY_LABEL_SUFFIX`,
 harness's status bar — and live with the artifact that reads them, in
 `tapes-harnesses`. The full seven-variable table a launching consumer needs is
 in [tapes-harnesses](./tapes-harnesses.md#plugins-and-the-gateway-environment-a-launcher-sets).
+
+## The launch-lineage contract
+
+A captured session can start another one — a shell tool in a Claude Code
+session runs `<launcher> start hermes`, a hermes terminal tool starts codex.
+The child's launcher knows nothing about the session it is running inside, so
+without a shared channel the tree a user actually ran lands as unrelated
+sessions. The `launch` module is that channel:
+
+| variable | const | set by | value |
+| --- | --- | --- | --- |
+| `TAPES_LAUNCH_ID` | `LAUNCH_ID_ENV` | every launcher, for its child | An opaque id unique to this launch. |
+| `TAPES_LAUNCH_HARNESS_ID` | `LAUNCH_HARNESS_ID_ENV` | every launcher, for its child | The harness id this launch started. |
+
+The flow, for a launcher about to start a harness:
+
+1. `LaunchContext::from_env(launch_id, harness_id)` — mint an id (a UUID, or
+   `new_launch_id()`), and read the **parent** launch from this process's own
+   environment. `parent` is `Some` only when both variables are present and
+   non-blank; half a parent is no evidence of one.
+2. Apply `ctx.child_env()` to the child's environment. It is always this
+   launch's own values, never the parent's, so the variables stay one hop
+   deep: anything launched inside the child reads the child as its parent.
+3. If `ctx.parent` is `Some`, resolve it to a parent **session**. That mapping
+   is the launcher's, not this crate's: a launch id names a process launch,
+   which may host several sessions over its life, and only the parent's
+   launcher — the one receiving the parent's traffic — knows which was live.
+   The child reports the `ParentLaunch` to wherever its deployment keeps that
+   registry, gets the parent session id back, and stamps it as
+   `x-tapes-parent-harness-session-id` with
+   `TapesAttribution::with_parent_harness_id(parent.harness_id)`.
+
+The parent's launcher should therefore record, per launch id, the session id
+its harness is currently using, so a child arriving later can be answered.
+
+None of this is a trust signal. The variables are inherited by every
+descendant and trivially forged; they let a launcher ask a better question and
+are never evidence a proxy believes on their own. And unlike the capture nonce,
+an in-harness plugin must **not** delete them from its environment —
+propagating them to the harness's subprocesses is the whole point.
 
 ## Peer trust
 

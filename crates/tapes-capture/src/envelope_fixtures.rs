@@ -208,6 +208,10 @@ pub struct FixtureEnvelope {
     /// Fork-parent's harness session id.
     #[serde(default)]
     pub parent_harness_session_id: Option<String>,
+    /// The harness the fork-parent session belongs to. Absent in every case
+    /// vendored before the header existed, which is the same-harness default.
+    #[serde(default)]
+    pub parent_harness_id: Option<String>,
     /// Free-form harness metadata, as JSON rather than base64url.
     #[serde(default)]
     pub harness_metadata: Option<serde_json::Value>,
@@ -284,6 +288,7 @@ pub fn attribution_from(env: &FixtureEnvelope) -> TapesAttribution {
         cwd: env.cwd.clone(),
         name: env.name.clone(),
         parent_sid: env.parent_harness_session_id.clone(),
+        parent_harness_id: env.parent_harness_id.clone(),
         metadata,
     }
 }

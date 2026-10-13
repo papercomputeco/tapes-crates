@@ -99,6 +99,21 @@ pub const X_TAPES_SESSION_NAME: &str = "x-tapes-session-name";
 /// recovered lineage from the transcript. Optional.
 pub const X_TAPES_PARENT_HARNESS_SESSION_ID: &str = "x-tapes-parent-harness-session-id";
 
+/// The harness id of the session [`X_TAPES_PARENT_HARNESS_SESSION_ID`] names.
+/// Optional, and meaningful only beside that header: the producer emits it
+/// only when the parent session id itself made it onto the wire.
+///
+/// Absent means the parent ran under the same harness as the request — which
+/// is what every envelope produced before this header existed meant, so a
+/// parser treats a missing value as [`X_TAPES_HARNESS_ID`]'s and nothing
+/// about an old envelope changes. It exists for **cross-harness** lineage: a
+/// session launched from inside another harness's session (a `hermes` run
+/// started by a Claude Code shell tool, say) has a parent whose id is only
+/// unique within *its* harness, so the pair is the parent's identity. A
+/// producer may also send it when the two agree; that states the default
+/// rather than changing it.
+pub const X_TAPES_PARENT_HARNESS_ID: &str = "x-tapes-parent-harness-id";
+
 /// Base64url(no padding) of a JSON object holding the harness blob
 /// destined for `sessions.harness_metadata`. Capped at 4 KiB raw JSON;
 /// dropped first when the total `X-Tapes-*` byte budget (8 KiB) is
@@ -134,6 +149,11 @@ pub const HARNESS_ID_CODEX: &str = "codex";
 /// this?", and keying captured sessions by a distinct id keeps that
 /// difference visible downstream.
 pub const HARNESS_ID_CODEX_APP: &str = "codex-app";
+
+/// Harness-id attached by hermes-agent's capture plugin, which stamps the
+/// envelope from inside hermes through its LLM request middleware. The plugin
+/// is `tapes_harnesses::plugin::HERMES_GATEWAY_PLUGIN`.
+pub const HARNESS_ID_HERMES: &str = "hermes";
 
 /// Harness-id attached for opencode traffic.
 ///
@@ -417,6 +437,10 @@ pub struct TapesAttribution {
     pub name: Option<String>,
     /// Fork-parent's harness session id.
     pub parent_sid: Option<String>,
+    /// The harness [`Self::parent_sid`] belongs to, when the client knows it.
+    /// Emitted only alongside a parent session id; see
+    /// [`X_TAPES_PARENT_HARNESS_ID`] for what its absence means.
+    pub parent_harness_id: Option<String>,
     /// Free-form harness metadata; base64url(JSON) on the wire.
     pub metadata: serde_json::Map<String, serde_json::Value>,
 }
@@ -432,6 +456,7 @@ impl TapesAttribution {
             cwd: None,
             name: None,
             parent_sid: None,
+            parent_harness_id: None,
             metadata: serde_json::Map::new(),
         }
     }
@@ -454,6 +479,7 @@ impl TapesAttribution {
             cwd: None,
             name: None,
             parent_sid: None,
+            parent_harness_id: None,
             metadata,
         }
     }
@@ -492,6 +518,7 @@ impl TapesAttribution {
             cwd: cwd.map(str::to_owned),
             name: None,
             parent_sid: parent_sid.map(str::to_owned),
+            parent_harness_id: None,
             metadata,
         }
     }
@@ -531,6 +558,7 @@ impl TapesAttribution {
             cwd: None,
             name: None,
             parent_sid: envelope_field(headers, X_TAPES_PARENT_HARNESS_SESSION_ID),
+            parent_harness_id: envelope_field(headers, X_TAPES_PARENT_HARNESS_ID),
             metadata: serde_json::Map::new(),
         })
     }
@@ -554,8 +582,24 @@ impl TapesAttribution {
             cwd: session.cwd().map(str::to_owned),
             name: session.name().map(str::to_owned),
             parent_sid: parent_sid.map(str::to_owned),
+            parent_harness_id: None,
             metadata: session.metadata(),
         }
+    }
+
+    /// Name the harness the parent session belongs to.
+    ///
+    /// For cross-harness lineage, where [`Self::parent_sid`] alone is
+    /// ambiguous: a parent session id is only unique within its own harness.
+    /// A blank value is treated as absent, and the producer drops the header
+    /// whenever no parent session id is emitted beside it — a parent harness
+    /// with no parent session describes nothing.
+    #[must_use]
+    pub fn with_parent_harness_id(mut self, parent_harness_id: impl Into<String>) -> Self {
+        let parent_harness_id = parent_harness_id.into();
+        self.parent_harness_id =
+            (!parent_harness_id.trim().is_empty()).then_some(parent_harness_id);
+        self
     }
 }
 
@@ -630,12 +674,24 @@ pub fn inject_tapes_attribution(
         try_insert_session_name(headers, name, &mut budget);
     }
     if let Some(parent) = attribution.parent_sid.as_deref() {
-        try_insert_string(
+        let parent_emitted = try_insert_string(
             headers,
             X_TAPES_PARENT_HARNESS_SESSION_ID,
             parent,
             &mut budget,
         );
+        // The parent's harness id only means something beside the parent's
+        // session id, so it rides on that header's success rather than on
+        // its own: a parent session id dropped for an invalid byte must not
+        // leave a dangling harness id that names nothing.
+        if parent_emitted && let Some(parent_harness) = attribution.parent_harness_id.as_deref() {
+            try_insert_string(
+                headers,
+                X_TAPES_PARENT_HARNESS_ID,
+                parent_harness,
+                &mut budget,
+            );
+        }
     }
 
     // 3. Metadata blob — LOWEST priority and the first thing dropped
@@ -715,17 +771,25 @@ fn insert_required_ascii(
 /// Insert `value` under `name` if (a) it fits in the remaining
 /// budget and (b) it is a valid HTTP header value. Failure on either
 /// front silently drops the header — optional fields drop rather than
-/// erroring so a malformed value never fails the whole request.
-fn try_insert_string(headers: &mut HeaderMap, name: &'static str, value: &str, budget: &mut usize) {
+/// erroring so a malformed value never fails the whole request. Returns
+/// whether the header was inserted, for a field whose meaning depends on
+/// another's having shipped.
+fn try_insert_string(
+    headers: &mut HeaderMap,
+    name: &'static str,
+    value: &str,
+    budget: &mut usize,
+) -> bool {
     let cost = name.len() + value.len();
     if cost > *budget {
-        return;
+        return false;
     }
     let Ok(val) = HeaderValue::from_str(value) else {
-        return;
+        return false;
     };
     *budget -= cost;
     headers.insert(HeaderName::from_static(name), val);
+    true
 }
 
 /// Percent-encode `name` (UTF-8 → ASCII), bounded to 256 raw bytes,
@@ -1666,6 +1730,95 @@ mod tests {
         let attribution = TapesAttribution::from_headers(&headers).expect("padding is not absence");
         assert_eq!(attribution.harness_id, HARNESS_ID_PI);
         assert_eq!(attribution.session_id.as_deref(), Some("sess-1"));
+    }
+
+    fn hermes_child_of(parent_sid: Option<&str>) -> TapesAttribution {
+        TapesAttribution {
+            harness_id: HARNESS_ID_HERMES.to_owned(),
+            session_id: Some("hermes-sess".to_owned()),
+            version: None,
+            cwd: None,
+            name: None,
+            parent_sid: parent_sid.map(str::to_owned),
+            parent_harness_id: None,
+            metadata: serde_json::Map::new(),
+        }
+    }
+
+    /// Cross-harness lineage: the parent's harness rides beside the parent's
+    /// session id, and reads back through the same plain-text path.
+    #[test]
+    fn a_parent_harness_id_ships_beside_the_parent_session_and_reads_back() {
+        let mut headers = HeaderMap::new();
+        let attribution = hermes_child_of(Some("claude-sess")).with_parent_harness_id("claude");
+        inject_tapes_attribution(&mut headers, attribution).unwrap();
+        assert_eq!(
+            headers.get(X_TAPES_PARENT_HARNESS_SESSION_ID).unwrap(),
+            "claude-sess"
+        );
+        assert_eq!(headers.get(X_TAPES_PARENT_HARNESS_ID).unwrap(), "claude");
+
+        let back = TapesAttribution::from_headers(&headers).expect("complete envelope");
+        assert_eq!(back.harness_id, HARNESS_ID_HERMES);
+        assert_eq!(back.parent_sid.as_deref(), Some("claude-sess"));
+        assert_eq!(back.parent_harness_id.as_deref(), Some("claude"));
+    }
+
+    /// A parent harness with no parent session describes nothing, so it is
+    /// never emitted alone — neither when the caller supplied no parent
+    /// session nor when the parent session id was dropped for a bad byte.
+    #[test]
+    fn a_parent_harness_id_never_ships_without_its_parent_session() {
+        let mut headers = HeaderMap::new();
+        inject_tapes_attribution(
+            &mut headers,
+            hermes_child_of(None).with_parent_harness_id("claude"),
+        )
+        .unwrap();
+        assert!(!headers.contains_key(X_TAPES_PARENT_HARNESS_ID));
+
+        let mut headers = HeaderMap::new();
+        inject_tapes_attribution(
+            &mut headers,
+            hermes_child_of(Some("bad\nsid")).with_parent_harness_id("claude"),
+        )
+        .unwrap();
+        assert!(!headers.contains_key(X_TAPES_PARENT_HARNESS_SESSION_ID));
+        assert!(!headers.contains_key(X_TAPES_PARENT_HARNESS_ID));
+    }
+
+    /// Every constructor that predates the header leaves it off, so envelopes
+    /// produced through them are byte-identical to before — which is what
+    /// keeps the vendored corpus green without a re-vendor.
+    #[test]
+    fn existing_producers_do_not_emit_a_parent_harness_id() {
+        let mut headers = HeaderMap::new();
+        let attribution = TapesAttribution::codex_session_with_parent(
+            "s",
+            Some("p"),
+            None,
+            None,
+            serde_json::Map::new(),
+        );
+        assert!(attribution.parent_harness_id.is_none());
+        inject_tapes_attribution(&mut headers, attribution).unwrap();
+        assert!(headers.contains_key(X_TAPES_PARENT_HARNESS_SESSION_ID));
+        assert!(!headers.contains_key(X_TAPES_PARENT_HARNESS_ID));
+
+        // A blank value is absence, not an empty header.
+        assert!(
+            hermes_child_of(Some("p"))
+                .with_parent_harness_id("  ")
+                .parent_harness_id
+                .is_none()
+        );
+    }
+
+    /// The new header is inside the `x-tapes-` namespace, so the existing
+    /// strip-before-forward and clear-on-failure paths cover it for free.
+    #[test]
+    fn the_parent_harness_header_is_an_envelope_header() {
+        assert!(X_TAPES_PARENT_HARNESS_ID.starts_with(HEADER_PREFIX));
     }
 
     /// The bug this hoist exists to prevent: the rule that decides whether the

@@ -20,6 +20,12 @@
 //!   files written against them are artifacts and live with the harness they
 //!   are installed into. Conflating the two is what let a protocol change ride
 //!   along with an artifact change.
+//! * [`launch`] — the launch-lineage environment contract
+//!   (`TAPES_LAUNCH_ID`, `TAPES_LAUNCH_HARNESS_ID`): how a launcher started
+//!   inside another launch's process tree learns its parent launch. Protocol,
+//!   not harness knowledge — every launcher exports the same two variables, and
+//!   the mapping from a parent launch to a parent *session* stays with the
+//!   launcher that owns it.
 //! * [`peer_pid`] — maps an accepted loopback connection to one of a candidate
 //!   PID set via per-OS kernel APIs.
 //! * [`peer_trust`] — the ancestry walk that answers whether the process on the
@@ -65,6 +71,7 @@
 
 pub mod envelope;
 pub mod gateway;
+pub mod launch;
 pub mod peer_pid;
 pub mod peer_trust;
 pub mod session;
@@ -73,6 +80,9 @@ pub use gateway::{
     GATEWAY_NONCE_ENV, GATEWAY_NONCE_HEADER, GATEWAY_PROVIDER_ROUTE_PREFIX,
     GATEWAY_PROVIDER_ROUTES_ENV, GATEWAY_PROVIDER_ROUTES_ON, GATEWAY_SCHEMA_ENV, GATEWAY_URL_ENV,
     nonce_matches, provider_route, split_provider_route,
+};
+pub use launch::{
+    LAUNCH_HARNESS_ID_ENV, LAUNCH_ID_ENV, LaunchContext, ParentLaunch, new_launch_id,
 };
 pub use peer_pid::{PeerPidLookup, lookup as peer_pid_lookup};
 pub use peer_trust::{

@@ -22,6 +22,10 @@ dependency edge runs one way and Cargo enforces it rather than review.
   the provider it belongs to. A summary that mentions only the nonce leaves out
   five of the module's nine public items — all nine are re-exported at the crate
   root.
+- **`launch`** — the launch-lineage environment contract: every launcher
+  exports `TAPES_LAUNCH_ID` and `TAPES_LAUNCH_HARNESS_ID` to the harness it
+  starts, and a launcher that finds them in its own environment treats them as
+  its parent launch. `LaunchContext` reads one side and writes the other.
 - **`peer_pid`** — resolving the process on the other end of a local connection.
 - **`peer_trust`** — the ancestry walk that decides whether that peer is trusted.
 - **`session`** — `HarnessSession`, the trait by which a harness supplies the
