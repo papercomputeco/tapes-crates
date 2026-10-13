@@ -15,6 +15,8 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-13
+
 ### Added
 
 - The `hermes` harness (hermes-agent, alias `hermes-agent`): `Recipe`-launched,

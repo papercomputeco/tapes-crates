@@ -240,7 +240,7 @@ not belong in a production build. Enable it under `[dev-dependencies]`:
 
 ```toml
 [dev-dependencies]
-tapes-capture = { version = "0.1", features = ["envelope-fixtures"] }
+tapes-capture = { version = "0.2", features = ["envelope-fixtures"] }
 ```
 
 The corpus resolves by a path relative to the crate manifest and ships inside

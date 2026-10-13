@@ -87,14 +87,14 @@ path = "src/bin/matrix-fake-harness.rs"
 # Envelope header names, the nonce protocol, and the shared fixture corpus the
 # ingest validator checks turns against. `envelope-fixtures` is this crate's
 # whole reason for enabling that feature: the corpus is the oracle.
-tapes-capture = { path = "../tapes-capture", version = "0.1.0", features = [
+tapes-capture = { path = "../tapes-capture", version = "0.2.0", features = [
     "envelope-fixtures",
 ] }
 # The registry. A recipe exists per registry harness, and the matrix runner
 # iterates `REGISTRY` rather than a list written here — so a harness added to
 # the registry shows up in the matrix as a failure to write a recipe, not as a
 # silent absence.
-tapes-harnesses = { path = "../tapes-harnesses", version = "0.1.2" }
+tapes-harnesses = { path = "../tapes-harnesses", version = "0.2.0" }
 
 base64 = "0.22"
 percent-encoding = "2"

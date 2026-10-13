@@ -15,6 +15,8 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-13
+
 Cross-harness lineage: an envelope can now say which harness its parent
 session belongs to, and launchers share one environment contract for telling
 a nested launch which launch it runs inside.

@@ -15,7 +15,7 @@
 # other crates needed a `default-members` list to be included at all.
 [package]
 name = "tapes-harnesses"
-version = "0.1.2"
+version = "0.2.0"
 edition.workspace = true
 rust-version = "1.88"
 license.workspace = true
@@ -65,7 +65,7 @@ snafu = "0.8"
 # the peer-trust ancestry check. The edge is one-way by construction —
 # `tapes-capture` cannot name a harness, so it cannot depend back on this crate,
 # and Cargo now enforces what review used to.
-tapes-capture = { path = "../tapes-capture", version = "0.1.0" }
+tapes-capture = { path = "../tapes-capture", version = "0.2.0" }
 time = { version = "0.3", features = ["formatting", "parsing", "serde", "macros"] }
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 # Format-preserving TOML editing for the codex config.toml patch grammar. The
