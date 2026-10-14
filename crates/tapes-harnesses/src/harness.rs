@@ -406,10 +406,10 @@ pub const OPENCODE: Harness = Harness {
 /// file to read: the client's job is to *preserve* what arrives. That extension
 /// is [`crate::plugin::PI_GATEWAY_EXTENSION`], which this crate now ships.
 ///
-/// It stays [`LaunchSupport::ConsumerOwned`] even so. Installing the extension
-/// and *launching* pi under capture are separate steps, and only the first one
-/// has moved: a recipe would still have to plan the argv that points pi at an
-/// installed extension, which nothing here does yet.
+/// It stays [`LaunchSupport::ConsumerOwned`] even so. An ordinary launch
+/// against the installed extension is environment alone, which the consumer
+/// sets. [`crate::launch::PiRecipe`] exists for the narrower case of declaring
+/// a gateway-served model pi does not ship, and is used only then.
 pub const PI: Harness = Harness {
     id: HARNESS_ID_PI,
     aliases: &[],

@@ -15,6 +15,35 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
+### Added
+
+- `launch::PiRecipe`, `launch::PI_AGENT_DIR_ENV`, `launch::PI_CARRIED_FILES`,
+  `launch::PLACEHOLDER_API_KEY`, `launch::pi_gateway_model`, and
+  `launch::pi_user_agent_dir`: declare gateway-served models for one pi session.
+  The plan relocates `PI_CODING_AGENT_DIR`, writes a `models.json` that adds
+  each model under `openai` with `api: "openai-completions"` and a model-level
+  `baseUrl` at the proxy, writes the capture extension into the relocated
+  `extensions/`, and selects the first model with `--model openai/<id>`. Only
+  files named in `PI_CARRIED_FILES` (settings, keybindings, user-level
+  instructions) may be carried from the user's agent directory — never
+  `auth.json`, `mcp.json`, or the user's `models.json`.
+- `plugin::ALLOW_UNCAPTURED_ENV` (`TAPES_ALLOW_UNCAPTURED`) and
+  `plugin::ALLOW_UNCAPTURED_ON`, and `plugin::pi::ROUTED_PROVIDERS`.
+- The pi extension stamps `x-tapes-cwd` (percent-encoded with the producer's
+  escape set) and `x-tapes-harness-version` (pi's own version), within the
+  8 KiB envelope budget; cwd is dropped first when over it.
+
+### Changed
+
+- While routed through a gateway, the pi extension refuses a request on a
+  model whose endpoint is not on the gateway — a provider it does not
+  redirect, a `models.json` provider with its own `baseUrl`, any provider
+  other than a launch-declared one under `TAPES_GATEWAY_PROVIDER_CONFIG` — with
+  a one-line error naming the provider and host, instead of a UI warning and an
+  uncaptured request. Selecting such a model reports the same line as an
+  error. `TAPES_ALLOW_UNCAPTURED=1` restores pass-through with a warning.
+  Without `TAPES_GATEWAY_URL` the extension stays inert.
+
 ## [0.2.0] - 2026-10-13
 
 ### Added

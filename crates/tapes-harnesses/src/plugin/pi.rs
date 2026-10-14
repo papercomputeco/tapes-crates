@@ -66,6 +66,12 @@ pub const GATEWAY_LABEL_ENV: &str = "TAPES_GATEWAY_LABEL";
 /// the gateway). No consumer-specific models or credentials live in the asset.
 pub const GATEWAY_PROVIDER_CONFIG_ENV: &str = "TAPES_GATEWAY_PROVIDER_CONFIG";
 
+/// The providers the extension redirects to the capture proxy on an ordinary
+/// launch — pi's built-in `anthropic`, `openai` and `openai-codex`. A model
+/// under any other provider reaches the proxy only if a launcher declared it
+/// there, and is refused otherwise; see [`crate::plugin::ALLOW_UNCAPTURED_ENV`].
+pub const ROUTED_PROVIDERS: &[&str] = &["anthropic", "openai", "openai-codex"];
+
 /// Environment variable appended to the status label after the active schema.
 ///
 /// Display text. Exists because a product may need to say something about its
@@ -171,6 +177,67 @@ mod tests {
         assert_eq!(declared_const("GATEWAY_SCHEMA_ENV"), GATEWAY_SCHEMA_ENV);
         assert_eq!(declared_const("GATEWAY_NONCE_ENV"), GATEWAY_NONCE_ENV);
         assert_eq!(declared_const("GATEWAY_NONCE_HEADER"), GATEWAY_NONCE_HEADER);
+    }
+
+    /// The routed set the recipe reasons about is the set the asset registers.
+    #[test]
+    fn the_asset_routes_exactly_the_declared_providers() {
+        let quoted: Vec<String> = ROUTED_PROVIDERS
+            .iter()
+            .map(|p| format!("\"{p}\""))
+            .collect();
+        assert!(
+            asset().contains(&format!(
+                "const CAPTURED_PROVIDERS = [{}] as const;",
+                quoted.join(", ")
+            )),
+            "the asset's captured providers differ from ROUTED_PROVIDERS"
+        );
+    }
+
+    /// The refusal opt-out, pinned as a whole declaration, and read where a
+    /// request is judged rather than once at load.
+    #[test]
+    fn the_asset_reads_the_uncaptured_opt_out_at_request_time() {
+        assert_eq!(
+            declared_const("ALLOW_UNCAPTURED_ENV"),
+            crate::plugin::ALLOW_UNCAPTURED_ENV
+        );
+        assert!(asset().contains(&format!(
+            "process.env[ALLOW_UNCAPTURED_ENV] === \"{}\"",
+            crate::plugin::ALLOW_UNCAPTURED_ON
+        )));
+        let hook = asset()
+            .split_once("pi.on(\"before_provider_request\"")
+            .expect("the asset installs no refusal hook")
+            .1;
+        assert!(hook[..hook.find("});").unwrap()].contains("allowUncaptured()"));
+    }
+
+    /// The envelope's cwd escape set is the Rust producer's: visible ASCII
+    /// minus `%`, `"` and `\` passes, everything else is encoded.
+    #[test]
+    fn the_asset_stamps_cwd_and_version_under_the_envelope_names() {
+        use tapes_capture::envelope::{X_TAPES_CWD, X_TAPES_HARNESS_VERSION};
+        for name in [X_TAPES_CWD, X_TAPES_HARNESS_VERSION] {
+            let spelled = name
+                .split('-')
+                .map(|part| {
+                    let mut chars = part.chars();
+                    chars.next().map_or_else(String::new, |first| {
+                        first.to_ascii_uppercase().to_string() + chars.as_str()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join("-");
+            assert!(
+                asset().contains(&format!("\"{spelled}\"")),
+                "the asset does not stamp {spelled}"
+            );
+        }
+        assert!(asset().contains(
+            "byte >= 0x21 && byte <= 0x7e && byte !== 0x25 && byte !== 0x22 && byte !== 0x5c"
+        ));
     }
 
     /// The presentation contract, pinned the same way. These are the names that

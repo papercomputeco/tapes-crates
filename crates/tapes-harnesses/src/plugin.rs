@@ -71,7 +71,7 @@
 //! second copy is gone, and cost a launcher that can set a variable its
 //! installed asset does not read.
 //!
-//! ## All seven variables
+//! ## The variables
 //!
 //! The contract is split across two crates, and this is the only place that
 //! lists it whole — a consumer wiring up a launch needs every row. The split is
@@ -89,8 +89,10 @@
 //! | `TAPES_GATEWAY_LABEL` | [`pi::GATEWAY_LABEL_ENV`] | launcher | The product word shown in pi's status entry. |
 //! | `TAPES_GATEWAY_LABEL_SUFFIX` | [`pi::GATEWAY_LABEL_SUFFIX_ENV`] | launcher | Appended to the status label after the active schema. |
 //! | `TAPES_GATEWAY_REMEDY` | [`pi::GATEWAY_REMEDY_ENV`] | launcher | The sentence appended to a schema-mismatch warning — the diagnosis is the asset's, the remedy is the launcher's, because only it knows which command switches its proxy. |
+//! | `TAPES_GATEWAY_PROVIDER_CONFIG` | [`pi::GATEWAY_PROVIDER_CONFIG_ENV`] | launcher | pi only: a launch-local provider (name, api, models) registered at the gateway in place of the three built-ins. |
+//! | `TAPES_ALLOW_UNCAPTURED` | [`ALLOW_UNCAPTURED_ENV`] | user | Exactly `1` lets a captured session send a request that bypasses the proxy, uncaptured, with a warning. Otherwise such a request is refused with a one-line error. Read at request time. |
 //!
-//! Every one of the seven is optional, and every one has a defined unset
+//! Every one of them is optional, and every one has a defined unset
 //! behaviour. That is not politeness: an artifact installs globally and loads
 //! for every session on the machine, so "nothing set" has to be a working
 //! configuration rather than an error.
@@ -121,6 +123,22 @@ pub use tapes_capture::gateway::{
     GATEWAY_PROVIDER_ROUTES_ENV, GATEWAY_PROVIDER_ROUTES_ON, GATEWAY_SCHEMA_ENV, GATEWAY_URL_ENV,
     nonce_matches, provider_route, split_provider_route,
 };
+
+/// Environment variable that opts a captured session out of refusing
+/// uncaptured calls.
+///
+/// While a capture artifact routes a session through the proxy
+/// ([`GATEWAY_URL_ENV`] set), a request the harness would send anywhere else —
+/// a provider the proxy does not front, a model with its own endpoint — is
+/// refused with a one-line error instead of leaving capture silently. Set to
+/// exactly [`ALLOW_UNCAPTURED_ON`], such requests go out to their own endpoint
+/// uncaptured, with a warning. Read at request time, so it can be set for one
+/// command inside a session. Read by the pi extension and the hermes plugin.
+pub const ALLOW_UNCAPTURED_ENV: &str = "TAPES_ALLOW_UNCAPTURED";
+
+/// The one value of [`ALLOW_UNCAPTURED_ENV`] that opts out. Any other value
+/// keeps the refusal, so a misspelling cannot quietly turn capture off.
+pub const ALLOW_UNCAPTURED_ON: &str = "1";
 
 /// One file a consumer installs into a harness.
 ///

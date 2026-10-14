@@ -135,6 +135,17 @@ config's `model.default_headers` carries a static `x-tapes-harness-id: hermes`
 as a floor. The remaining gap: an auxiliary call in a process running several
 concurrent sessions may attach to the most recent one.
 
+pi is captured by its extension alone: it redirects pi's built-in
+`anthropic`, `openai` and `openai-codex` providers and stamps the envelope,
+including `x-tapes-cwd` (percent-encoded exactly as the Rust producer and the
+hermes plugin encode it) and `x-tapes-harness-version`. A gateway-served model
+pi does not ship — a self-hosted OpenAI-compatible model, say — needs one more
+thing, a `models.json` entry under `openai` speaking Chat Completions, and
+`PiRecipe` plans it for one session in a relocated `PI_CODING_AGENT_DIR`
+alongside the extension and the user's carried preferences (never
+`auth.json`). While routed through a gateway, a pi model whose requests would
+go anywhere else is refused with a one-line error rather than sent uncaptured.
+
 Cursor uses only structured stdout. `transcript::cursor_stream::plan_args`
 builds the `agent` argv for `stream-json` mode and refuses flags that would
 change the output, exit early, detach the process, or resume another session;
@@ -149,7 +160,9 @@ materialisation, and cleanup stay with the consumer. The registry records
 *that* a harness has a recipe; the consumer constructs it with the arguments
 only the consumer has — Claude needs one endpoint, codex needs an endpoint
 plus an auth mode and a provider identity, opencode needs an endpoint per
-provider plus a model.
+provider plus a model, hermes needs a home and an optional model, and pi
+needs a recipe only to declare gateway-served models (`PiRecipe`, with
+`pi_gateway_model` to read one from a pi `--model` pattern).
 
 ## Plugins, and the gateway environment a launcher sets
 
@@ -160,8 +173,8 @@ vendor-neutral: an asset that names a vendor stays in that consumer's
 repository and gets no registry variant.
 
 An installed artifact reads its instructions from the environment at launch
-time. Seven variables make up that contract; the first four are protocol and
-live in `tapes-capture`, the last three are presentation and live here:
+time. These variables make up that contract; the first four are protocol and
+live in `tapes-capture`, the rest live here:
 
 | variable | set by | meaning |
 | --- | --- | --- |
@@ -172,6 +185,7 @@ live in `tapes-capture`, the last three are presentation and live here:
 | `TAPES_GATEWAY_LABEL` | launcher | The product word shown in a harness's status entry. |
 | `TAPES_GATEWAY_LABEL_SUFFIX` | launcher | Appended to the status label after the active schema. |
 | `TAPES_GATEWAY_REMEDY` | launcher | The sentence appended to a schema-mismatch warning — the diagnosis is the asset's, the remedy is the launcher's, because only the launcher knows which command switches its proxy. |
+| `TAPES_ALLOW_UNCAPTURED` | user | Exactly `1` lets a captured session send a request that would bypass the proxy to its own endpoint, uncaptured, with a warning. Unset (or any other value), such a request is refused with a one-line error. Read at request time. |
 
 Two more variables travel beside these, and unlike the nonce an artifact must
 leave them in place: `TAPES_LAUNCH_ID` and `TAPES_LAUNCH_HARNESS_ID`, the

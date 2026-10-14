@@ -47,14 +47,14 @@
 //!
 //! # What is deliberately *not* here
 //!
-//! * **A pi recipe.** pi has no base-URL environment knob, so there is nothing
-//!   for a recipe to set: capture needs a JavaScript extension running inside
-//!   the harness. That extension and the environment contract it reads are now
-//!   [`crate::plugin`], vendor-neutral — but installing it and launching pi
-//!   against it are different jobs. A recipe here would additionally have to
-//!   plan the argv that loads an installed extension, and decide whether it
-//!   loads the globally installed copy or a per-launch one. Until it does,
-//!   pi is [`crate::harness::LaunchSupport::ConsumerOwned`].
+//! * **A general pi recipe.** pi has no base-URL environment knob, so there is
+//!   nothing for a recipe to set: capture needs a JavaScript extension running
+//!   inside the harness. That extension and the environment contract it reads
+//!   are [`crate::plugin`], vendor-neutral, and launching pi against an
+//!   installed copy is environment alone, so pi stays
+//!   [`crate::harness::LaunchSupport::ConsumerOwned`]. [`pi::PiRecipe`] covers
+//!   the one thing the environment cannot: declaring a gateway-served model pi
+//!   does not ship, for one session.
 //! * **Credential loading.** Which API key to hand a harness, and where it is
 //!   stored, is a consumer concern: a daemon client may pass the user's own
 //!   credential through untouched, while the Go CLI read its own credential
@@ -69,6 +69,7 @@ pub mod claude;
 pub mod codex;
 pub mod hermes;
 pub mod opencode;
+pub mod pi;
 
 use std::path::PathBuf;
 
@@ -82,6 +83,10 @@ pub use hermes::{HERMES_HOME_ENV, HermesRecipe};
 pub use opencode::{
     OPENCODE_CONFIG_HOME_ENV, OpenCodeProvider, OpenCodeRecipe, opencode_auth_file,
     opencode_user_config_candidates,
+};
+pub use pi::{
+    PI_AGENT_DIR_ENV, PI_CARRIED_FILES, PLACEHOLDER_API_KEY, PiRecipe, pi_gateway_model,
+    pi_user_agent_dir,
 };
 
 /// How to launch a specific harness under a capture proxy.
@@ -209,6 +214,30 @@ pub enum LaunchError {
     SerializeOpenCodeConfig {
         /// Underlying serialisation failure.
         source: serde_json::Error,
+    },
+
+    /// A pi `models.json` document could not be serialised.
+    #[snafu(display("could not serialise the pi models document"))]
+    SerializePiConfig {
+        /// Underlying serialisation failure.
+        source: serde_json::Error,
+    },
+
+    /// A pi model id was blank. pi would reject the planned `models.json` and
+    /// start with none of it.
+    #[snafu(display("pi model id must not be empty: {model:?}"))]
+    InvalidPiModel {
+        /// The offending value.
+        model: String,
+    },
+
+    /// A file asked to be carried into a planned pi agent directory that is not
+    /// one of [`pi::PI_CARRIED_FILES`]. The list is closed so a credential or an
+    /// endpoint-bearing config cannot ride along by name.
+    #[snafu(display("{name:?} is not a file a pi launch carries"))]
+    UncarriedPiFile {
+        /// The refused name.
+        name: String,
     },
 
     /// A hermes `config.yaml` document could not be serialised.

@@ -114,6 +114,22 @@ const DEFAULT_REMEDY =
 // anywhere else — not logged, not surfaced in the UI.
 const GATEWAY_NONCE_HEADER = "x-tapes-gateway-nonce";
 
+// The opt-out from refusing uncaptured requests, read at request time. While
+// this extension routes a session through a capture proxy, a model whose
+// requests would go anywhere else — a provider the proxy does not front, a
+// `models.json` provider with its own endpoint — is refused rather than sent
+// uncaptured. Exactly `1` restores the old behaviour for this process: those
+// requests go to their own endpoint, with a warning. Any other value, or none,
+// keeps the refusal; a typo must not quietly turn capture off.
+const ALLOW_UNCAPTURED_ENV = "TAPES_ALLOW_UNCAPTURED";
+
+// The envelope's byte budget, mirroring tapes-capture: the whole `x-tapes-*`
+// set within 8 KiB of name and value bytes. Optional fields are given up in
+// this order when a value (in practice, a very long working directory) would
+// push past it; the harness id and session id always stay.
+const X_TAPES_TOTAL_BUDGET = 8 * 1024;
+const OPTIONAL_DROP_ORDER = ["X-Tapes-Cwd", "X-Tapes-Harness-Version"] as const;
+
 function normalizeBaseUrl(url: string): string {
   const trimmed = url.replace(/\/+$/, "");
   return trimmed.startsWith("http://") || trimmed.startsWith("https://") ? trimmed : `http://${trimmed}`;
@@ -122,6 +138,92 @@ function normalizeBaseUrl(url: string): string {
 function isSchemaProvider(provider: string): provider is (typeof SCHEMA_PROVIDERS)[number] {
   return (SCHEMA_PROVIDERS as readonly string[]).includes(provider);
 }
+
+// A header value usable verbatim: visible ASCII only. Anything else is dropped
+// rather than sent — absent means no evidence, and a control byte in a header
+// would be a smuggling vector.
+function headerSafe(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && /^[\x21-\x7e]+$/.test(trimmed) ? trimmed : undefined;
+}
+
+// The working directory in the envelope's encoding: UTF-8, with every byte
+// outside visible ASCII — and `%`, `"` and `\` — percent-encoded, upper-case
+// hex. The same escape set as the Rust producer and the hermes plugin, so one
+// directory is one header value whichever producer stamped it.
+export function encodeCwd(cwd: string): string {
+  let out = "";
+  for (const byte of new TextEncoder().encode(cwd)) {
+    const safe = byte >= 0x21 && byte <= 0x7e && byte !== 0x25 && byte !== 0x22 && byte !== 0x5c;
+    out += safe ? String.fromCharCode(byte) : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+  }
+  return out;
+}
+
+// Whether `candidate` is an address on the capture proxy at `gatewayUrl`. A
+// boundary comparison on parsed URLs, not a string prefix: a prefix test would
+// accept `https://gw.example.attacker.invalid` for a proxy at
+// `https://gw.example`. Scheme, host and port must match, and the path must be
+// the proxy's mount or lie beneath it on a separator.
+export function isGatewayAddress(candidate: unknown, gatewayUrl: string): boolean {
+  if (typeof candidate !== "string" || candidate.trim().length === 0) return false;
+  let url: URL;
+  let gateway: URL;
+  try {
+    url = new URL(candidate.trim());
+    gateway = new URL(gatewayUrl);
+  } catch {
+    return false;
+  }
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.hostname.length === 0) return false;
+  // `URL` already folds a scheme's default port to "", so equal `host`s are
+  // equal host-and-port pairs.
+  if (url.protocol !== gateway.protocol || url.host !== gateway.host) return false;
+  const mount = gateway.pathname.replace(/\/+$/, "");
+  const path = url.pathname.replace(/\/+$/, "");
+  return path === mount || path.startsWith(`${mount}/`);
+}
+
+// The one line a refused request reports. It names the provider and the host
+// it would have reached — never a path, query, or credential.
+function refusalMessage(provider: string, baseUrl: unknown): string {
+  let host = "no endpoint";
+  try {
+    if (typeof baseUrl === "string") host = new URL(baseUrl).host || host;
+  } catch {
+    // An unparseable endpoint is still refused; it just has no host to name.
+  }
+  return `This model provider bypasses capture (${provider}, ${host}). ` +
+    `Use a model routed through the tapes gateway, or set ${ALLOW_UNCAPTURED_ENV}=1 to allow uncaptured calls.`;
+}
+
+// What `before_provider_request` returns in place of a request that must not
+// be sent. pi offers extensions no way to cancel a provider request — an error
+// thrown from a handler is reported and the request goes out regardless — but
+// it does use a replacement payload, and building the request reads fields
+// from it. Every read but the thenable probe pi makes while awaiting the
+// handler throws `error`, so the request fails before anything is sent, with
+// this message as the turn's error.
+function refusingPayload(error: Error): object {
+  const refuse = (): never => {
+    throw error;
+  };
+  return new Proxy(
+    {},
+    {
+      get: (_target, key) => (key === "then" ? undefined : refuse()),
+      has: refuse,
+      ownKeys: refuse,
+      getOwnPropertyDescriptor: refuse,
+      set: refuse,
+      deleteProperty: refuse,
+      defineProperty: refuse,
+    },
+  );
+}
+
+type SelectedModel = { provider?: unknown; baseUrl?: unknown } | undefined;
 
 export default function (pi: ExtensionAPI) {
   // Take the launch secret out of the environment before anything else runs.
@@ -180,6 +282,18 @@ export default function (pi: ExtensionAPI) {
   const providerBaseUrl = (provider: string): string =>
     providerRoutes ? `${baseUrl}${PROVIDER_ROUTE_PREFIX}/${provider}` : baseUrl;
 
+  // pi's version, for the envelope. pi serves its own package to extensions as
+  // a module; asking for it at runtime keeps this file free of a static import
+  // that only pi can resolve. Started now, awaited before the first envelope:
+  // nothing a version is needed for happens before `session_start`.
+  let harnessVersion: string | undefined;
+  const versionReady: Promise<void> = import("@earendil-works/pi-coding-agent").then(
+    (module) => {
+      harnessVersion = headerSafe((module as { VERSION?: unknown }).VERSION);
+    },
+    () => undefined,
+  );
+
   // Presentation, resolved once per session from the launch's environment.
   // Empty is treated as unset for the two that have meaningful defaults; an
   // explicitly empty suffix is a real value and stays empty.
@@ -187,19 +301,30 @@ export default function (pi: ExtensionAPI) {
   const statusSuffix = process.env[GATEWAY_LABEL_SUFFIX_ENV] ?? "";
   const schemaRemedy = process.env[GATEWAY_REMEDY_ENV] || DEFAULT_REMEDY;
 
-  const registerCapturedProviders = (harnessSessionId?: string) => {
-    // The envelope pi stamps on its own behalf. pi is the self-attributing
-    // harness: the capture client cannot recover this session's identity from
-    // a peer-PID lookup, so what these headers carry is the only attribution
-    // the turn will ever have. The nonce echo rides alongside it — without
-    // the echo the proxy has no way to distinguish this extension from a
-    // subprocess of the harness forging an envelope.
-    const envelope = harnessSessionId
-      ? {
-          "X-Tapes-Harness-Id": "pi",
-          "X-Tapes-Harness-Session-Id": harnessSessionId,
-        }
-      : undefined;
+  // The envelope pi stamps on its own behalf, within the shared byte budget.
+  // pi is the self-attributing harness: the capture client cannot recover this
+  // session's identity from a peer-PID lookup, so what these headers carry is
+  // the only attribution the turn will ever have.
+  const envelopeFor = (harnessSessionId: string, cwd: string | undefined): Record<string, string> => {
+    const envelope: Record<string, string> = {
+      "X-Tapes-Harness-Id": "pi",
+      "X-Tapes-Harness-Session-Id": harnessSessionId,
+    };
+    if (harnessVersion) envelope["X-Tapes-Harness-Version"] = harnessVersion;
+    if (cwd) envelope["X-Tapes-Cwd"] = encodeCwd(cwd);
+    const size = () => Object.entries(envelope).reduce((sum, [name, value]) => sum + name.length + value.length, 0);
+    for (const optional of OPTIONAL_DROP_ORDER) {
+      if (size() <= X_TAPES_TOTAL_BUDGET) break;
+      delete envelope[optional];
+    }
+    return envelope;
+  };
+
+  const registerCapturedProviders = (harnessSessionId?: string, cwd?: string) => {
+    // The nonce echo rides alongside the envelope — without the echo the proxy
+    // has no way to distinguish this extension from a subprocess of the
+    // harness forging an envelope.
+    const envelope = harnessSessionId ? envelopeFor(harnessSessionId, cwd) : undefined;
     const headers = {
       ...(nonce ? { [GATEWAY_NONCE_HEADER]: nonce } : undefined),
       ...envelope,
@@ -229,22 +354,54 @@ export default function (pi: ExtensionAPI) {
   const activeSchema = process.env[GATEWAY_SCHEMA_ENV] ?? "unselected";
   const schemaProvider = isSchemaProvider(activeSchema) ? activeSchema : undefined;
 
-  pi.on("session_start", (_event, ctx) => {
-    registerCapturedProviders(ctx.sessionManager.getSessionId());
+  // Whether a model's requests reach the capture proxy. Decided by where they
+  // go rather than by provider name: a provider this file registered points at
+  // the proxy, and so does a model a launcher declared for it (in a session
+  // `models.json`, under a registered provider) — while a provider nobody
+  // redirected, or a model carrying its own endpoint, does not.
+  const routed = (model: SelectedModel): boolean => !!model && isGatewayAddress(model.baseUrl, baseUrl);
+  const allowUncaptured = (): boolean => process.env[ALLOW_UNCAPTURED_ENV] === "1";
+  const providerOf = (model: SelectedModel): string =>
+    typeof model?.provider === "string" ? model.provider : "unknown";
+
+  pi.on("session_start", async (_event, ctx) => {
+    await versionReady;
+    registerCapturedProviders(ctx.sessionManager.getSessionId(), ctx.cwd || process.cwd());
     ctx.ui.setStatus(statusLabel, `${statusLabel}:${activeSchema}${statusSuffix}`);
+    if (ctx.model && !routed(ctx.model)) {
+      ctx.ui.notify(refusalMessage(providerOf(ctx.model), ctx.model.baseUrl), allowUncaptured() ? "warning" : "error");
+    }
+  });
+
+  // The refusal itself. pi asks this hook for each provider request's payload;
+  // a request on a model that would bypass the proxy gets a payload that fails
+  // the request before it is sent. Judged against the session's current model,
+  // which is the model pi's own turns use.
+  pi.on("before_provider_request", (_event, ctx) => {
+    const model: SelectedModel = ctx.model;
+    if (!model || routed(model) || allowUncaptured()) {
+      return undefined;
+    }
+    return refusingPayload(new Error(refusalMessage(providerOf(model), model.baseUrl)));
   });
 
   pi.on("model_select", (event, ctx) => {
-    const selectedProvider = event.model.provider;
+    const selected: SelectedModel = event.model;
+    const selectedProvider = providerOf(selected);
 
-    if (provider) {
-      if (selectedProvider !== provider.name) {
-        ctx.ui.notify(`${selectedProvider} uses pi's normal endpoint; only ${provider.name} uses this gateway.`, "warning");
+    if (!routed(selected)) {
+      if (allowUncaptured()) {
+        ctx.ui.notify(
+          `${selectedProvider} will use its own endpoint and will not be captured (${ALLOW_UNCAPTURED_ENV}=1).`,
+          "warning",
+        );
+      } else {
+        ctx.ui.notify(refusalMessage(selectedProvider, selected?.baseUrl), "error");
       }
       return;
     }
 
-    if (selectedProvider === "openai-codex") {
+    if (provider || selectedProvider === "openai-codex") {
       return;
     }
 
@@ -256,15 +413,6 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(
         `The capture proxy is routing the ${schemaProvider} schema; the selected model's provider is ` +
           `${selectedProvider}. ${schemaRemedy}`,
-        "warning",
-      );
-      return;
-    }
-
-    if (!(CAPTURED_PROVIDERS as readonly string[]).includes(selectedProvider)) {
-      ctx.ui.notify(
-        `Capture covers pi's Anthropic, OpenAI, and OpenAI Codex providers; ${selectedProvider} will use ` +
-          "pi's normal endpoint and will not be captured.",
         "warning",
       );
     }
