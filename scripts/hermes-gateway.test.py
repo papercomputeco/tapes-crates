@@ -19,7 +19,7 @@ import unittest
 
 ASSET = pathlib.Path(__file__).resolve().parent.parent / "crates/tapes-harnesses/assets/hermes/__init__.py"
 STATE_KEY = "_tapes_gateway_hermes_state"
-KEYS = ("TAPES_GATEWAY_URL", "TAPES_GATEWAY_NONCE")
+KEYS = ("TAPES_GATEWAY_URL", "TAPES_GATEWAY_NONCE", "TAPES_ALLOW_UNCAPTURED")
 GATEWAY = "http://127.0.0.1:1234/launches/l1/openai/v1"
 
 
@@ -131,10 +131,10 @@ class PluginCase(unittest.TestCase):
 
 
 class HermesGatewayPlugin(PluginCase):
-    def test_registers_one_hook_and_one_request_middleware(self):
+    def test_registers_one_hook_and_request_and_execution_middleware(self):
         _, ctx = self.launch()
         self.assertEqual(list(ctx.hooks), ["subagent_start"])
-        self.assertEqual(list(ctx.middleware), ["llm_request"])
+        self.assertEqual(list(ctx.middleware), ["llm_request", "llm_execution"])
 
     def test_stamps_the_envelope_and_the_nonce_and_keeps_existing_headers(self):
         _, ctx = self.launch()
@@ -224,6 +224,120 @@ class HermesGatewayPlugin(PluginCase):
         self.assertEqual(headers["x-tapes-harness-id"], "hermes")
 
 
+class Refusal(PluginCase):
+    """While capture is active, a main-loop call bound anywhere but the proxy
+    fails before it is sent, through execution middleware."""
+
+    OFF_GATEWAY = [
+        "https://api.openai.com/v1",
+        "http://127.0.0.1:1235/launches/l1/openai/v1",  # other port
+        "http://127.0.0.1.attacker.invalid:1234/launches/l1/openai/v1",  # gateway host as a prefix
+        "http://evil127.0.0.1:1234/launches/l1/openai/v1",  # gateway host as a suffix
+        "http://127.0.0.1:1234/launches/l1/openai/v1-elsewhere",  # path lookalike
+        "http://127.0.0.1:1234/launches/l2/openai/v1",  # other path
+        "https://127.0.0.1:1234/launches/l1/openai/v1",  # other scheme
+        "",
+        None,
+    ]
+
+    def execute(self, ctx, base_url=GATEWAY):
+        """Run one provider call through the plugin's execution middleware the
+        way hermes's chain does: ``next_call`` runs the provider call on the
+        payload it is given (or the original), and an error raised downstream of
+        it reaches the caller."""
+        (middleware,) = ctx.middleware["llm_execution"]
+        request = {"model": "m", "messages": []}
+        sent = []
+
+        def provider_call(kwargs):
+            sent.append(dict(**kwargs))
+            return "response"
+
+        def next_call(payload=None):
+            return provider_call(request if payload is None else payload)
+
+        result = middleware(request=request, next_call=next_call, base_url=base_url, session_id="s")
+        return result, sent
+
+    def test_an_off_gateway_main_call_is_refused_with_one_plain_line(self):
+        plugin, ctx = self.launch()
+        for base_url in self.OFF_GATEWAY:
+            with self.assertRaises(plugin.CaptureRefused, msg=base_url) as raised:
+                self.execute(ctx, base_url=base_url)
+            message = str(raised.exception)
+            self.assertNotIn("\n", message)
+            self.assertTrue(message.startswith("This model provider bypasses capture ("), message)
+            self.assertIn("TAPES_ALLOW_UNCAPTURED=1", message)
+
+    def test_the_refusal_names_the_host_and_nothing_else(self):
+        plugin, _ = self.launch()
+        message = plugin.refusal_message("https://user:sk-secret@llm.example:8443/v1/chat?key=sk-other")
+        self.assertIn("(llm.example:8443)", message)
+        for leaked in ("sk-secret", "sk-other", "user", "/v1", "?key"):
+            self.assertNotIn(leaked, message)
+        self.assertIn("(no endpoint)", plugin.refusal_message(None))
+
+    def test_nothing_is_sent_for_a_refused_call(self):
+        plugin, ctx = self.launch()
+        (middleware,) = ctx.middleware["llm_execution"]
+        sent = []
+        def next_call(payload=None):
+            # Any way a provider call could read its kwargs fails.
+            for read in (lambda: dict(**payload), lambda: payload.get("model"), lambda: list(payload),
+                         lambda: payload["model"], lambda: dict(payload), lambda: __import__("copy").deepcopy(payload)):
+                with self.assertRaises(plugin.CaptureRefused):
+                    read()
+            sent.append(payload)
+            raise plugin.CaptureRefused("downstream")
+        with self.assertRaises(plugin.CaptureRefused):
+            middleware(request={"model": "m"}, next_call=next_call, base_url="https://api.openai.com/v1")
+        self.assertEqual(len(sent), 1)
+
+    def test_an_on_gateway_call_is_unaffected(self):
+        _, ctx = self.launch()
+        for base_url in (GATEWAY, GATEWAY + "/", GATEWAY + "/sub"):
+            result, sent = self.execute(ctx, base_url=base_url)
+            self.assertEqual(result, "response")
+            self.assertEqual(sent, [{"model": "m", "messages": []}])
+
+    def test_opting_out_passes_calls_through_untouched_and_is_read_at_call_time(self):
+        plugin, ctx = self.launch()
+        os.environ["TAPES_ALLOW_UNCAPTURED"] = "1"
+        result, sent = self.execute(ctx, base_url="https://api.openai.com/v1")
+        self.assertEqual((result, sent), ("response", [{"model": "m", "messages": []}]))
+        for value in ("true", "yes", "0", ""):
+            os.environ["TAPES_ALLOW_UNCAPTURED"] = value
+            with self.assertRaises(plugin.CaptureRefused, msg=value):
+                self.execute(ctx, base_url="https://api.openai.com/v1")
+
+    def test_inert_without_a_gateway(self):
+        plugin = load()
+        ctx = FakeContext()
+        plugin.register(ctx)
+        result, sent = self.execute(ctx, base_url="https://api.openai.com/v1")
+        self.assertEqual(result, "response")
+        self.assertEqual(len(sent), 1)
+        aux = install_fake_aux()
+        sys.modules.pop(STATE_KEY, None)
+        plugin = load()
+        plugin.register(FakeContext())
+        self.assertNotIn("extra_headers", aux.call_llm(task="title_generation", base_url="https://openrouter.ai/api/v1"))
+
+    def test_a_hermes_without_execution_middleware_still_loads(self):
+        class OldContext(FakeContext):
+            def register_middleware(self, kind, callback):
+                if kind != "llm_request":
+                    raise ValueError(f"unknown middleware kind {kind}")
+                super().register_middleware(kind, callback)
+
+        os.environ["TAPES_GATEWAY_URL"] = GATEWAY
+        plugin = load()
+        ctx = OldContext()
+        plugin.register(ctx)
+        self.assertEqual(list(ctx.middleware), ["llm_request"])
+        self.assertIsNotNone(self.request(ctx))
+
+
 class AuxiliaryCalls(PluginCase):
     """Auxiliary calls skip request middleware; the plugin stamps them through
     hermes's shared kwargs builder instead."""
@@ -284,10 +398,22 @@ class AuxiliaryCalls(PluginCase):
         self.assertEqual(headers["x-tapes-parent-harness-session-id"], "sess-main")
         self.assertEqual(headers["x-tapes-parent-harness-id"], "hermes")
 
-    def test_an_off_gateway_aux_call_is_untouched(self):
-        _, _, aux = self.launch_with_aux()
+    def test_an_off_gateway_aux_call_is_refused(self):
+        plugin, _, aux = self.launch_with_aux()
         for base_url in ["https://openrouter.ai/api/v1", "http://127.0.0.1:1235/v1", None]:
-            self.assertNotIn("extra_headers", aux.call_llm(task="title_generation", base_url=base_url))
+            with self.assertRaises(plugin.CaptureRefused, msg=base_url) as raised:
+                aux.call_llm(task="title_generation", base_url=base_url)
+            self.assertIn("bypasses capture", str(raised.exception))
+        # The retry path and async calls go through the same builder.
+        with self.assertRaises(plugin.CaptureRefused):
+            aux.call_llm(task="compression", base_url="https://openrouter.ai/api/v1", retry=True)
+        with self.assertRaises(plugin.CaptureRefused):
+            asyncio.run(aux.async_call_llm(task="vision", base_url="https://openrouter.ai/api/v1"))
+
+    def test_an_off_gateway_aux_call_passes_untouched_when_opted_out(self):
+        _, _, aux = self.launch_with_aux()
+        os.environ["TAPES_ALLOW_UNCAPTURED"] = "1"
+        self.assertNotIn("extra_headers", aux.call_llm(task="title_generation", base_url="https://openrouter.ai/api/v1"))
 
     def test_no_aux_stamp_before_any_session_or_without_a_gateway(self):
         aux = install_fake_aux()

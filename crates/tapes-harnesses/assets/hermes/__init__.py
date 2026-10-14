@@ -18,6 +18,13 @@ to the kwargs it returns. The session id comes from the session the request
 middleware last saw in this execution context, falling back to the last one
 seen anywhere in the process for a thread that did not inherit the context.
 
+While capture is active it also **refuses** an outbound model call that would
+leave it: a main-loop request (through ``llm_execution`` middleware) or an
+auxiliary call (through the same kwargs builder) whose base URL is not on the
+capture proxy fails with one line naming the host, instead of going out
+uncaptured. ``TAPES_ALLOW_UNCAPTURED=1``, read at call time, lets such calls
+through untouched.
+
 It does **not** redirect. hermes reads its endpoint from ``config.yaml``
 (``model.provider: custom`` plus ``model.base_url``), and middleware can
 rewrite a request's kwargs but not the client's base URL, so pointing hermes
@@ -52,6 +59,11 @@ from typing import Any, Dict, Optional
 # its Rust constant.
 GATEWAY_URL_ENV = "TAPES_GATEWAY_URL"
 GATEWAY_NONCE_ENV = "TAPES_GATEWAY_NONCE"
+# The opt-out from refusing uncaptured calls, read at call time. Exactly "1"
+# lets a call bound somewhere other than the proxy go out untouched (logged
+# once); anything else keeps the refusal, so a typo cannot turn capture off.
+ALLOW_UNCAPTURED_ENV = "TAPES_ALLOW_UNCAPTURED"
+ALLOW_UNCAPTURED_ON = "1"
 
 # The header the nonce is echoed back in. A per-launch secret: the proxy's
 # peer-PID ancestry check cannot tell this process's requests apart from those
@@ -129,6 +141,8 @@ if _state is None:
     _state.last_session = None
     _state.aux_original = None
     _state.aux_skip_logged = False
+    _state.refusal_skip_logged = False
+    _state.uncaptured_logged = False
     sys.modules[_STATE_KEY] = _state
 
 # A re-executed module inherits the state but must still never leave the secret
@@ -336,6 +350,113 @@ def llm_request_middleware(
     return {"request": request, "source": "tapes-gateway", "reason": "capture envelope"}
 
 
+# --- refusing calls that would leave capture ----------------------------------
+#
+# Why `llm_execution` and not `llm_request`: hermes isolates request middleware —
+# `invoke_middleware` catches whatever a callback raises, logs it, and carries on
+# with the request unchanged — so raising there refuses nothing. Returning a
+# poisoned replacement request does not work either: the result is deep-copied
+# (falling back to `dict(...)`) inside `apply_llm_request_middleware`, and an
+# error there is caught by the agent loop, which then sends the *original*
+# kwargs. Execution middleware is isolated the same way for its own exceptions
+# (the chain logs and calls the next stage), but an exception raised *downstream*
+# of `next_call` is re-raised to the agent loop as the provider call's error. So
+# the refusal is handed downstream: `next_call` gets a request whose every read
+# raises `CaptureRefused`, and the provider call fails on its first look at its
+# kwargs — before a client is built or a byte is sent — with the refusal as its
+# error. The agent loop treats it as a failed API call: it may retry, and every
+# retry is refused the same way, then reports it.
+#
+# Auxiliary calls need none of this: the plugin's own wrapper around
+# `_build_call_kwargs` sits on the call path, so it raises directly.
+
+
+class CaptureRefused(RuntimeError):
+    """A model call refused because it would bypass the capture proxy."""
+
+
+def _allow_uncaptured() -> bool:
+    return os.environ.get(ALLOW_UNCAPTURED_ENV, "") == ALLOW_UNCAPTURED_ON
+
+
+def _display_host(base_url: Any) -> str:
+    """The host (and port) a call was bound for — never userinfo, path or query."""
+    if not isinstance(base_url, str) or not base_url.strip():
+        return "no endpoint"
+    try:
+        url = urllib.parse.urlsplit(base_url.strip())
+        host = url.hostname
+        port = url.port
+    except ValueError:
+        return "unparseable endpoint"
+    if not host:
+        return "unparseable endpoint"
+    host = _header_safe(host) or "unparseable endpoint"
+    return f"{host}:{port}" if port else host
+
+
+def refusal_message(base_url: Any) -> str:
+    return (
+        f"This model provider bypasses capture ({_display_host(base_url)}). "
+        "Use a model routed through the tapes gateway, "
+        f"or set {ALLOW_UNCAPTURED_ENV}=1 to allow uncaptured calls."
+    )
+
+
+def refuses(base_url: Any) -> bool:
+    """Whether a call bound for ``base_url`` must be refused: capture is active,
+    the address is not on the proxy, and the user has not opted out. An opted-out
+    call is let through, and said so once."""
+    gateway = _gateway_url()
+    if gateway is None or is_gateway_address(base_url, gateway):
+        return False
+    if _allow_uncaptured():
+        if not _state.uncaptured_logged:
+            _state.uncaptured_logged = True
+            _logger.warning(
+                "tapes-gateway: %s=1; a model call to %s is not captured",
+                ALLOW_UNCAPTURED_ENV,
+                _display_host(base_url),
+            )
+        return False
+    return True
+
+
+class _RefusedRequest(dict):
+    """An empty request mapping whose every read raises the refusal.
+
+    Handed downstream in place of a refused call's kwargs: the first thing the
+    provider call does with them — unpack, read, copy, iterate — fails before
+    any client is built. It is empty underneath, so even a reader that bypassed
+    every override would build a call with no model and no messages."""
+
+    def __init__(self, error: CaptureRefused) -> None:
+        super().__init__()
+        self._error = error
+
+    def _refuse(self, *_: Any, **__: Any) -> Any:
+        raise self._error
+
+    __getitem__ = __iter__ = __len__ = __contains__ = _refuse
+    get = keys = items = values = copy = pop = setdefault = update = _refuse
+    __copy__ = __deepcopy__ = __reduce__ = __reduce_ex__ = _refuse
+
+    def __bool__(self) -> bool:
+        return True
+
+
+def llm_execution_middleware(
+    request: Any = None, next_call: Any = None, base_url: Any = None, **_: Any
+) -> Any:
+    """Run the provider call — or, for a call that would bypass the capture
+    proxy, fail it before it is sent (see the notes above)."""
+    if not callable(next_call):
+        return None
+    if refuses(base_url):
+        return next_call(_RefusedRequest(CaptureRefused(refusal_message(base_url))))
+    return next_call()
+
+
 # --- auxiliary calls ---------------------------------------------------------
 #
 # Why `_build_call_kwargs` and not `call_llm`: the callers bind `call_llm` at
@@ -393,10 +514,19 @@ def auxiliary_headers(base_url: Any, task: str) -> Dict[str, str]:
 
 def _wrap_build_call_kwargs(original: Any, signature: inspect.Signature) -> Any:
     def build_call_kwargs(*args: Any, **kwargs: Any) -> Any:
+        try:
+            base_url = signature.bind_partial(*args, **kwargs).arguments.get("base_url")
+        except TypeError:
+            # hermes raises the same binding error itself, below.
+            pass
+        else:
+            # The refusal is raised from the caller's own kwargs build, so the
+            # auxiliary call fails here and is never sent.
+            if refuses(base_url):
+                raise CaptureRefused(refusal_message(base_url))
         result = original(*args, **kwargs)
         try:
             if isinstance(result, dict):
-                base_url = signature.bind_partial(*args, **kwargs).arguments.get("base_url")
                 headers = auxiliary_headers(base_url, _aux_task_from_stack())
                 if headers:
                     result["extra_headers"] = _merge_headers(result.get("extra_headers"), headers)
@@ -456,4 +586,15 @@ def register(ctx: Any) -> None:
     """hermes plugin entry point."""
     ctx.register_hook("subagent_start", on_subagent_start)
     ctx.register_middleware("llm_request", llm_request_middleware)
+    try:
+        ctx.register_middleware("llm_execution", llm_execution_middleware)
+    except Exception as exc:
+        # A hermes without execution middleware still gets the envelope; it
+        # just cannot have its main-loop calls refused.
+        if not _state.refusal_skip_logged:
+            _state.refusal_skip_logged = True
+            _logger.warning(
+                "tapes-gateway: main-loop calls that bypass capture cannot be refused (%s)",
+                exc,
+            )
     _install_auxiliary_stamping()

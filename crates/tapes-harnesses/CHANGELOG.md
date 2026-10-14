@@ -43,6 +43,18 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
   uncaptured request. Selecting such a model reports the same line as an
   error. `TAPES_ALLOW_UNCAPTURED=1` restores pass-through with a warning.
   Without `TAPES_GATEWAY_URL` the extension stays inert.
+- While routed through a gateway, the hermes plugin refuses a main-loop or
+  auxiliary call whose base URL is not on the gateway, raising
+  `CaptureRefused` with a one-line message naming the host (never userinfo, a
+  path, or a query), instead of letting it go out uncaptured. Main-loop calls
+  are refused through newly registered `llm_execution` middleware, which hands
+  the provider call a request whose every read raises — hermes swallows
+  exceptions from request middleware, and from execution middleware that does
+  not call through. Auxiliary calls are refused from the wrapped
+  `_build_call_kwargs`. `TAPES_ALLOW_UNCAPTURED=1`, read at call time, passes
+  them through untouched and logs once; a hermes without execution middleware
+  logs once and keeps the envelope. Without `TAPES_GATEWAY_URL` the plugin
+  stays inert.
 
 ## [0.2.0] - 2026-10-13
 

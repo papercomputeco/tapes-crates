@@ -1120,6 +1120,26 @@ mod tests {
         );
     }
 
+    /// The refusal opt-out is the same contract the pi extension reads, and
+    /// the main-loop refusal rides execution middleware — request middleware
+    /// exceptions are swallowed by hermes, so a refusal registered there would
+    /// refuse nothing.
+    #[test]
+    fn the_hermes_plugin_reads_the_uncaptured_opt_out_and_refuses_in_execution_middleware() {
+        let contents = HERMES_GATEWAY_PLUGIN.contents();
+        assert!(contents.contains(&format!(
+            "ALLOW_UNCAPTURED_ENV = \"{ALLOW_UNCAPTURED_ENV}\"\n"
+        )));
+        assert!(contents.contains(&format!(
+            "ALLOW_UNCAPTURED_ON = \"{ALLOW_UNCAPTURED_ON}\"\n"
+        )));
+        assert!(
+            contents
+                .contains("ctx.register_middleware(\"llm_execution\", llm_execution_middleware)"),
+            "the main-loop refusal is not registered as execution middleware"
+        );
+    }
+
     /// Read once, then popped from the environment — before anything else in
     /// the module can run — so a terminal tool's subprocess never inherits it.
     #[test]

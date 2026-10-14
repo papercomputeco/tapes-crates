@@ -133,7 +133,11 @@ middleware; the plugin stamps them through hermes's shared auxiliary kwargs
 builder with `x-tapes-harness-metadata` `{"aux_task": …}`, and the planned
 config's `model.default_headers` carries a static `x-tapes-harness-id: hermes`
 as a floor. The remaining gap: an auxiliary call in a process running several
-concurrent sessions may attach to the most recent one.
+concurrent sessions may attach to the most recent one. While captured, the
+plugin refuses any main-loop or auxiliary call whose base URL is not on the
+proxy, with a one-line error naming the host; `TAPES_ALLOW_UNCAPTURED=1` lets
+such calls through untouched. The main-loop refusal rides `llm_execution`
+middleware, because hermes swallows exceptions from request middleware.
 
 pi is captured by its extension alone: it redirects pi's built-in
 `anthropic`, `openai` and `openai-codex` providers and stamps the envelope,
@@ -185,7 +189,7 @@ live in `tapes-capture`, the rest live here:
 | `TAPES_GATEWAY_LABEL` | launcher | The product word shown in a harness's status entry. |
 | `TAPES_GATEWAY_LABEL_SUFFIX` | launcher | Appended to the status label after the active schema. |
 | `TAPES_GATEWAY_REMEDY` | launcher | The sentence appended to a schema-mismatch warning — the diagnosis is the asset's, the remedy is the launcher's, because only the launcher knows which command switches its proxy. |
-| `TAPES_ALLOW_UNCAPTURED` | user | Exactly `1` lets a captured session send a request that would bypass the proxy to its own endpoint, uncaptured, with a warning. Unset (or any other value), such a request is refused with a one-line error. Read at request time. |
+| `TAPES_ALLOW_UNCAPTURED` | user | Exactly `1` lets a captured pi or hermes session send a request that would bypass the proxy to its own endpoint, uncaptured, with a warning. Unset (or any other value), such a request is refused with a one-line error. Read at request time. |
 
 Two more variables travel beside these, and unlike the nonce an artifact must
 leave them in place: `TAPES_LAUNCH_ID` and `TAPES_LAUNCH_HARNESS_ID`, the

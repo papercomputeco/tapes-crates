@@ -53,9 +53,11 @@
 //!
 //! Only traffic through the `custom` provider is redirected. The planned
 //! config declares no other provider, no fallback chain, and no per-task
-//! auxiliary endpoint, so nothing in it routes around the proxy, and a user
-//! who switches provider inside the session leaves capture — worth a
-//! consumer's warning.
+//! auxiliary endpoint, so nothing in it routes around the proxy. A user who
+//! switches provider inside the session does not leave capture silently: the
+//! plugin refuses any main-loop or auxiliary call whose base URL is not on the
+//! proxy, with one line naming the host, unless
+//! [`crate::plugin::ALLOW_UNCAPTURED_ENV`] is `1`.
 //!
 //! hermes's auxiliary calls (title generation, compression, vision,
 //! web_extract, session_search, skills_hub, mcp) skip request middleware; the
