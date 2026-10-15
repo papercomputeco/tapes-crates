@@ -53,8 +53,8 @@ use std::path::{Path, PathBuf};
 use snafu::{ResultExt as _, Snafu};
 use tapes_harnesses::harness::{self, Harness};
 use tapes_harnesses::launch::{
-    ClaudeRecipe, CodexAuth, CodexRecipe, LaunchRecipe, OpenCodeProvider, OpenCodeRecipe,
-    ProxyEndpoint,
+    ClaudeRecipe, CodexAuth, CodexRecipe, HermesRecipe, LaunchRecipe, OpenCodeProvider,
+    OpenCodeRecipe, ProxyEndpoint,
 };
 
 use crate::upstream;
@@ -153,6 +153,11 @@ pub enum Pointing {
         /// The opencode provider name to route.
         provider: &'static str,
     },
+    /// Through [`HermesRecipe`]: a relocated `HERMES_HOME` whose `config.yaml`
+    /// declares a `custom` provider, plus the capture plugin it enables. The
+    /// endpoint carries `/v1` because hermes's OpenAI client appends only
+    /// `/chat/completions`.
+    Hermes,
     /// Through the capture-gateway environment contract, read by an extension
     /// running inside the harness.
     GatewayEnv,
@@ -344,6 +349,30 @@ pub const PI_ONE_SHOT: OneShotRecipe = OneShotRecipe {
     tolerated_exit: None,
 };
 
+/// The model name a hermes cell configures. The mock upstream answers any
+/// model; naming one keeps hermes from probing `/v1/models` for a default.
+pub const HERMES_SCRIPTED_MODEL: &str = "mock-model";
+
+/// hermes-agent: a planned home, plus one-shot `-z`.
+///
+/// `-z` prints only the final response and auto-bypasses approvals, which is
+/// exactly a matrix turn. hermes is a PyPI package and not in the flake's
+/// `matrix` shell, so this cell skips in CI and runs wherever `hermes` is on
+/// `PATH`.
+pub const HERMES_ONE_SHOT: OneShotRecipe = OneShotRecipe {
+    harness_id: harness::HERMES.id(),
+    binary: "hermes",
+    version_args: &["--version"],
+    argv: &["-z", PROMPT_SLOT],
+    surface: Surface::OpenAiChatCompletions,
+    pointing: Pointing::Hermes,
+    // The recipe relocates HERMES_HOME itself; HOME covers the rest.
+    sandbox_env: &[],
+    extra_env: &[],
+    unsupported: None,
+    tolerated_exit: None,
+};
+
 /// Cursor CLI is captured from its stdout, so this matrix skips it. The launch
 /// fields are placeholders [`OneShotRecipe::plan`] never reads.
 pub const CURSOR_ONE_SHOT: OneShotRecipe = OneShotRecipe {
@@ -368,6 +397,7 @@ pub const RECIPES: &[OneShotRecipe] = &[
     CODEX_APP_ONE_SHOT,
     OPENCODE_ONE_SHOT,
     PI_ONE_SHOT,
+    HERMES_ONE_SHOT,
     CURSOR_ONE_SHOT,
 ];
 
@@ -528,6 +558,20 @@ impl OneShotRecipe {
                 .context(recipe_error::LaunchSnafu {
                     harness_id: self.harness_id,
                 })?;
+                self.absorb(&plan, &mut args, &mut env)?;
+            }
+            Pointing::Hermes => {
+                let home = ctx.sandbox.join("hermes-home");
+                self.create_dir(&home)?;
+                let endpoint =
+                    ProxyEndpoint::new(&format!("{}/v1", ctx.endpoint.trim_end_matches('/')));
+                let plan = HermesRecipe::new(&home, endpoint)
+                    .with_model(HERMES_SCRIPTED_MODEL)
+                    .with_api_key(SCRIPTED_API_KEY)
+                    .plan()
+                    .context(recipe_error::LaunchSnafu {
+                        harness_id: self.harness_id,
+                    })?;
                 self.absorb(&plan, &mut args, &mut env)?;
             }
             Pointing::GatewayEnv => {
@@ -879,6 +923,32 @@ mod tests {
         assert!(
             Path::new(extension).is_file(),
             "the extension was not written to {extension}",
+        );
+    }
+
+    /// hermes's plan writes its config and plugin into a sandboxed home and
+    /// points the `custom` provider at the endpoint's `/v1`.
+    #[test]
+    fn the_hermes_plan_materialises_its_home() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let plan = HERMES_ONE_SHOT.plan(&context(sandbox.path())).unwrap();
+        let home = sandbox.path().join("hermes-home");
+        assert_eq!(
+            plan.env.get("HERMES_HOME").map(String::as_str),
+            Some(home.display().to_string().as_str()),
+        );
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("config.yaml")).unwrap())
+                .unwrap();
+        assert_eq!(config["model"]["base_url"], "http://127.0.0.1:9/v1");
+        assert!(home.join("plugins/tapes-gateway/__init__.py").is_file());
+        assert!(home.join("plugins/tapes-gateway/plugin.yaml").is_file());
+        assert_eq!(plan.args, vec!["-z".to_owned(), SCRIPTED_PROMPT.to_owned()]);
+        assert_eq!(
+            plan.env
+                .get(tapes_capture::gateway::GATEWAY_NONCE_ENV)
+                .map(String::as_str),
+            Some("matrix-nonce"),
         );
     }
 

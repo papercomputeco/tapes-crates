@@ -52,6 +52,16 @@
       }
     },
     {
+      "name": "hermes",
+      "version": null,
+      "upstream_version": null,
+      "discovery": {
+        "kind": "unwatched",
+        "source": null,
+        "note": "hermes-agent ships to PyPI (`hermes-agent`; 0.19.0 when this entry was added), and the record's discovery kinds cover only npm, so it cannot be watched automatically yet — adding a `pypi` kind means a variant in `record.rs` and a branch in `scripts/harness-latest-versions.sh`. It is also not in the flake's `matrix` shell, so its cells skip in CI and no passing run has recorded a version; both fields stay null until one does. Version review is manual until then."
+      }
+    },
+    {
       "name": "cursor",
       "version": null,
       "upstream_version": null,

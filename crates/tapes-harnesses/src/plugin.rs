@@ -71,7 +71,7 @@
 //! second copy is gone, and cost a launcher that can set a variable its
 //! installed asset does not read.
 //!
-//! ## All seven variables
+//! ## The variables
 //!
 //! The contract is split across two crates, and this is the only place that
 //! lists it whole — a consumer wiring up a launch needs every row. The split is
@@ -89,8 +89,10 @@
 //! | `TAPES_GATEWAY_LABEL` | [`pi::GATEWAY_LABEL_ENV`] | launcher | The product word shown in pi's status entry. |
 //! | `TAPES_GATEWAY_LABEL_SUFFIX` | [`pi::GATEWAY_LABEL_SUFFIX_ENV`] | launcher | Appended to the status label after the active schema. |
 //! | `TAPES_GATEWAY_REMEDY` | [`pi::GATEWAY_REMEDY_ENV`] | launcher | The sentence appended to a schema-mismatch warning — the diagnosis is the asset's, the remedy is the launcher's, because only it knows which command switches its proxy. |
+//! | `TAPES_GATEWAY_PROVIDER_CONFIG` | [`pi::GATEWAY_PROVIDER_CONFIG_ENV`] | launcher | pi only: a launch-local provider (name, api, models) registered at the gateway in place of the three built-ins. |
+//! | `TAPES_ALLOW_UNCAPTURED` | [`ALLOW_UNCAPTURED_ENV`] | user | Exactly `1` lets a captured session send a request that bypasses the proxy, uncaptured, with a warning. Otherwise such a request is refused with a one-line error. Read at request time. |
 //!
-//! Every one of the seven is optional, and every one has a defined unset
+//! Every one of them is optional, and every one has a defined unset
 //! behaviour. That is not politeness: an artifact installs globally and loads
 //! for every session on the machine, so "nothing set" has to be a working
 //! configuration rather than an error.
@@ -121,6 +123,22 @@ pub use tapes_capture::gateway::{
     GATEWAY_PROVIDER_ROUTES_ENV, GATEWAY_PROVIDER_ROUTES_ON, GATEWAY_SCHEMA_ENV, GATEWAY_URL_ENV,
     nonce_matches, provider_route, split_provider_route,
 };
+
+/// Environment variable that opts a captured session out of refusing
+/// uncaptured calls.
+///
+/// While a capture artifact routes a session through the proxy
+/// ([`GATEWAY_URL_ENV`] set), a request the harness would send anywhere else —
+/// a provider the proxy does not front, a model with its own endpoint — is
+/// refused with a one-line error instead of leaving capture silently. Set to
+/// exactly [`ALLOW_UNCAPTURED_ON`], such requests go out to their own endpoint
+/// uncaptured, with a warning. Read at request time, so it can be set for one
+/// command inside a session. Read by the pi extension and the hermes plugin.
+pub const ALLOW_UNCAPTURED_ENV: &str = "TAPES_ALLOW_UNCAPTURED";
+
+/// The one value of [`ALLOW_UNCAPTURED_ENV`] that opts out. Any other value
+/// keeps the refusal, so a misspelling cannot quietly turn capture off.
+pub const ALLOW_UNCAPTURED_ON: &str = "1";
 
 /// One file a consumer installs into a harness.
 ///
@@ -363,13 +381,92 @@ pub const OPENCODE_GATEWAY_EXTENSION: PluginArtifact = PluginArtifact {
 /// The artifact set for a harness captured by the bundled opencode plugin.
 pub(crate) const OPENCODE_ARTIFACTS: &[PluginArtifact] = &[OPENCODE_GATEWAY_EXTENSION];
 
+/// The directory, relative to the user's home, hermes discovers user plugins
+/// beneath: `$HERMES_HOME/plugins/<name>/`, with `HERMES_HOME` defaulting to
+/// `~/.hermes`. [`crate::launch::HermesRecipe`] writes the same files beneath
+/// its relocated home with the leading `.hermes` component dropped, and its
+/// tests pin that the two agree.
+const HERMES_PLUGIN_DIR: &[&str] = &[".hermes", "plugins", "tapes-gateway"];
+
+/// hermes-agent's capture plugin module.
+///
+/// hermes keeps its sessions in SQLite and publishes nothing a capture client
+/// can index by PID, so a redirected session would file under
+/// `harness_id: unknown`. This module registers hermes LLM request
+/// middleware that adds the complete `X-Tapes-*` envelope — hermes's
+/// `session_id`, a delegated subagent's parent session (learned from the
+/// `subagent_start` hook), the cwd, the hermes version — plus the
+/// [`GATEWAY_NONCE_HEADER`] echo to each outbound request's `extra_headers`,
+/// which is what makes hermes
+/// [`crate::harness::AttributionStrategy::SelfAttributing`].
+///
+/// hermes's auxiliary calls (title generation, compression, vision, and the
+/// rest) skip that middleware, so the module also wraps
+/// `agent.auxiliary_client._build_call_kwargs` — the one builder every
+/// auxiliary path shares — and stamps the same envelope there, plus
+/// `x-tapes-harness-metadata` `{"aux_task": …}`, borrowing the session the main
+/// loop last used (per execution context, else process-wide). The wrap is
+/// version-guarded and skipped, with one warning, on a hermes whose shape
+/// differs.
+///
+/// It stamps only requests whose provider base URL lies on the proxy named by
+/// [`GATEWAY_URL_ENV`], compared as parsed URLs; a fallback provider or an
+/// auxiliary model on its own endpoint is left untouched, so the nonce never
+/// leaves for a real upstream. It does **not** redirect — middleware can
+/// rewrite a request's kwargs but not the client's base URL — so pointing
+/// hermes at the proxy is [`crate::launch::HermesRecipe`]'s `config.yaml`.
+///
+/// A directory plugin is two files, `plugin.yaml` and `__init__.py`; this is
+/// the second and is listed first, so an install interrupted between the two
+/// leaves a module with no manifest (ignored) rather than a manifest with no
+/// module (a load error on every session).
+///
+/// hermes loads user plugins only when they are named in `config.yaml`'s
+/// `plugins.enabled` list, so copying these files into `~/.hermes` is
+/// necessary but not sufficient: the user must also run
+/// `hermes plugins enable tapes-gateway`, which is why the recipe — which
+/// owns its own `config.yaml` — is the supported road.
+pub const HERMES_GATEWAY_PLUGIN: PluginArtifact = PluginArtifact {
+    file_name: "__init__.py",
+    install_dir: HERMES_PLUGIN_DIR,
+    superseded_file_names: &[],
+    contents: include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/hermes/__init__.py"
+    )),
+};
+
+/// hermes-agent's capture plugin manifest — the `plugin.yaml` beside
+/// [`HERMES_GATEWAY_PLUGIN`] that names it `tapes-gateway`.
+pub const HERMES_GATEWAY_MANIFEST: PluginArtifact = PluginArtifact {
+    file_name: "plugin.yaml",
+    install_dir: HERMES_PLUGIN_DIR,
+    superseded_file_names: &[],
+    contents: include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/hermes/plugin.yaml"
+    )),
+};
+
+/// The name hermes registers the plugin under — the `name` in its manifest,
+/// and the entry `config.yaml`'s `plugins.enabled` must list.
+pub const HERMES_GATEWAY_PLUGIN_NAME: &str = "tapes-gateway";
+
+/// The artifact set for hermes: module first, manifest last (see
+/// [`HERMES_GATEWAY_PLUGIN`] on why the order matters).
+pub(crate) const HERMES_ARTIFACTS: &[PluginArtifact] =
+    &[HERMES_GATEWAY_PLUGIN, HERMES_GATEWAY_MANIFEST];
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::harness::{PluginDelivery, REGISTRY};
     use tapes_capture::envelope::{
-        HARNESS_ID_OPENCODE, HARNESS_ID_PI, X_TAPES_HARNESS_ID, X_TAPES_HARNESS_SESSION_ID,
+        HARNESS_ID_HERMES, HARNESS_ID_OPENCODE, HARNESS_ID_PI, X_TAPES_CWD, X_TAPES_HARNESS_ID,
+        X_TAPES_HARNESS_METADATA, X_TAPES_HARNESS_SESSION_ID, X_TAPES_HARNESS_VERSION,
+        X_TAPES_METADATA_RAW_CAP, X_TAPES_PARENT_HARNESS_ID, X_TAPES_PARENT_HARNESS_SESSION_ID,
+        X_TAPES_TOTAL_BUDGET,
     };
 
     /// Every artifact the crate ships, however it is reached from the registry.
@@ -392,6 +489,8 @@ mod tests {
         );
         assert!(all_artifacts().contains(&&PI_GATEWAY_EXTENSION));
         assert!(all_artifacts().contains(&&OPENCODE_GATEWAY_EXTENSION));
+        assert!(all_artifacts().contains(&&HERMES_GATEWAY_PLUGIN));
+        assert!(all_artifacts().contains(&&HERMES_GATEWAY_MANIFEST));
     }
 
     /// An artifact's destination components are joined onto a caller-supplied
@@ -953,6 +1052,174 @@ mod tests {
                 !contents.contains(literal),
                 "the asset hard-codes {literal:?}; it must be inert without {GATEWAY_URL_ENV}"
             );
+        }
+    }
+
+    // --- the hermes plugin, pinned the same way ------------------------------
+
+    #[test]
+    fn hermes_installs_where_hermes_discovers_user_plugins() {
+        let home = Path::new("/home/u");
+        assert_eq!(
+            HERMES_GATEWAY_PLUGIN.install_path(home),
+            PathBuf::from("/home/u/.hermes/plugins/tapes-gateway/__init__.py"),
+        );
+        assert_eq!(
+            HERMES_GATEWAY_MANIFEST.install_path(home),
+            PathBuf::from("/home/u/.hermes/plugins/tapes-gateway/plugin.yaml"),
+        );
+        // The module before the manifest: an interrupted install leaves an
+        // ignored module, not a manifest hermes fails to load every session.
+        assert_eq!(
+            HERMES_ARTIFACTS,
+            &[HERMES_GATEWAY_PLUGIN, HERMES_GATEWAY_MANIFEST]
+        );
+    }
+
+    /// The manifest's `name` is the key `plugins.enabled` must list; the
+    /// recipe writes [`HERMES_GATEWAY_PLUGIN_NAME`] there, so the two must be
+    /// one spelling — and the directory name too, since hermes falls back to
+    /// it. An explicit `kind` keeps hermes's source-sniffing heuristics from
+    /// reclassifying the plugin.
+    #[test]
+    fn the_hermes_manifest_names_the_plugin_the_recipe_enables() {
+        let manifest = HERMES_GATEWAY_MANIFEST.contents();
+        assert!(
+            manifest
+                .lines()
+                .any(|line| line == format!("name: {HERMES_GATEWAY_PLUGIN_NAME}")),
+            "plugin.yaml does not name the plugin {HERMES_GATEWAY_PLUGIN_NAME}"
+        );
+        assert!(manifest.lines().any(|line| line == "kind: standalone"));
+        assert_eq!(
+            HERMES_PLUGIN_DIR.last().copied(),
+            Some(HERMES_GATEWAY_PLUGIN_NAME)
+        );
+    }
+
+    #[test]
+    fn the_hermes_plugin_reads_the_gateway_environment_contract() {
+        let contents = HERMES_GATEWAY_PLUGIN.contents();
+        assert!(
+            contents.contains(&format!("GATEWAY_URL_ENV = \"{GATEWAY_URL_ENV}\"\n")),
+            "the asset does not read {GATEWAY_URL_ENV}"
+        );
+        assert!(
+            contents.contains(&format!("GATEWAY_NONCE_ENV = \"{GATEWAY_NONCE_ENV}\"\n")),
+            "the asset does not read {GATEWAY_NONCE_ENV}"
+        );
+        assert!(
+            contents.contains(&format!(
+                "GATEWAY_NONCE_HEADER = \"{GATEWAY_NONCE_HEADER}\"\n"
+            )),
+            "the asset does not echo the nonce in {GATEWAY_NONCE_HEADER}"
+        );
+        assert!(
+            contents.contains("headers[GATEWAY_NONCE_HEADER] = _state.nonce"),
+            "the asset does not place the nonce value under the header name"
+        );
+    }
+
+    /// The refusal opt-out is the same contract the pi extension reads, and
+    /// the main-loop refusal rides execution middleware — request middleware
+    /// exceptions are swallowed by hermes, so a refusal registered there would
+    /// refuse nothing.
+    #[test]
+    fn the_hermes_plugin_reads_the_uncaptured_opt_out_and_refuses_in_execution_middleware() {
+        let contents = HERMES_GATEWAY_PLUGIN.contents();
+        assert!(contents.contains(&format!(
+            "ALLOW_UNCAPTURED_ENV = \"{ALLOW_UNCAPTURED_ENV}\"\n"
+        )));
+        assert!(contents.contains(&format!(
+            "ALLOW_UNCAPTURED_ON = \"{ALLOW_UNCAPTURED_ON}\"\n"
+        )));
+        assert!(
+            contents
+                .contains("ctx.register_middleware(\"llm_execution\", llm_execution_middleware)"),
+            "the main-loop refusal is not registered as execution middleware"
+        );
+    }
+
+    /// Read once, then popped from the environment — before anything else in
+    /// the module can run — so a terminal tool's subprocess never inherits it.
+    #[test]
+    fn the_hermes_plugin_deletes_the_nonce_from_its_environment_at_load() {
+        let contents = HERMES_GATEWAY_PLUGIN.contents();
+        let read = contents
+            .find("os.environ.get(GATEWAY_NONCE_ENV)")
+            .unwrap_or(usize::MAX);
+        let delete = contents
+            .find("os.environ.pop(GATEWAY_NONCE_ENV, None)")
+            .unwrap_or(0);
+        assert!(
+            read < delete,
+            "the asset must capture the nonce before deleting it"
+        );
+        // And it never touches the launch-lineage variables, whose whole
+        // purpose is to reach the harness's subprocesses.
+        assert!(!contents.contains(tapes_capture::launch::LAUNCH_ID_ENV));
+    }
+
+    /// hermes stamps its own envelope, so the header names in the asset are
+    /// the crate's `X-Tapes-*` contract expressed in Python.
+    #[test]
+    fn the_hermes_plugin_stamps_the_envelope_this_crate_defines() {
+        let contents = HERMES_GATEWAY_PLUGIN.contents();
+        assert!(contents.contains(&format!("HARNESS_ID = \"{HARNESS_ID_HERMES}\"\n")));
+        for header in [
+            X_TAPES_HARNESS_ID,
+            X_TAPES_HARNESS_SESSION_ID,
+            X_TAPES_HARNESS_VERSION,
+            X_TAPES_CWD,
+            X_TAPES_PARENT_HARNESS_SESSION_ID,
+            X_TAPES_PARENT_HARNESS_ID,
+            X_TAPES_HARNESS_METADATA,
+        ] {
+            assert!(
+                contents.contains(&format!("\"{header}\"")),
+                "the asset does not stamp {header}"
+            );
+        }
+    }
+
+    /// The plugin enforces the envelope's byte budgets itself (its auxiliary
+    /// stamp adds metadata), so its copies of the caps must be the crate's.
+    #[test]
+    fn the_hermes_plugin_budgets_the_envelope_as_this_crate_does() {
+        let contents = HERMES_GATEWAY_PLUGIN.contents();
+        assert_eq!(X_TAPES_TOTAL_BUDGET, 8 * 1024);
+        assert_eq!(X_TAPES_METADATA_RAW_CAP, 4 * 1024);
+        assert!(contents.contains("X_TAPES_TOTAL_BUDGET = 8 * 1024\n"));
+        assert!(contents.contains("X_TAPES_METADATA_RAW_CAP = 4 * 1024\n"));
+        // Auxiliary calls are stamped through the one builder every aux path
+        // shares, behind the same gateway check as the main path.
+        assert!(contents.contains("aux._build_call_kwargs = _wrap_build_call_kwargs("));
+        assert!(
+            contents.contains("if gateway is None or not is_gateway_address(base_url, gateway):")
+        );
+    }
+
+    /// The nonce and envelope go only to the gateway, decided by a parsed-URL
+    /// comparison — the opencode lesson, carried over.
+    #[test]
+    fn the_hermes_plugin_stamps_nothing_toward_a_real_upstream() {
+        let contents = HERMES_GATEWAY_PLUGIN.contents();
+        assert!(contents.contains("if not is_gateway_address(base_url, gateway):"));
+        assert!(contents.contains("urllib.parse.urlsplit"));
+        assert!(!contents.contains(".startswith(gateway"));
+        assert!(contents.contains("path.startswith(f\"{mount}/\")"));
+    }
+
+    #[test]
+    fn the_hermes_plugin_has_no_built_in_endpoint() {
+        for artifact in HERMES_ARTIFACTS {
+            for literal in ["127.0.0.1:", "localhost:", "http://127.0.0.1"] {
+                assert!(
+                    !artifact.contents().contains(literal),
+                    "{} hard-codes {literal:?}",
+                    artifact.file_name()
+                );
+            }
         }
     }
 

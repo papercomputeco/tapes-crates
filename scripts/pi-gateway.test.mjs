@@ -1,9 +1,9 @@
 // Node 24+: node --experimental-strip-types --test scripts/pi-gateway.test.mjs
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import gateway from "../crates/tapes-harnesses/assets/pi/tapes-gateway.ts";
+import gateway, { encodeCwd, isGatewayAddress } from "../crates/tapes-harnesses/assets/pi/tapes-gateway.ts";
 
-const keys = ["TAPES_GATEWAY_URL", "TAPES_GATEWAY_NONCE", "TAPES_GATEWAY_PROVIDER_CONFIG", "TAPES_GATEWAY_PROVIDER_ROUTES", "TAPES_GATEWAY_SCHEMA"];
+const keys = ["TAPES_GATEWAY_URL", "TAPES_GATEWAY_NONCE", "TAPES_GATEWAY_PROVIDER_CONFIG", "TAPES_GATEWAY_PROVIDER_ROUTES", "TAPES_GATEWAY_SCHEMA", "TAPES_ALLOW_UNCAPTURED"];
 const original = Object.fromEntries(keys.map(key => [key, process.env[key]]));
 afterEach(() => {
   for (const key of keys) {
@@ -23,7 +23,15 @@ function setup(provider) {
 }
 const provider = { name: "managed-test", api: "openai-completions", managed: true, models: [{ id: "virtual", name: "Virtual", reasoning: false, input: ["text"], contextWindow: 1000000, maxTokens: 128000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] };
 
-test("managed catalog registers only the launch provider and retains nonce on session start", () => {
+const GATEWAY = "http://127.0.0.1:1234/launches/pilot/openai";
+const ctxFor = (model, ui = {}) => ({
+  sessionManager: { getSessionId: () => "session-1" },
+  cwd: "/work/dir",
+  model,
+  ui: { setStatus() {}, notify() {}, ...ui },
+});
+
+test("managed catalog registers only the launch provider and retains nonce on session start", async () => {
   const { api, registrations, hooks } = setup(provider);
   gateway(api);
   assert.equal(registrations.length, 1);
@@ -33,11 +41,16 @@ test("managed catalog registers only the launch provider and retains nonce on se
   assert.equal(registrations[0].baseUrl, process.env.TAPES_GATEWAY_URL);
   assert.equal(process.env.TAPES_GATEWAY_NONCE, undefined);
   assert.equal(process.env.TAPES_GATEWAY_PROVIDER_CONFIG, undefined);
-  hooks.session_start({}, { sessionManager: { getSessionId: () => "session-1" }, ui: { setStatus() {} } });
-  assert.deepEqual(registrations[1].headers, { "x-tapes-gateway-nonce": "nonce", "X-Tapes-Harness-Id": "pi", "X-Tapes-Harness-Session-Id": "session-1" });
-  const warnings = [];
-  hooks.model_select({ model: { provider: "anthropic" } }, { ui: { notify: message => warnings.push(message) } });
-  assert.match(warnings[0], /normal endpoint/);
+  await hooks.session_start({}, ctxFor({ provider: "managed-test", baseUrl: GATEWAY }));
+  assert.deepEqual(registrations[1].headers, {
+    "x-tapes-gateway-nonce": "nonce", "X-Tapes-Harness-Id": "pi", "X-Tapes-Harness-Session-Id": "session-1",
+    "X-Tapes-Cwd": "/work/dir",
+  });
+  const notices = [];
+  hooks.model_select({ model: { provider: "anthropic", baseUrl: "https://api.anthropic.com" } },
+    { ui: { notify: (message, level) => notices.push({ message, level }) } });
+  assert.equal(notices[0].level, "error");
+  assert.match(notices[0].message, /bypasses capture \(anthropic, api\.anthropic\.com\)/);
 });
 
 test("ordinary launches retain the original three provider registrations", () => {
@@ -93,4 +106,137 @@ test("valid multi-model catalogs retain optional model settings", () => {
   const { api, registrations } = setup({ ...provider, models });
   gateway(api);
   assert.deepEqual(registrations[0].models, models);
+});
+
+// The envelope's cwd encoding, against the vectors the Rust producer and the
+// hermes plugin are pinned to: one directory, one header value.
+test("cwd is percent-encoded exactly like the other producers", () => {
+  assert.equal(encodeCwd("/Users/matt/code"), "/Users/matt/code");
+  assert.equal(encodeCwd("/Users/matt/go+rust"), "/Users/matt/go+rust");
+  assert.equal(encodeCwd("/Users/松本/code"), "/Users/%E6%9D%BE%E6%9C%AC/code");
+  assert.equal(encodeCwd("/Users/matt\nwith-injection: yes"), "/Users/matt%0Awith-injection:%20yes");
+  assert.equal(encodeCwd('/tmp/a b/%/"/\\/ü'), "/tmp/a%20b/%25/%22/%5C/%C3%BC");
+  assert.equal(encodeCwd("/x\x7f"), "/x%7F");
+});
+
+test("session start stamps cwd and drops it before the session id when over budget", async () => {
+  const { api, registrations, hooks } = setup();
+  gateway(api);
+  await hooks.session_start({}, ctxFor({ provider: "openai", baseUrl: GATEWAY }));
+  const headers = registrations.at(-1).headers;
+  assert.equal(headers["X-Tapes-Cwd"], "/work/dir");
+  assert.equal(headers["X-Tapes-Harness-Session-Id"], "session-1");
+  // No pi package to ask outside pi: the version is absent rather than guessed.
+  assert.equal(headers["X-Tapes-Harness-Version"], undefined);
+
+  const huge = setup();
+  gateway(huge.api);
+  await huge.hooks.session_start({}, { ...ctxFor({ provider: "openai", baseUrl: GATEWAY }), cwd: "/" + "d".repeat(9000) });
+  const fitted = huge.registrations.at(-1).headers;
+  assert.equal(fitted["X-Tapes-Cwd"], undefined);
+  assert.equal(fitted["X-Tapes-Harness-Session-Id"], "session-1");
+  assert.equal(fitted["x-tapes-gateway-nonce"], "nonce");
+});
+
+test("gateway addresses compare on parsed scheme, host, port and path boundary", () => {
+  const gw = "http://127.0.0.1:1234/capture";
+  assert.ok(isGatewayAddress("http://127.0.0.1:1234/capture", gw));
+  assert.ok(isGatewayAddress("http://127.0.0.1:1234/capture/", gw));
+  assert.ok(isGatewayAddress("http://127.0.0.1:1234/capture/_tapes/provider/openai", gw));
+  for (const other of [
+    "http://127.0.0.1:1234/capture-elsewhere",
+    "http://127.0.0.1:1234/",
+    "http://127.0.0.1:12345/capture",
+    "https://127.0.0.1:1234/capture",
+    "http://127.0.0.10:1234/capture",
+    "http://127.0.0.1.attacker.invalid:1234/capture",
+    "ftp://127.0.0.1:1234/capture",
+    "not a url", "", undefined, 42,
+  ]) {
+    assert.equal(isGatewayAddress(other, gw), false, String(other));
+  }
+  assert.ok(isGatewayAddress("https://gw.example/v1", "https://gw.example:443"));
+  assert.equal(isGatewayAddress("https://gw.example.attacker.invalid/v1", "https://gw.example"), false);
+  assert.equal(isGatewayAddress("https://attacker-gw.example/v1", "https://gw.example"), false);
+});
+
+function payloadFor(hooks, model) {
+  return hooks.before_provider_request({ type: "before_provider_request", payload: { model: "m", stream: true } }, { model });
+}
+
+test("requests on a model that bypasses the gateway are refused before they are built", () => {
+  const { api, hooks } = setup();
+  gateway(api);
+  // Routed: pi keeps its own payload.
+  assert.equal(payloadFor(hooks, { provider: "openai", baseUrl: GATEWAY }), undefined);
+  assert.equal(payloadFor(hooks, { provider: "openai", baseUrl: `${GATEWAY}/_tapes/provider/openai` }), undefined);
+  // Unknown model: nothing to judge.
+  assert.equal(payloadFor(hooks, undefined), undefined);
+  // A self-hosted provider with its own endpoint, a lookalike, and no endpoint at all.
+  for (const model of [
+    { provider: "deepseek", baseUrl: "https://llm.internal.example/v1?key=secret" },
+    { provider: "openai", baseUrl: "http://127.0.0.1:1234/launches/pilot/openai-elsewhere" },
+    { provider: "custom" },
+  ]) {
+    const refused = payloadFor(hooks, model);
+    assert.notEqual(refused, undefined, JSON.stringify(model));
+    // Awaitable without throwing (pi awaits the handler's result)…
+    assert.equal(refused.then, undefined);
+    // …but every read pi makes to build the request fails with the message.
+    assert.throws(() => refused.stream, /bypasses capture/);
+    assert.throws(() => JSON.stringify(refused), /TAPES_ALLOW_UNCAPTURED=1/);
+    assert.throws(() => Object.keys(refused), /bypasses capture/);
+    assert.throws(() => refused.stream, error => !/secret|\/v1/.test(error.message));
+  }
+});
+
+test("TAPES_ALLOW_UNCAPTURED=1, read per request, restores pass-through with a warning", async () => {
+  const { api, hooks } = setup();
+  gateway(api);
+  const bypass = { provider: "deepseek", baseUrl: "https://llm.internal.example/v1" };
+  process.env.TAPES_ALLOW_UNCAPTURED = "true";
+  assert.notEqual(payloadFor(hooks, bypass), undefined, "only exactly 1 opts out");
+  process.env.TAPES_ALLOW_UNCAPTURED = "1";
+  assert.equal(payloadFor(hooks, bypass), undefined);
+  const notices = [];
+  hooks.model_select({ model: bypass }, { ui: { notify: (message, level) => notices.push({ message, level }) } });
+  assert.equal(notices[0].level, "warning");
+  assert.match(notices[0].message, /will not be captured/);
+  delete process.env.TAPES_ALLOW_UNCAPTURED;
+  assert.notEqual(payloadFor(hooks, bypass), undefined);
+});
+
+test("session start reports a starting model that bypasses the gateway", async () => {
+  const { api, hooks } = setup();
+  gateway(api);
+  const notices = [];
+  await hooks.session_start({}, ctxFor({ provider: "deepseek", baseUrl: "https://llm.internal.example/v1" },
+    { notify: (message, level) => notices.push({ message, level }) }));
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].level, "error");
+  const quiet = [];
+  await hooks.session_start({}, ctxFor({ provider: "openai", baseUrl: GATEWAY },
+    { notify: (message, level) => quiet.push({ message, level }) }));
+  assert.equal(quiet.length, 0);
+});
+
+test("routed providers keep the schema-mismatch warning and nothing else", () => {
+  const { api, hooks } = setup();
+  process.env.TAPES_GATEWAY_SCHEMA = "anthropic";
+  gateway(api);
+  const notices = [];
+  const ctx = { ui: { notify: (message, level) => notices.push({ message, level }) } };
+  hooks.model_select({ model: { provider: "openai", baseUrl: GATEWAY } }, ctx);
+  hooks.model_select({ model: { provider: "anthropic", baseUrl: GATEWAY } }, ctx);
+  hooks.model_select({ model: { provider: "openai-codex", baseUrl: GATEWAY } }, ctx);
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].level, "warning");
+  assert.match(notices[0].message, /routing the anthropic schema/);
+});
+
+test("without a gateway no refusal hook is installed", () => {
+  const { api, hooks } = setup();
+  delete process.env.TAPES_GATEWAY_URL;
+  gateway(api);
+  assert.deepEqual(Object.keys(hooks), []);
 });

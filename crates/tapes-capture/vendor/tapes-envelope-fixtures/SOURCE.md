@@ -10,31 +10,30 @@ than advisory; see [The seal](#the-seal) below.
 
 * **Repo:** `tapes` (Paper Compute).
 * **Path within repo:** `fixtures/envelope/`.
-* **Current snapshot SHA:** `7e3cdefbd3f5989be0656822208e0d3a59754413`
-  ("✨ feat(fixtures): seal the envelope corpus and gate it in CI (#284)") — the
-  last commit to touch `fixtures/envelope`. TODO: replace with a tagged
-  fixture-cut id once tapes publishes versioned cuts (`fixtures/manifest.json`
-  reserves the `cut` block for exactly that).
+* **Current snapshot SHA:** `40c90342e5dd669b2d9d16ac6874498476c335ff`
+  ("✨ feat(sessions): resolve a fork parent in the parent's own harness") —
+  **an unreleased tapes commit**, vendored ahead of its release so the producer
+  half of `x-tapes-parent-harness-id` lands with the parser half. Re-pin this
+  line (and re-run the sync, which must be a no-op) to the tapes release that
+  carries it before a `tapes-capture` release depends on the new cases. TODO:
+  replace with a tagged fixture-cut id once tapes publishes versioned cuts
+  (`fixtures/manifest.json` reserves the `cut` block for exactly that).
 
-  Two upstream commits landed between this snapshot and the previous one
-  (`9cc71917`), and they are why the refresh was not a no-op:
+  It adds three cases on top of the previous snapshot (`7e3cdefb`, #284):
 
-  * `d89c330` (#281) moved cwd decoding to the reader and made it refuse
-    control bytes. It rewrote `cwd-unicode` — now a `roundtrip` case whose
-    envelope carries the decoded path, where it used to be a lossy `encode`
-    case asserting the reader stored the escaped form — and dropped the
-    now-unreachable `cwd` from `cwd-control-bytes-escaped`'s envelope.
-  * `7e3cdef` (#284) added the seal plus four cases: `cwd-literal-plus`,
-    `cwd-malformed-percent-encoding`, `error-metadata-padded-base64`, and
-    `session-name-control-bytes-escaped`.
+  * `codex-with-cross-harness-parent` (`roundtrip`) — a codex child whose
+    parent lives in claude: `x-tapes-parent-harness-id: claude` beside the
+    parent session id.
+  * `hermes-session` (`roundtrip`) — a hermes envelope with a session id and
+    cwd, pinning that harness ids are an open set carried verbatim.
+  * `error-parent-harness-id-empty` (`decode`) — an empty parent-harness header
+    is dropped by the reader rather than normalised to `unknown`.
 
-  None of it moved this crate's producer. Both rewritten cases changed only
-  their decode side — `headers` and `encode_from`, which are the only fields
-  the producer oracle reads, are untouched — and of the four new cases the two
-  the producer must satisfy were already satisfied: `+` is outside
-  `UTF8_VALUE_ESCAPE`, so it crosses the wire raw, and control bytes were
-  already escaped. The corpus grew cases pinning behaviour this crate had but
-  nothing had yet asserted.
+  The producer satisfies both new roundtrip cases with no behaviour change: the
+  fixture reader already carried `parent_harness_id` into
+  `TapesAttribution::parent_harness_id`, which the producer emits beside the
+  parent session id. The decode case is skipped by the producer oracle by
+  design. `README.upstream.md` gained the matching header-table row and notes.
 
 The snapshot is the contract: it is pinned to a specific upstream commit, and a
 refresh lands in the same PR as whatever consumer change it forces.

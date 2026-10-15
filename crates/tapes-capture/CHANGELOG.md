@@ -15,6 +15,39 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-13
+
+Cross-harness lineage: an envelope can now say which harness its parent
+session belongs to, and launchers share one environment contract for telling
+a nested launch which launch it runs inside.
+
+### Changed
+
+- **Breaking**: `TapesAttribution` gains a public `parent_harness_id` field, so
+  a struct literal that names every field no longer compiles. Add
+  `parent_harness_id: None` — the value every existing producer emits — or
+  build through a constructor and `with_parent_harness_id`.
+
+### Added
+
+- `envelope::X_TAPES_PARENT_HARNESS_ID` (`x-tapes-parent-harness-id`): the
+  harness the parent session belongs to. Emitted only beside
+  `x-tapes-parent-harness-session-id`, after it in the budget order; absent
+  means "same harness as the request", so every envelope produced before it
+  keeps its meaning and no existing constructor emits it.
+  `TapesAttribution::with_parent_harness_id` sets it and `from_headers` reads
+  it back. The vendored fixture corpus pins it (`codex-with-cross-harness-parent`,
+  `hermes-session`, `error-parent-harness-id-empty`), and the fixture reader
+  carries the cases' `parent_harness_id` field.
+- `envelope::HARNESS_ID_HERMES` (`hermes`).
+- `launch`: the launch-lineage contract. `LAUNCH_ID_ENV`
+  (`TAPES_LAUNCH_ID`) and `LAUNCH_HARNESS_ID_ENV` (`TAPES_LAUNCH_HARNESS_ID`)
+  are exported by every launcher to its child; `LaunchContext::from_env` reads
+  the parent launch out of the launcher's own environment and
+  `LaunchContext::child_env` writes this launch's values for the child.
+  `ParentLaunch`, `LaunchContext::from_lookup`, and `new_launch_id` round it
+  out. Mapping a parent launch to a parent session stays with the launcher.
+
 ## [0.1.0] - 2026-08-13
 
 The first release. `0.1.0` is the contents of the crate at publish rather than

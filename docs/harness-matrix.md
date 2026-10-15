@@ -5,7 +5,7 @@ sidebar:
   order: 6
 ---
 
-Five harnesses, two capture clients, and — until this — nothing that launched a
+Seven harnesses, two capture clients, and — until this — nothing that launched a
 real harness binary through a real client automatically.
 
 That gap has a particular shape. Every layer had tests and every layer was
@@ -67,6 +67,7 @@ place. This is the current state, not an aspiration:
 | `codex` | runs wherever `codex` is installed | runs with a client binary | packaged in the pinned nixpkgs, so it runs in CI |
 | `opencode` | runs wherever `opencode` is installed | **skips** — `tapesctl` does not list `opencode` among its supported harnesses | packaged in the pinned nixpkgs; the client-side gap is real and visible |
 | `pi` | runs wherever `pi` is installed | runs with a client binary, after the capture plugin is installed into the sandbox | not in the flake's `matrix` shell, so both cells skip in CI — though the pinned nixpkgs does carry `pi-coding-agent` (see the follow-ups) |
+| `hermes` | runs wherever `hermes` is installed | runs with a client binary that lists `hermes`, after the capture plugin is installed into the sandbox | a PyPI package (`hermes-agent`), not in the flake's `matrix` shell, so both cells skip in CI; the recipe plans a sandboxed `HERMES_HOME` |
 | `codex-app` | **skips**, always | **skips**, always | a long-lived host a consumer configures rather than starts: no one-shot invocation exists |
 | `cursor` | **skips**, always | **skips**, always | captured from `agent`'s `stream-json` stdout, not provider traffic, so there is nothing for this matrix to route to a mock |
 
