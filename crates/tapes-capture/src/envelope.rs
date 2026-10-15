@@ -674,23 +674,29 @@ pub fn inject_tapes_attribution(
         try_insert_session_name(headers, name, &mut budget);
     }
     if let Some(parent) = attribution.parent_sid.as_deref() {
-        let parent_emitted = try_insert_string(
-            headers,
-            X_TAPES_PARENT_HARNESS_SESSION_ID,
-            parent,
-            &mut budget,
-        );
-        // The parent's harness id only means something beside the parent's
-        // session id, so it rides on that header's success rather than on
-        // its own: a parent session id dropped for an invalid byte must not
-        // leave a dangling harness id that names nothing.
-        if parent_emitted && let Some(parent_harness) = attribution.parent_harness_id.as_deref() {
-            try_insert_string(
-                headers,
-                X_TAPES_PARENT_HARNESS_ID,
-                parent_harness,
-                &mut budget,
-            );
+        // The parent's session id and its harness id are one fact, not two:
+        // a parent session id with no harness id beside it reads as "same
+        // harness as this session", so shipping only half of a cross-harness
+        // link would silently re-attribute the parent. Both fit and are valid,
+        // or neither ships — whether the half that fails does so on budget or
+        // on an invalid byte.
+        match attribution.parent_harness_id.as_deref() {
+            Some(parent_harness) => {
+                try_insert_pair(
+                    headers,
+                    (X_TAPES_PARENT_HARNESS_SESSION_ID, parent),
+                    (X_TAPES_PARENT_HARNESS_ID, parent_harness),
+                    &mut budget,
+                );
+            }
+            None => {
+                try_insert_string(
+                    headers,
+                    X_TAPES_PARENT_HARNESS_SESSION_ID,
+                    parent,
+                    &mut budget,
+                );
+            }
         }
     }
 
@@ -789,6 +795,31 @@ fn try_insert_string(
     };
     *budget -= cost;
     headers.insert(HeaderName::from_static(name), val);
+    true
+}
+
+/// Insert two headers that only mean something together: both, if their
+/// combined cost fits the remaining budget and both values are valid HTTP
+/// header bytes, or neither. Returns whether the pair was inserted.
+fn try_insert_pair(
+    headers: &mut HeaderMap,
+    (first_name, first_value): (&'static str, &str),
+    (second_name, second_value): (&'static str, &str),
+    budget: &mut usize,
+) -> bool {
+    let cost = first_name.len() + first_value.len() + second_name.len() + second_value.len();
+    if cost > *budget {
+        return false;
+    }
+    let (Ok(first), Ok(second)) = (
+        HeaderValue::from_str(first_value),
+        HeaderValue::from_str(second_value),
+    ) else {
+        return false;
+    };
+    *budget -= cost;
+    headers.insert(HeaderName::from_static(first_name), first);
+    headers.insert(HeaderName::from_static(second_name), second);
     true
 }
 
@@ -1784,6 +1815,119 @@ mod tests {
         )
         .unwrap();
         assert!(!headers.contains_key(X_TAPES_PARENT_HARNESS_SESSION_ID));
+        assert!(!headers.contains_key(X_TAPES_PARENT_HARNESS_ID));
+    }
+
+    /// Bytes the envelope has left for the parent headers once the required
+    /// harness id, the session id and a `cwd` of `cwd_len` bytes are in.
+    fn budget_left_after(attribution: &TapesAttribution, cwd_len: usize) -> usize {
+        X_TAPES_TOTAL_BUDGET
+            - (X_TAPES_HARNESS_ID.len() + attribution.harness_id.len())
+            - (X_TAPES_HARNESS_SESSION_ID.len()
+                + attribution.session_id.as_deref().map_or(0, str::len))
+            - (X_TAPES_CWD.len() + cwd_len)
+    }
+
+    /// A parent session id with no parent harness id beside it means "same
+    /// harness as this session", so the budget must never split a
+    /// cross-harness link: when the parent session id fits but its harness id
+    /// does not, neither ships.
+    #[test]
+    fn budget_pressure_drops_the_parent_session_with_its_harness() {
+        let parent_sid = "claude-sess";
+        let parent_harness = "claude";
+        let session_only = X_TAPES_PARENT_HARNESS_SESSION_ID.len() + parent_sid.len();
+        let pair = session_only + X_TAPES_PARENT_HARNESS_ID.len() + parent_harness.len();
+
+        // Size the cwd so the remaining budget admits the parent session id
+        // alone but not the pair.
+        let probe = hermes_child_of(Some(parent_sid));
+        let cwd_len = budget_left_after(&probe, 0) - (pair - 1);
+        assert!(budget_left_after(&probe, cwd_len) >= session_only);
+        assert!(budget_left_after(&probe, cwd_len) < pair);
+
+        let mut attribution =
+            hermes_child_of(Some(parent_sid)).with_parent_harness_id(parent_harness);
+        attribution.cwd = Some("/".repeat(cwd_len));
+        let mut headers = HeaderMap::new();
+        inject_tapes_attribution(&mut headers, attribution).unwrap();
+
+        assert!(headers.contains_key(X_TAPES_CWD), "cwd outranks the parent");
+        assert!(!headers.contains_key(X_TAPES_PARENT_HARNESS_SESSION_ID));
+        assert!(!headers.contains_key(X_TAPES_PARENT_HARNESS_ID));
+        let back = TapesAttribution::from_headers(&headers).expect("complete envelope");
+        assert!(back.parent_sid.is_none());
+        assert!(back.parent_harness_id.is_none());
+    }
+
+    /// The boundary of the case above: a budget with exactly room for the
+    /// pair ships both.
+    #[test]
+    fn a_parent_pair_that_exactly_fits_the_budget_ships_whole() {
+        let parent_sid = "claude-sess";
+        let parent_harness = "claude";
+        let pair = X_TAPES_PARENT_HARNESS_SESSION_ID.len()
+            + parent_sid.len()
+            + X_TAPES_PARENT_HARNESS_ID.len()
+            + parent_harness.len();
+        let probe = hermes_child_of(Some(parent_sid));
+        let cwd_len = budget_left_after(&probe, 0) - pair;
+
+        let mut attribution =
+            hermes_child_of(Some(parent_sid)).with_parent_harness_id(parent_harness);
+        attribution.cwd = Some("/".repeat(cwd_len));
+        let mut headers = HeaderMap::new();
+        inject_tapes_attribution(&mut headers, attribution).unwrap();
+
+        assert_eq!(
+            headers.get(X_TAPES_PARENT_HARNESS_SESSION_ID).unwrap(),
+            parent_sid
+        );
+        assert_eq!(
+            headers.get(X_TAPES_PARENT_HARNESS_ID).unwrap(),
+            parent_harness
+        );
+    }
+
+    /// The pair is all-or-nothing on validity too: a parent harness id that is
+    /// not valid header bytes (or is too large to fit on its own) takes the
+    /// parent session id down with it rather than leaving it to read as
+    /// same-harness.
+    #[test]
+    fn an_unshippable_parent_harness_id_takes_the_parent_session_with_it() {
+        for parent_harness in ["bad\nharness".to_owned(), "h".repeat(X_TAPES_TOTAL_BUDGET)] {
+            let mut headers = HeaderMap::new();
+            inject_tapes_attribution(
+                &mut headers,
+                hermes_child_of(Some("claude-sess")).with_parent_harness_id(parent_harness),
+            )
+            .unwrap();
+            assert!(!headers.contains_key(X_TAPES_PARENT_HARNESS_SESSION_ID));
+            assert!(!headers.contains_key(X_TAPES_PARENT_HARNESS_ID));
+            assert_eq!(
+                headers.get(X_TAPES_HARNESS_SESSION_ID).unwrap(),
+                "hermes-sess"
+            );
+        }
+    }
+
+    /// With no parent harness id, a parent session id under budget pressure
+    /// still stands alone, exactly as before the pairing rule.
+    #[test]
+    fn a_same_harness_parent_still_ships_without_a_harness_id() {
+        let parent_sid = "p";
+        let session_only = X_TAPES_PARENT_HARNESS_SESSION_ID.len() + parent_sid.len();
+        let probe = hermes_child_of(Some(parent_sid));
+        let cwd_len = budget_left_after(&probe, 0) - session_only;
+
+        let mut attribution = hermes_child_of(Some(parent_sid));
+        attribution.cwd = Some("/".repeat(cwd_len));
+        let mut headers = HeaderMap::new();
+        inject_tapes_attribution(&mut headers, attribution).unwrap();
+        assert_eq!(
+            headers.get(X_TAPES_PARENT_HARNESS_SESSION_ID).unwrap(),
+            parent_sid
+        );
         assert!(!headers.contains_key(X_TAPES_PARENT_HARNESS_ID));
     }
 

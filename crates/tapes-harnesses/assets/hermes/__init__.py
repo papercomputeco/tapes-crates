@@ -93,8 +93,12 @@ ENVELOPE = {
 # the harness id and session id always stay.
 X_TAPES_TOTAL_BUDGET = 8 * 1024
 X_TAPES_METADATA_RAW_CAP = 4 * 1024
-# Optional fields in the order they are given up under budget pressure.
-_DROP_ORDER = ("metadata", "cwd", "version", "parent_harness_id", "parent_session_id")
+# Optional fields in the order they are given up under budget pressure. The
+# parent's session id and harness id are one entry: a parent session id with no
+# harness id beside it reads as "same harness as this session", so the two are
+# only ever given up together.
+_DROP_ORDER = ("metadata", "cwd", "version", "parent")
+_DROP_FIELDS = {"parent": ("parent_session_id", "parent_harness_id")}
 
 # The longest aux task name carried in metadata. hermes's names are short
 # (`title_generation`); the cap only keeps a pathological value bounded.
@@ -276,9 +280,8 @@ def fit_budget(headers: Dict[str, str]) -> Dict[str, str]:
     for field in _DROP_ORDER:
         if _envelope_cost(headers) <= X_TAPES_TOTAL_BUDGET:
             break
-        headers.pop(ENVELOPE[field], None)
-        if field == "parent_session_id":
-            headers.pop(ENVELOPE["parent_harness_id"], None)
+        for name in _DROP_FIELDS.get(field, (field,)):
+            headers.pop(ENVELOPE[name], None)
     return headers
 
 

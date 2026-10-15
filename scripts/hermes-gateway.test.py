@@ -475,6 +475,32 @@ class AuxiliaryCalls(PluginCase):
         self.assertEqual(huge["x-tapes-harness-session-id"], "s")
         self.assertEqual(huge["x-tapes-harness-id"], "hermes")
 
+    def test_the_header_budget_never_splits_the_parent_pair(self):
+        # A parent session id without its harness id reads as same-harness, so
+        # budget pressure gives up both or neither. Sized one byte over: giving
+        # up the parent harness id alone would fit and strand the session id.
+        plugin, _ = self.launch()
+        parent = {"x-tapes-parent-harness-session-id": "p", "x-tapes-parent-harness-id": "hermes"}
+        identity = {"x-tapes-harness-id": "hermes", "x-tapes-harness-session-id": ""}
+        filler = plugin.X_TAPES_TOTAL_BUDGET + 1 - plugin._envelope_cost({**identity, **parent})
+        headers = {**identity, "x-tapes-harness-session-id": "s" * filler, **parent}
+        self.assertEqual(plugin._envelope_cost(headers), plugin.X_TAPES_TOTAL_BUDGET + 1)
+        fitted = plugin.fit_budget(headers)
+        self.assertLessEqual(plugin._envelope_cost(fitted), plugin.X_TAPES_TOTAL_BUDGET)
+        self.assertNotIn("x-tapes-parent-harness-session-id", fitted)
+        self.assertNotIn("x-tapes-parent-harness-id", fitted)
+        self.assertEqual(fitted["x-tapes-harness-session-id"], "s" * filler)
+
+    def test_the_header_budget_keeps_a_parent_pair_that_fits(self):
+        plugin, _ = self.launch()
+        headers = plugin.envelope_headers("s", cwd="/" + "d" * 9000)
+        headers["x-tapes-parent-harness-session-id"] = "p"
+        headers["x-tapes-parent-harness-id"] = "hermes"
+        fitted = plugin.fit_budget(headers)
+        self.assertNotIn("x-tapes-cwd", fitted)
+        self.assertEqual(fitted["x-tapes-parent-harness-session-id"], "p")
+        self.assertEqual(fitted["x-tapes-parent-harness-id"], "hermes")
+
     def test_an_aux_task_name_is_bounded(self):
         _, _, aux = self.launch_with_aux()
         headers = aux.call_llm(task="z" * 1000, base_url=GATEWAY)["extra_headers"]
