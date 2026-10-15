@@ -87,6 +87,15 @@ jobs:
           node-version: "24"
       - name: Pi gateway extension behavior
         run: node --experimental-strip-types --test scripts/pi-gateway.test.mjs
+      # The bundled hermes plugin's behaviour suite: stdlib unittest against a
+      # stand-in for the hermes modules it hooks, so no hermes install and no
+      # pip step. `-I` keeps the script's directory off sys.path and ignores
+      # PYTHON* variables, so nothing on the runner shadows what it loads.
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Hermes gateway plugin behavior
+        run: python3 -I scripts/hermes-gateway.test.py
       # The envelope corpus is vendored, so its DIGEST is checked here the way
       # the read contract's fingerprint is checked in `contract-seal` above.
       # It rides this job rather than getting its own because, unlike that one,

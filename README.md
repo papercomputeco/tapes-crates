@@ -159,6 +159,14 @@ The bundled Pi extension also has behavior tests using Node's built-in runner
 node --experimental-strip-types --test scripts/pi-gateway.test.mjs
 ```
 
+The bundled hermes plugin has the same kind of suite, on the Python standard
+library alone (Python 3.11+, no hermes install required — it drives the plugin
+against a stand-in for the hermes modules it hooks). CI runs it too:
+
+```bash
+python3 -I scripts/hermes-gateway.test.py
+```
+
 Every crate denies `unwrap`, `expect`, and `panic` through the workspace lint
 table; return `Result` and surface errors through the crate error types
 instead.
