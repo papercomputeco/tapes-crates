@@ -10,7 +10,7 @@ than advisory; see [The seal](#the-seal) below.
 
 * **Repo:** `tapes` (Paper Compute).
 * **Path within repo:** `fixtures/envelope/`.
-* **Current snapshot SHA:** `0b41c3eef2fd43768e5bc50065b1d9a247a8ab4e`
+* **Current snapshot SHA:** `40c90342e5dd669b2d9d16ac6874498476c335ff`
   ("✨ feat(sessions): resolve a fork parent in the parent's own harness") —
   **an unreleased tapes commit**, vendored ahead of its release so the producer
   half of `x-tapes-parent-harness-id` lands with the parser half. Re-pin this
