@@ -15,7 +15,7 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
-Versioned 0.3.0 in the manifest; the release change dates this heading.
+## [0.3.0] - 2026-10-16
 
 ### Added
 

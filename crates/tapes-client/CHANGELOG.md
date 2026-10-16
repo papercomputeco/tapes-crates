@@ -15,7 +15,7 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
-Versioned 0.7.0 in the manifest; the release change dates this heading.
+## [0.7.0] - 2026-10-16
 
 Typed reads for the transcript and subject endpoints tapes is adding, the
 search cassette's hit model shared by every consumer, one list-output JSON
