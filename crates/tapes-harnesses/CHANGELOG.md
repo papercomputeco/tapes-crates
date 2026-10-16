@@ -33,6 +33,19 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
   escape set) and `x-tapes-harness-version` (pi's own version), within the
   8 KiB envelope budget; cwd is dropped first when over it.
 
+### Fixed
+
+- An uncaptured call let through by `TAPES_ALLOW_UNCAPTURED=1` no longer
+  carries any `x-tapes-*` header or the capture nonce to the host it goes to.
+  The hermes `config.yaml` that `HermesRecipe` plans no longer sets
+  `model.default_headers` (hermes applied that static
+  `x-tapes-harness-id: hermes` to whichever provider the session switched to),
+  and the hermes plugin strips envelope headers from an opted-out main-loop or
+  auxiliary call's kwargs. The pi extension strips them from an opted-out
+  request through pi's `before_provider_headers` hook, since pi applies a
+  redirected provider's headers to every model under it, including one with
+  its own `baseUrl`.
+
 ### Changed
 
 - While routed through a gateway, the pi extension refuses a request on a

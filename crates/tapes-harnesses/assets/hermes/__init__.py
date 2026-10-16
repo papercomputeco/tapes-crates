@@ -23,7 +23,8 @@ leave it: a main-loop request (through ``llm_execution`` middleware) or an
 auxiliary call (through the same kwargs builder) whose base URL is not on the
 capture proxy fails with one line naming the host, instead of going out
 uncaptured. ``TAPES_ALLOW_UNCAPTURED=1``, read at call time, lets such calls
-through untouched.
+through — bare: an uncaptured call to another host carries no ``x-tapes-*``
+header and no nonce, whatever put them on its kwargs.
 
 It does **not** redirect. hermes reads its endpoint from ``config.yaml``
 (``model.provider: custom`` plus ``model.base_url``), and middleware can
@@ -60,7 +61,7 @@ from typing import Any, Dict, Optional
 GATEWAY_URL_ENV = "TAPES_GATEWAY_URL"
 GATEWAY_NONCE_ENV = "TAPES_GATEWAY_NONCE"
 # The opt-out from refusing uncaptured calls, read at call time. Exactly "1"
-# lets a call bound somewhere other than the proxy go out untouched (logged
+# lets a call bound somewhere other than the proxy go out, bare (logged
 # once); anything else keeps the refusal, so a typo cannot turn capture off.
 ALLOW_UNCAPTURED_ENV = "TAPES_ALLOW_UNCAPTURED"
 ALLOW_UNCAPTURED_ON = "1"
@@ -448,15 +449,52 @@ class _RefusedRequest(dict):
         return True
 
 
+def _bypasses_capture(base_url: Any) -> bool:
+    """Capture is active and a call bound for ``base_url`` would leave it."""
+    gateway = _gateway_url()
+    return gateway is not None and not is_gateway_address(base_url, gateway)
+
+
+def _without_envelope(extra_headers: Any) -> Optional[Dict[Any, Any]]:
+    """``extra_headers`` with every ``x-tapes-*`` header removed — the envelope
+    and the nonce echo alike — or ``None`` when there was nothing to remove.
+
+    The envelope names a session to a capture proxy, and the nonce is the
+    proxy's secret; a call that is not going to the proxy owes neither to
+    whoever does receive it."""
+    if not isinstance(extra_headers, dict):
+        return None
+    kept = {k: v for k, v in extra_headers.items() if not str(k).lower().startswith("x-tapes-")}
+    return kept if len(kept) != len(extra_headers) else None
+
+
+def _scrubbed(kwargs: Any) -> Optional[Dict[str, Any]]:
+    """A copy of request ``kwargs`` without envelope headers, or ``None`` when
+    it carries none."""
+    if not isinstance(kwargs, dict):
+        return None
+    kept = _without_envelope(kwargs.get("extra_headers"))
+    if kept is None:
+        return None
+    scrubbed = dict(kwargs)
+    scrubbed["extra_headers"] = kept
+    return scrubbed
+
+
 def llm_execution_middleware(
     request: Any = None, next_call: Any = None, base_url: Any = None, **_: Any
 ) -> Any:
     """Run the provider call — or, for a call that would bypass the capture
-    proxy, fail it before it is sent (see the notes above)."""
+    proxy, fail it before it is sent (see the notes above). An opted-out call
+    that bypasses the proxy goes out without any envelope header."""
     if not callable(next_call):
         return None
     if refuses(base_url):
         return next_call(_RefusedRequest(CaptureRefused(refusal_message(base_url))))
+    if _bypasses_capture(base_url):
+        scrubbed = _scrubbed(request)
+        if scrubbed is not None:
+            return next_call(scrubbed)
     return next_call()
 
 
@@ -517,6 +555,7 @@ def auxiliary_headers(base_url: Any, task: str) -> Dict[str, str]:
 
 def _wrap_build_call_kwargs(original: Any, signature: inspect.Signature) -> Any:
     def build_call_kwargs(*args: Any, **kwargs: Any) -> Any:
+        base_url = None
         try:
             base_url = signature.bind_partial(*args, **kwargs).arguments.get("base_url")
         except TypeError:
@@ -528,6 +567,12 @@ def _wrap_build_call_kwargs(original: Any, signature: inspect.Signature) -> Any:
             if refuses(base_url):
                 raise CaptureRefused(refusal_message(base_url))
         result = original(*args, **kwargs)
+        if isinstance(result, dict) and _bypasses_capture(base_url):
+            # An opted-out call to another host: it leaves bare.
+            kept = _without_envelope(result.get("extra_headers"))
+            if kept is not None:
+                result["extra_headers"] = kept
+            return result
         try:
             if isinstance(result, dict):
                 headers = auxiliary_headers(base_url, _aux_task_from_stack())
@@ -548,7 +593,7 @@ def _skip_auxiliary(reason: str) -> None:
         _state.aux_skip_logged = True
         _logger.warning(
             "tapes-gateway: auxiliary calls will not carry the capture envelope (%s); "
-            "they still carry the static harness id from config.yaml",
+            "a capture client files them as unattributed",
             reason,
         )
 

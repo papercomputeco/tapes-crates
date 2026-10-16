@@ -406,12 +406,18 @@ fn harness_via_cli(recipe: &OneShotRecipe, harness_binary: &Path, cli: &Path) ->
     // The client plans the harness's launch itself — that is the code under
     // test — so this cell supplies only the passthrough argv, not the recipe's
     // pointing environment.
+    //
+    // The mock ingest is the *ingest* endpoint, so it is named by
+    // `--ingest-url`: a capture client posts turns there and reads the data
+    // model from `--api-url`. Naming it by the read flag points the client's
+    // posts at its default ingest instead — and a client with nothing listening
+    // there finishes "successfully" having captured nothing.
     let mut args = vec![
         "start".to_owned(),
         recipe.harness_id.to_owned(),
         "--upstream".to_owned(),
         pair.upstream.base_url(),
-        "--api-url".to_owned(),
+        "--ingest-url".to_owned(),
         pair.ingest.base_url(),
     ];
     args.push("--".to_owned());
@@ -490,11 +496,8 @@ fn harness_via_cli(recipe: &OneShotRecipe, harness_binary: &Path, cli: &Path) ->
         return Outcome::Skipped(reason);
     }
 
-    if !pair.ingest.wait_for_turn(Duration::from_secs(10)) {
-        return Outcome::Failed(format!(
-            "no turn reached the mock ingest; {}",
-            result.summary(),
-        ));
+    if let Some(failure) = nothing_landed(&pair, &result, INGEST_GRACE) {
+        return Outcome::Failed(failure);
     }
 
     // launched implies attributed.
@@ -550,6 +553,48 @@ fn harness_via_cli(recipe: &OneShotRecipe, harness_binary: &Path, cli: &Path) ->
     }
 
     Outcome::Passed
+}
+
+/// How long a composition cell waits, after the client exits, for its turn to
+/// reach the mock ingest.
+const INGEST_GRACE: Duration = Duration::from_secs(10);
+
+/// The composition cell's first requirement: a turn reached the mock ingest.
+///
+/// Returns the failure to report, or `None` once a turn has landed. A client
+/// whose posts went somewhere else entirely — a mis-named flag, a default
+/// endpoint it fell back to — still exits zero, so the exit status proves
+/// nothing here. The failure says *which* side went quiet: an upstream that
+/// saw no request means the harness never reached the client's proxy, while
+/// an upstream that was called and an ingest that was not means the client
+/// captured the turn and delivered it elsewhere. Either way it is red, never
+/// a pass that covered nothing.
+fn nothing_landed(pair: &MockPair, result: &RunResult, grace: Duration) -> Option<String> {
+    if pair.ingest.wait_for_turn(grace) {
+        return None;
+    }
+    // Model calls only: startup probes (`GET /v1/models`) say nothing about
+    // whether a turn went through the client.
+    let model_calls = pair.upstream.turn_requests().len();
+    let reported_nothing = result.stdout.contains("no turns were captured");
+    let diagnosis = if model_calls == 0 {
+        "the mock upstream saw no model call either, so no turn reached the client's proxy"
+            .to_owned()
+    } else {
+        format!(
+            "the mock upstream saw {model_calls} model call(s) but the mock ingest received \
+             nothing, so the turn was not delivered to the ingest the client was given"
+        )
+    };
+    Some(format!(
+        "no turn reached the mock ingest{}; {diagnosis}; {}",
+        if reported_nothing {
+            " (the client itself reported capturing nothing)"
+        } else {
+            ""
+        },
+        result.summary(),
+    ))
 }
 
 /// Did the client refuse to launch this harness because it does not support it?
@@ -907,6 +952,70 @@ fn fake_recipe(
         unsupported: None,
         tolerated_exit,
     }
+}
+
+/// A client that exits zero having delivered nothing is a failure, and the
+/// failure says which hop went quiet. This is the shape a composition cell
+/// takes when the client is pointed at the wrong endpoint: it proxies the turn,
+/// posts it somewhere the mock never sees, and reports success.
+#[test]
+fn a_client_that_captured_nothing_is_not_a_pass() {
+    let pair = MockPair::start().expect("mock pair");
+    let quiet = RunResult {
+        status: Some(0),
+        stdout: "ok\nno turns were captured\n".to_owned(),
+        stderr: String::new(),
+        timed_out: false,
+    };
+
+    let failure = nothing_landed(&pair, &quiet, Duration::ZERO).expect("nothing landed");
+    assert!(
+        failure.contains("no turn reached the mock ingest"),
+        "{failure}"
+    );
+    assert!(failure.contains("reported capturing nothing"), "{failure}");
+    assert!(
+        failure.contains("no turn reached the client's proxy"),
+        "{failure}"
+    );
+
+    // A startup probe is not a model call: the diagnosis must not claim a turn
+    // was proxied.
+    raw_request(&pair.upstream.base_url(), "GET /v1/models", "");
+    let failure = nothing_landed(&pair, &quiet, Duration::ZERO).expect("nothing landed");
+    assert!(failure.contains("saw no model call either"), "{failure}");
+
+    // An actual model call that never reached the ingest says exactly that.
+    raw_request(
+        &pair.upstream.base_url(),
+        "POST /v1/chat/completions",
+        r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#,
+    );
+    let failure = nothing_landed(&pair, &quiet, Duration::ZERO).expect("nothing landed");
+    assert!(
+        failure.contains("saw 1 model call(s) but the mock ingest received nothing"),
+        "{failure}"
+    );
+}
+
+/// Send one HTTP/1.1 request to `base` and drain the response.
+fn raw_request(base: &str, request_line: &str, body: &str) {
+    use std::io::{Read, Write};
+    let host = base
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .expect("host");
+    let mut stream = std::net::TcpStream::connect(host).expect("connect mock upstream");
+    write!(
+        stream,
+        "{request_line} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .expect("write request");
+    let mut response = Vec::new();
+    let _ = stream.read_to_end(&mut response);
 }
 
 /// A cell is not a pass just because the request arrived.

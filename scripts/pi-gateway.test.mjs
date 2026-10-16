@@ -206,6 +206,32 @@ test("TAPES_ALLOW_UNCAPTURED=1, read per request, restores pass-through with a w
   assert.notEqual(payloadFor(hooks, bypass), undefined);
 });
 
+test("an opted-out request to another host carries no envelope and no nonce", async () => {
+  const { api, hooks } = setup();
+  gateway(api);
+  process.env.TAPES_ALLOW_UNCAPTURED = "1";
+  const stamped = () => ({
+    "x-tapes-gateway-nonce": "nonce", "X-Tapes-Harness-Id": "pi", "X-Tapes-Harness-Session-Id": "session-1",
+    "X-Tapes-Cwd": "/work/dir", "Authorization": "Bearer sk-user", "User-Agent": "pi",
+  });
+  // A model under a redirected provider with its own endpoint: pi applies the
+  // provider's headers to it, so the hook is what keeps them off the wire.
+  for (const model of [
+    { provider: "openai", baseUrl: "https://llm.internal.example/v1" },
+    { provider: "deepseek", baseUrl: "https://api.deepseek.example/v1" },
+  ]) {
+    const headers = stamped();
+    await hooks.before_provider_headers({ type: "before_provider_headers", headers }, { model });
+    assert.deepEqual(headers, { "Authorization": "Bearer sk-user", "User-Agent": "pi" }, JSON.stringify(model));
+  }
+  // A routed request keeps both; so does one whose model is unknown.
+  for (const model of [{ provider: "openai", baseUrl: GATEWAY }, undefined]) {
+    const headers = stamped();
+    await hooks.before_provider_headers({ type: "before_provider_headers", headers }, { model });
+    assert.deepEqual(headers, stamped(), JSON.stringify(model));
+  }
+});
+
 test("session start reports a starting model that bypasses the gateway", async () => {
   const { api, hooks } = setup();
   gateway(api);

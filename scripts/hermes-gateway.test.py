@@ -310,6 +310,39 @@ class Refusal(PluginCase):
             with self.assertRaises(plugin.CaptureRefused, msg=value):
                 self.execute(ctx, base_url="https://api.openai.com/v1")
 
+    def test_an_opted_out_call_to_another_host_carries_no_envelope_and_no_nonce(self):
+        _, ctx = self.launch()
+        os.environ["TAPES_ALLOW_UNCAPTURED"] = "1"
+        (middleware,) = ctx.middleware["llm_execution"]
+        stamped = {
+            "model": "m",
+            "messages": [],
+            "extra_headers": {
+                "X-Tapes-Harness-Id": "hermes",
+                "x-tapes-harness-session-id": "s",
+                "x-tapes-gateway-nonce": "launch-nonce",
+                "anthropic-beta": "x",
+            },
+        }
+        sent = []
+
+        def next_call(payload=None):
+            sent.append(stamped if payload is None else payload)
+            return "response"
+
+        self.assertEqual(
+            middleware(request=stamped, next_call=next_call, base_url="https://api.openai.com/v1"),
+            "response",
+        )
+        self.assertEqual(sent[0]["extra_headers"], {"anthropic-beta": "x"})
+        self.assertEqual(sent[0]["model"], "m")
+        # The request it was handed is not mutated in place.
+        self.assertIn("x-tapes-gateway-nonce", stamped["extra_headers"])
+        # On the gateway the same headers are the point, and stay.
+        sent.clear()
+        middleware(request=stamped, next_call=next_call, base_url=GATEWAY)
+        self.assertIs(sent[0], stamped)
+
     def test_inert_without_a_gateway(self):
         plugin = load()
         ctx = FakeContext()
@@ -445,14 +478,17 @@ class AuxiliaryCalls(PluginCase):
         self.launch()
         self.assertFalse(hasattr(aux._build_call_kwargs, "__tapes_wrapped__"))
 
-    def test_the_static_config_header_is_what_an_unpatched_aux_call_keeps(self):
-        # With stamping skipped the plugin adds nothing; the harness id then
-        # comes only from the recipe's model.default_headers, which hermes's
-        # aux client merges itself — pinned on the Rust side. Here: the plugin
-        # does not strip a client-level header it never sees.
-        aux = install_fake_aux("def _build_call_kwargs(base_url=None):\n    return {'extra_headers': {'x-tapes-harness-id': 'hermes'}}\n")
+    def test_an_opted_out_aux_call_to_another_host_leaves_bare(self):
+        # Whatever put an envelope header on the kwargs, an uncaptured call to
+        # another host does not carry it; the same call on the gateway does.
+        aux = install_fake_aux(FAKE_AUX_SOURCE.replace(
+            'return {"model": model, "messages": messages, "timeout": timeout}',
+            'return {"model": model, "extra_headers": {"x-tapes-harness-id": "hermes", "x-tapes-gateway-nonce": "n", "anthropic-beta": "x"}}',
+        ))
         self.launch()
-        self.assertEqual(aux._build_call_kwargs(base_url=GATEWAY), {"extra_headers": {"x-tapes-harness-id": "hermes"}})
+        os.environ["TAPES_ALLOW_UNCAPTURED"] = "1"
+        bare = aux.call_llm(task="title_generation", base_url="https://openrouter.ai/api/v1")
+        self.assertEqual(bare["extra_headers"], {"anthropic-beta": "x"})
 
     def test_metadata_encoding_is_compact_base64url_without_padding(self):
         plugin, _ = self.launch()

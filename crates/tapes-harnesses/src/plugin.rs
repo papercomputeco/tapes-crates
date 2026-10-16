@@ -90,7 +90,7 @@
 //! | `TAPES_GATEWAY_LABEL_SUFFIX` | [`pi::GATEWAY_LABEL_SUFFIX_ENV`] | launcher | Appended to the status label after the active schema. |
 //! | `TAPES_GATEWAY_REMEDY` | [`pi::GATEWAY_REMEDY_ENV`] | launcher | The sentence appended to a schema-mismatch warning — the diagnosis is the asset's, the remedy is the launcher's, because only it knows which command switches its proxy. |
 //! | `TAPES_GATEWAY_PROVIDER_CONFIG` | [`pi::GATEWAY_PROVIDER_CONFIG_ENV`] | launcher | pi only: a launch-local provider (name, api, models) registered at the gateway in place of the three built-ins. |
-//! | `TAPES_ALLOW_UNCAPTURED` | [`ALLOW_UNCAPTURED_ENV`] | user | Exactly `1` lets a captured session send a request that bypasses the proxy, uncaptured, with a warning. Otherwise such a request is refused with a one-line error. Read at request time. |
+//! | `TAPES_ALLOW_UNCAPTURED` | [`ALLOW_UNCAPTURED_ENV`] | user | Exactly `1` lets a captured session send a request that bypasses the proxy, uncaptured and without any `x-tapes-*` header, with a warning. Otherwise such a request is refused with a one-line error. Read at request time. |
 //!
 //! Every one of them is optional, and every one has a defined unset
 //! behaviour. That is not politeness: an artifact installs globally and loads
@@ -132,7 +132,7 @@ pub use tapes_capture::gateway::{
 /// a provider the proxy does not front, a model with its own endpoint — is
 /// refused with a one-line error instead of leaving capture silently. Set to
 /// exactly [`ALLOW_UNCAPTURED_ON`], such requests go out to their own endpoint
-/// uncaptured, with a warning. Read at request time, so it can be set for one
+/// uncaptured, with a warning, and carrying no `x-tapes-*` header and no nonce. Read at request time, so it can be set for one
 /// command inside a session. Read by the pi extension and the hermes plugin.
 pub const ALLOW_UNCAPTURED_ENV: &str = "TAPES_ALLOW_UNCAPTURED";
 

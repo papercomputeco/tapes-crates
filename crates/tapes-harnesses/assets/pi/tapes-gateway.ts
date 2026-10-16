@@ -119,7 +119,8 @@ const GATEWAY_NONCE_HEADER = "x-tapes-gateway-nonce";
 // requests would go anywhere else — a provider the proxy does not front, a
 // `models.json` provider with its own endpoint — is refused rather than sent
 // uncaptured. Exactly `1` restores the old behaviour for this process: those
-// requests go to their own endpoint, with a warning. Any other value, or none,
+// requests go to their own endpoint, with a warning, and without any
+// `x-tapes-*` header or the nonce echo. Any other value, or none,
 // keeps the refusal; a typo must not quietly turn capture off.
 const ALLOW_UNCAPTURED_ENV = "TAPES_ALLOW_UNCAPTURED";
 
@@ -383,6 +384,28 @@ export default function (pi: ExtensionAPI) {
       return undefined;
     }
     return refusingPayload(new Error(refusalMessage(providerOf(model), model.baseUrl)));
+  });
+
+  // An opted-out request leaves bare. The envelope and the nonce echo are
+  // registered as *provider* headers, and pi applies a provider's headers to
+  // every model under it — including a `models.json` model under `openai` with
+  // its own `baseUrl`. So a request this extension lets through uncaptured
+  // would otherwise hand its session identity, and the proxy's secret, to
+  // whatever host that model names. pi passes the merged header map through
+  // this hook by reference; deleting from it is what removes them. Judged on
+  // the same model the refusal above is, and only for a model that is known
+  // and off the proxy: a routed request needs both.
+  pi.on("before_provider_headers", (event, ctx) => {
+    const model: SelectedModel = ctx.model;
+    const headers = (event as { headers?: unknown }).headers;
+    if (!model || routed(model) || typeof headers !== "object" || headers === null) {
+      return;
+    }
+    for (const name of Object.keys(headers)) {
+      if (name.toLowerCase().startsWith("x-tapes-")) {
+        delete (headers as Record<string, unknown>)[name];
+      }
+    }
   });
 
   pi.on("model_select", (event, ctx) => {
