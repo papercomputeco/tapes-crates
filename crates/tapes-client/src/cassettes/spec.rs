@@ -232,8 +232,10 @@ fn methods_of(
         .filter_map(|verb| {
             let operation = item.get(*verb)?.as_object()?;
 
-            let mut params = shared.clone();
-            params.extend(parameters_of(operation.get("parameters"), document));
+            let params = override_params(
+                shared.clone(),
+                parameters_of(operation.get("parameters"), document),
+            );
 
             let operation_id = operation
                 .get("operationId")
@@ -261,6 +263,27 @@ fn methods_of(
             })
         })
         .collect()
+}
+
+/// Path-item parameters with the operation's own laid over them.
+///
+/// OpenAPI identifies a parameter by name and location, and an operation's
+/// declaration overrides a path item's for the same pair — its own enum,
+/// description, or requiredness included. Appending instead would keep both,
+/// and the shared one (first in the list) would win wherever a parameter is
+/// looked up, so an operation that widens a shared enum would have its own
+/// values refused before a request was ever sent.
+fn override_params(mut shared: Vec<Param>, operation: Vec<Param>) -> Vec<Param> {
+    for param in operation {
+        match shared
+            .iter_mut()
+            .find(|s| s.wire == param.wire && s.location == param.location)
+        {
+            Some(slot) => *slot = param,
+            None => shared.push(param),
+        }
+    }
+    shared
 }
 
 /// Whether a request body object marks itself required. Absent means optional,

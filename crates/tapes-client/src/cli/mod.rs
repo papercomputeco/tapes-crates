@@ -803,6 +803,45 @@ mod tests {
     }
 
     #[test]
+    fn an_operation_override_of_a_shared_parameter_is_the_one_enforced() {
+        // OpenAPI identifies a parameter by name and location: the operation's
+        // declaration replaces the path item's, enum included. Keeping the
+        // shared one would refuse a value the operation accepts.
+        let surface = surface_from(
+            "summary",
+            &json!({"paths": {"/v1/cassettes/summary/digest/{horizon}": {
+                "parameters": [
+                    {"name": "horizon", "in": "path", "required": true,
+                     "schema": {"type": "string", "enum": ["24h", "7d"]}}
+                ],
+                "get": {"operationId": "getDigest", "parameters": [
+                    {"name": "horizon", "in": "path", "required": true,
+                     "schema": {"type": "string", "enum": ["30d"]}}
+                ]}
+            }}}),
+        );
+        let command = augment(root(), &surface);
+        let matches = command
+            .clone()
+            .try_get_matches_from(["tapesctl", "summary", "get-digest", "30d"])
+            .unwrap();
+        let (_, cassette_matches) = matches.subcommand().unwrap();
+        let (_, call) = resolve_invocation(&surface, "summary", cassette_matches).unwrap();
+        assert_eq!(
+            call.path_params,
+            vec![("horizon".to_owned(), "30d".to_owned())]
+        );
+        assert!(
+            command
+                .try_get_matches_from(["tapesctl", "summary", "get-digest", "7d"])
+                .is_err(),
+            "the shared enum must not survive the override"
+        );
+        let help = method_help(&surface, "summary", "get-digest");
+        assert!(help.contains("<HORIZON: 30d>"), "got: {help}");
+    }
+
+    #[test]
     fn the_body_fields_are_listed_after_the_route() {
         let help = method_help(&digest_surface(), "summary", "create-digest");
         assert!(help.contains("Body fields (--body JSON):"), "got: {help}");
