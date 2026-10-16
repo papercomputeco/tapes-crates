@@ -72,6 +72,28 @@ pub struct Param {
     pub required: bool,
     /// Help text, when the document carries any.
     pub description: Option<String>,
+    /// The closed set of values the document's schema declares (`enum`),
+    /// in the document's order; empty when the value is open.
+    pub values: Vec<String>,
+}
+
+/// One top-level field of a JSON request body, as the document declares it.
+///
+/// Presentation only: the body is still sent as the caller wrote it. This is
+/// what lets generated help say which fields a `--body` takes, which a user
+/// otherwise has to find in the cassette's source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BodyField {
+    /// The property name, verbatim.
+    pub name: String,
+    /// Whether the body schema lists it as required.
+    pub required: bool,
+    /// The schema's `type`, when it declares one.
+    pub kind: Option<String>,
+    /// The closed set of values, when the schema declares an `enum`.
+    pub values: Vec<String>,
+    /// Help text, when the document carries any.
+    pub description: Option<String>,
 }
 
 /// One generated method.
@@ -98,6 +120,10 @@ pub struct Method {
     /// `Some(true)` when a request body is required, `Some(false)` when it is
     /// accepted but optional, `None` when the operation takes none.
     pub body: Option<bool>,
+    /// The top-level fields of the JSON request body, when its schema
+    /// declares them; empty otherwise, including for an operation with no
+    /// body. Ordered by name.
+    pub body_fields: Vec<BodyField>,
 }
 
 impl Method {
@@ -228,6 +254,10 @@ fn methods_of(
                 path: path.to_owned(),
                 params: finish_params(path, params, reducer),
                 body: operation.get("requestBody").map(body_required),
+                body_fields: operation
+                    .get("requestBody")
+                    .map(|body| body_fields(body, document))
+                    .unwrap_or_default(),
             })
         })
         .collect()
@@ -239,6 +269,79 @@ fn body_required(body: &Value) -> bool {
     body.get("required")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+/// The top-level fields of a request body's JSON schema.
+///
+/// Reads `content.application/json.schema` (or the first content type's
+/// schema when JSON is not declared), resolving local `$ref`s. Anything it
+/// cannot read yields no fields rather than an error: this only feeds help.
+fn body_fields(body: &Value, document: &Value) -> Vec<BodyField> {
+    let body = deref(body, document);
+    let Some(content) = body.get("content").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let Some(media) = content
+        .get("application/json")
+        .or_else(|| content.values().next())
+    else {
+        return Vec::new();
+    };
+    let Some(schema) = media.get("schema").map(|schema| deref(schema, document)) else {
+        return Vec::new();
+    };
+    let required: BTreeSet<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|names| names.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut fields: Vec<BodyField> = properties
+        .iter()
+        .map(|(name, declared)| {
+            let declared = deref(declared, document);
+            BodyField {
+                name: name.clone(),
+                required: required.contains(name.as_str()),
+                kind: text_of(declared.get("type")),
+                values: enum_values(declared),
+                description: text_of(declared.get("description")),
+            }
+        })
+        .collect();
+    fields.sort_by(|a, b| a.name.cmp(&b.name));
+    fields
+}
+
+/// Follow one local `$ref`, or return the value itself.
+fn deref<'a>(value: &'a Value, document: &'a Value) -> &'a Value {
+    value
+        .get("$ref")
+        .and_then(Value::as_str)
+        .and_then(|reference| resolve(reference, document))
+        .unwrap_or(value)
+}
+
+/// A schema's `enum`, as strings; empty when it declares none.
+///
+/// A non-string member is rendered as its JSON text, so `[1, 2]` still shows
+/// as `1|2` rather than vanishing.
+fn enum_values(schema: &Value) -> Vec<String> {
+    schema
+        .get("enum")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| match value {
+                    Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Read a parameter list, resolving local `$ref`s into
@@ -259,7 +362,7 @@ fn parameters_of(value: Option<&Value>, document: &Value) -> Vec<Param> {
                 Some(reference) => resolve(reference, document)?,
                 None => entry,
             };
-            parameter(resolved)
+            parameter(resolved, document)
         })
         .collect()
 }
@@ -271,7 +374,7 @@ fn resolve<'a>(reference: &str, document: &'a Value) -> Option<&'a Value> {
 }
 
 /// Read one parameter object.
-fn parameter(value: &Value) -> Option<Param> {
+fn parameter(value: &Value, document: &Value) -> Option<Param> {
     let wire = value.get("name").and_then(Value::as_str)?.trim();
     if wire.is_empty() {
         return None;
@@ -297,6 +400,10 @@ fn parameter(value: &Value) -> Option<Param> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
         description: text_of(value.get("description")),
+        values: value
+            .get("schema")
+            .map(|schema| enum_values(deref(schema, document)))
+            .unwrap_or_default(),
     })
 }
 
@@ -325,6 +432,7 @@ fn finish_params(path: &str, params: Vec<Param>, reducer: &ReducerConfig<'_>) ->
                 location: Location::Path,
                 required: true,
                 description: None,
+                values: Vec::new(),
             });
         }
     }

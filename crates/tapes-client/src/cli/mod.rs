@@ -16,10 +16,11 @@
 //! own `--api-url` flag (added through the [`augment`] decorator), builds
 //! its client, and prints the way its hand-written commands do.
 
+use clap::builder::PossibleValuesParser;
 use clap::{Arg, ArgMatches, Command};
 use snafu::{OptionExt, ResultExt};
 
-use crate::cassettes::spec::{Cassette, Location, Method, Surface};
+use crate::cassettes::spec::{BodyField, Cassette, Location, Method, Surface};
 use crate::error::{Result, error};
 use crate::transport::Call;
 
@@ -95,20 +96,36 @@ where
     }
     // The route is the one piece of context a user cannot recover from the
     // command name, and it is what makes a generated surface auditable.
-    command = command.after_help(format!("Calls {} {}", method.http_method, method.path));
+    command = command.after_help(after_help(method));
 
     for param in &method.params {
         let mut arg = Arg::new(param.flag.clone());
         if let Some(description) = &param.description {
             arg = arg.help(description.clone());
         }
-        arg = match param.location {
-            Location::Path => arg.required(true).value_name(param.flag.to_uppercase()),
-            Location::Query | Location::Header => arg
-                .long(param.flag.clone())
-                .required(param.required)
-                .value_name("VALUE"),
+        let name = match param.location {
+            Location::Path => param.flag.to_uppercase(),
+            Location::Query | Location::Header => "VALUE".to_owned(),
         };
+        arg = match param.location {
+            Location::Path => arg.required(true),
+            Location::Query | Location::Header => {
+                arg.long(param.flag.clone()).required(param.required)
+            }
+        };
+        // A closed value set is shown in the placeholder itself — `<HORIZON:
+        // 24h|7d>` — and enforced, so a typo is refused locally with the
+        // choices listed rather than as a 400 in the cassette's own words.
+        // clap's separate "[possible values: ...]" line is hidden because the
+        // placeholder already says it.
+        if param.values.is_empty() {
+            arg = arg.value_name(name);
+        } else {
+            arg = arg
+                .value_name(format!("{name}: {}", param.values.join("|")))
+                .value_parser(PossibleValuesParser::new(param.values.clone()))
+                .hide_possible_values(true);
+        }
         command = command.arg(arg);
     }
 
@@ -123,6 +140,47 @@ where
     }
 
     decorate(command)
+}
+
+/// The text after a generated method's help: the route it calls, then the
+/// request body's fields when the document declares them.
+///
+/// The route is the one piece of context a user cannot recover from the
+/// command name. The body fields are the other: without them, `--body` is a
+/// JSON blob whose shape lives only in the cassette's source.
+fn after_help(method: &Method) -> String {
+    let mut text = format!("Calls {} {}", method.http_method, method.path);
+    if method.body.is_some() && !method.body_fields.is_empty() {
+        text.push_str("\n\nBody fields (--body JSON):");
+        for field in &method.body_fields {
+            text.push_str("\n  ");
+            text.push_str(&body_field_line(field));
+        }
+    }
+    text
+}
+
+/// One line describing one body field: `name (type: a|b, required) — help`.
+fn body_field_line(field: &BodyField) -> String {
+    let mut facts: Vec<String> = Vec::new();
+    match (&field.kind, field.values.is_empty()) {
+        (Some(kind), true) => facts.push(kind.clone()),
+        (Some(kind), false) => facts.push(format!("{kind}: {}", field.values.join("|"))),
+        (None, false) => facts.push(field.values.join("|")),
+        (None, true) => {}
+    }
+    if field.required {
+        facts.push("required".to_owned());
+    }
+    let mut line = field.name.clone();
+    if !facts.is_empty() {
+        line.push_str(&format!(" ({})", facts.join(", ")));
+    }
+    if let Some(description) = &field.description {
+        line.push_str(" — ");
+        line.push_str(description);
+    }
+    line
 }
 
 /// Resolve a matched cassette invocation back into the method it names and
@@ -663,5 +721,101 @@ mod tests {
 
         let err = resolve_invocation(&surface, "absent", cassette_matches).unwrap_err();
         assert!(err.to_string().contains("absent"), "got: {err}");
+    }
+
+    fn digest_surface() -> Surface {
+        surface_from(
+            "summary",
+            &json!({
+                "paths": {
+                    "/v1/cassettes/summary/digest/{horizon}": {
+                        "get": {"operationId": "getDigest", "parameters": [
+                            {"name": "horizon", "in": "path", "required": true,
+                             "schema": {"type": "string", "enum": ["24h", "7d"]}},
+                            {"name": "format", "in": "query",
+                             "schema": {"$ref": "#/components/schemas/Format"}}
+                        ]}
+                    },
+                    "/v1/cassettes/summary/digests": {
+                        "post": {"operationId": "createDigest", "requestBody": {
+                            "required": true,
+                            "content": {"application/json": {"schema": {
+                                "$ref": "#/components/schemas/DigestRequest"
+                            }}}
+                        }}
+                    }
+                },
+                "components": {"schemas": {
+                    "Format": {"type": "string", "enum": ["md", "json"]},
+                    "DigestRequest": {
+                        "type": "object",
+                        "required": ["horizon"],
+                        "properties": {
+                            "horizon": {"type": "string", "enum": ["24h", "7d"],
+                                        "description": "Window to digest"},
+                            "note": {"type": "string"}
+                        }
+                    }
+                }}
+            }),
+        )
+    }
+
+    fn method_help(surface: &Surface, cassette: &str, method: &str) -> String {
+        let mut command = augment(root(), surface);
+        command
+            .find_subcommand_mut(cassette)
+            .and_then(|c| c.find_subcommand_mut(method))
+            .unwrap()
+            .render_long_help()
+            .to_string()
+    }
+
+    #[test]
+    fn a_closed_value_set_is_shown_in_the_placeholder() {
+        let help = method_help(&digest_surface(), "summary", "get-digest");
+        assert!(help.contains("<HORIZON: 24h|7d>"), "got: {help}");
+        // A `$ref`'d schema's enum is read through the document.
+        assert!(help.contains("<VALUE: md|json>"), "got: {help}");
+    }
+
+    #[test]
+    fn a_value_outside_the_closed_set_is_refused_locally() {
+        let command = augment(root(), &digest_surface());
+        let refused =
+            command
+                .clone()
+                .try_get_matches_from(["tapesctl", "summary", "get-digest", "30d"]);
+        let err = refused.unwrap_err().to_string();
+        assert!(err.contains("24h") && err.contains("7d"), "got: {err}");
+
+        let matches = command
+            .try_get_matches_from(["tapesctl", "summary", "get-digest", "7d", "--format", "md"])
+            .unwrap();
+        let surface = digest_surface();
+        let (_, cassette_matches) = matches.subcommand().unwrap();
+        let (_, call) = resolve_invocation(&surface, "summary", cassette_matches).unwrap();
+        assert_eq!(
+            call.path_params,
+            vec![("horizon".to_owned(), "7d".to_owned())]
+        );
+        assert_eq!(call.query, vec![("format".to_owned(), "md".to_owned())]);
+    }
+
+    #[test]
+    fn the_body_fields_are_listed_after_the_route() {
+        let help = method_help(&digest_surface(), "summary", "create-digest");
+        assert!(help.contains("Body fields (--body JSON):"), "got: {help}");
+        assert!(
+            help.contains("horizon (string: 24h|7d, required) — Window to digest"),
+            "got: {help}"
+        );
+        assert!(help.contains("note (string)"), "got: {help}");
+    }
+
+    #[test]
+    fn a_method_without_declared_body_fields_lists_none() {
+        let help = method_help(&hello_surface(), "hello-world", "create-hello");
+        assert!(!help.contains("Body fields"), "got: {help}");
     }
 }

@@ -52,9 +52,10 @@
 pub mod cache;
 pub mod discovery;
 pub mod invoke;
+pub mod search;
 pub mod spec;
 
 pub use cache::CacheConfig;
 pub use discovery::{Discovery, DiscoveryEntry};
 pub use invoke::{DISCOVERY_PATH, fetch_discovery, fetch_spec, guard_spec_path, invoke};
-pub use spec::{Cassette, Location, Method, Param, ReducerConfig, Surface};
+pub use spec::{BodyField, Cassette, Location, Method, Param, ReducerConfig, Surface};

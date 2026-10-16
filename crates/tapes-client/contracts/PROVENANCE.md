@@ -64,7 +64,10 @@ identity a doc-comment edit does not move):
    by `tapes dev openapi`, or served as the ETag), and the seal (tapes
    `api/CONTRACT` at the tag).
 4. Run `make contracts-check` (strict again now that the pin matches) and
-   `cargo test`. Then re-pin each consumer: their coverage gates will list any
+   `cargo test`. If the new contract publishes anything `pending.yaml` (the
+   hand-written, unsealed fragment beside this file) still carries,
+   `no_pending_entry_is_already_published` names it: delete those entries in
+   this change, and fix any model the published shape disagrees with. Then re-pin each consumer: their coverage gates will list any
    operation the new contract added so it can be mapped or deliberately
    allow-listed. A bump that adds an operation is expected to fail every
    consumer's build until each has decided about it — that is the gate working.

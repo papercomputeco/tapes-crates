@@ -8,7 +8,8 @@
 //!
 //! **The floor**, one implementation each and shared by both surfaces:
 //! [`transport`] (the seam), [`error`] (one taxonomy), [`decode`] (one policy),
-//! [`page`] (one cursor convention), [`path`] (one join, two modes).
+//! [`page`] (one cursor convention), [`path`] (one join, two modes), and
+//! [`envelope`] (one list-output shape for every consumer's `--json`).
 //!
 //! **The two surfaces:** [`core`] is the sealed contract — [`core::contract`]
 //! reduces the vendored document to an operation table, [`core::coverage`]
@@ -41,6 +42,7 @@
 pub mod cassettes;
 pub mod core;
 pub mod decode;
+pub mod envelope;
 pub mod error;
 pub mod page;
 pub mod path;
@@ -52,6 +54,7 @@ pub mod cli;
 #[cfg(feature = "direct-http")]
 pub mod http;
 
+pub use envelope::ListEnvelope;
 pub use error::{Error, Result};
 pub use page::Page;
 pub use path::{PathMode, call_url};
@@ -60,6 +63,9 @@ pub use transport::{
     WireRequest, WireResponse,
 };
 
+pub use crate::cassettes::search::{
+    SEARCH_SPANS_ROUTE, SearchQuery, SpanSearchHit, SpanSearchResponse, search_spans,
+};
 pub use crate::cassettes::{
     CacheConfig, Cassette, Discovery, DiscoveryEntry, Location, Method, Param, ReducerConfig,
     Surface,

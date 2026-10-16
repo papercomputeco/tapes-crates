@@ -27,6 +27,13 @@ pub struct SessionItem {
     /// empty for rows captured before the edge began stamping it.
     pub auth_subject: String,
 
+    /// The latest known email for `auth_subject`, as the deployment's
+    /// identity hook recorded it; empty when unknown.
+    pub auth_subject_email: String,
+
+    /// The latest known display name for `auth_subject`; empty when unknown.
+    pub auth_subject_name: String,
+
     /// The contract's `cwd`.
     pub cwd: String,
 

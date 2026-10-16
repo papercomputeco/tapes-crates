@@ -35,6 +35,17 @@ use crate::error::{Result, error};
 /// `contracts/tapes-api.yaml` holds.
 pub const TAPES_API_YAML: &str = include_str!("../../contracts/tapes-api.yaml");
 
+/// Hand-written additions tapes has agreed to ship but has not yet published,
+/// byte-for-byte what `contracts/pending.yaml` holds.
+///
+/// Merged *under* [`TAPES_API_YAML`] by [`document`]: the vendored document
+/// wins wherever it speaks, and only what it lacks is taken from here. This is
+/// how an operation can be typed before the release that publishes it without
+/// a second request-building path — the method still resolves through the one
+/// operation table. Every entry retires itself: see
+/// [`pending_entries_already_published`].
+pub const TAPES_API_PENDING_YAML: &str = include_str!("../../contracts/pending.yaml");
+
 /// Operation ids of the vendored contract, named once so client methods,
 /// coverage tables, and tests cannot drift apart on a string.
 pub mod ops {
@@ -74,6 +85,12 @@ pub mod ops {
     pub const DELETE_SESSION: &str = "deleteSession";
     /// `GET /v1/stats`
     pub const GET_STATS: &str = "getStats";
+    /// `GET /v1/sessions/{id}/transcript` — pending publication; see
+    /// [`TAPES_API_PENDING_YAML`](super::TAPES_API_PENDING_YAML).
+    pub const GET_SESSION_TRANSCRIPT: &str = "getSessionTranscript";
+    /// `GET /v1/subjects` — pending publication; see
+    /// [`TAPES_API_PENDING_YAML`](super::TAPES_API_PENDING_YAML).
+    pub const LIST_SUBJECTS: &str = "listSubjects";
 }
 
 /// The core read surface, reduced from the vendored contract.
@@ -94,13 +111,12 @@ impl CoreSurface {
     /// [`core`](crate::core::contract::core).
     #[must_use]
     pub fn reduce(reducer: &ReducerConfig<'_>) -> Option<Self> {
-        Self::from_yaml(TAPES_API_YAML, reducer)
+        Self::from_document(document().ok()?, reducer)
     }
 
-    /// Reduce a contract document from its YAML bytes.
-    fn from_yaml(yaml: &str, reducer: &ReducerConfig<'_>) -> Option<Self> {
-        let document: Value = serde_yaml::from_str(yaml).ok()?;
-        let methods = spec::reduce_methods(&document, reducer);
+    /// Reduce a parsed contract document.
+    fn from_document(document: &Value, reducer: &ReducerConfig<'_>) -> Option<Self> {
+        let methods = spec::reduce_methods(document, reducer);
         if methods.is_empty() {
             // An empty surface means the bytes were YAML but not a contract;
             // treat it exactly like a parse failure rather than serving a
@@ -132,7 +148,217 @@ impl CoreSurface {
 /// only for a build whose embedded document is corrupt, which this crate's
 /// contract tests fail long before.
 static CORE: LazyLock<Option<CoreSurface>> =
-    LazyLock::new(|| CoreSurface::from_yaml(TAPES_API_YAML, &ReducerConfig::default()));
+    LazyLock::new(|| CoreSurface::from_document(document().ok()?, &ReducerConfig::default()));
+
+/// The merged document, parsed once per process. `None` only for a build
+/// whose embedded bytes are corrupt.
+static DOCUMENT: LazyLock<Option<Value>> = LazyLock::new(|| {
+    let vendored: Value = serde_yaml::from_str(TAPES_API_YAML).ok()?;
+    let pending: Value = serde_yaml::from_str(TAPES_API_PENDING_YAML).ok()?;
+    Some(merge_pending(vendored, &pending))
+});
+
+/// The contract document every gate and the operation table read: the
+/// vendored document with [`TAPES_API_PENDING_YAML`] merged under it.
+///
+/// One document for all of them, so the operation table, the schema gate, and
+/// the enum gate cannot disagree about whether a pending entry exists.
+pub fn document() -> Result<&'static Value> {
+    DOCUMENT.as_ref().context(error::VendoredContractSnafu {
+        surface: "tapes-api",
+    })
+}
+
+/// Merge pending additions under a vendored document.
+///
+/// The vendored document wins wherever it speaks: an operation, a parameter
+/// (by name and location), a schema, or a schema property it already declares
+/// is kept as published and the pending copy is ignored. Only absences are
+/// filled. That is what lets a re-pin land before this file is pruned without
+/// the pending guess overriding the published shape.
+fn merge_pending(mut vendored: Value, pending: &Value) -> Value {
+    if let Some(paths) = pending.get("paths").and_then(Value::as_object) {
+        for (path, item) in paths {
+            let Some(item) = item.as_object() else {
+                continue;
+            };
+            let Some(target_paths) = object_at(&mut vendored, &["paths"]) else {
+                continue;
+            };
+            let target_item = target_paths
+                .entry(path.clone())
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            let Some(target_item) = target_item.as_object_mut() else {
+                continue;
+            };
+            for (verb, operation) in item {
+                match target_item.get_mut(verb) {
+                    None => {
+                        target_item.insert(verb.clone(), operation.clone());
+                    }
+                    Some(existing) => merge_parameters(existing, operation),
+                }
+            }
+        }
+    }
+    if let Some(schemas) = pending
+        .pointer("/components/schemas")
+        .and_then(Value::as_object)
+    {
+        for (name, schema) in schemas {
+            let Some(target) = object_at(&mut vendored, &["components", "schemas"]) else {
+                continue;
+            };
+            match target.get_mut(name) {
+                None => {
+                    target.insert(name.clone(), schema.clone());
+                }
+                Some(existing) => {
+                    let Some(props) = schema.get("properties").and_then(Value::as_object) else {
+                        continue;
+                    };
+                    let Some(target_props) = object_at(existing, &["properties"]) else {
+                        continue;
+                    };
+                    for (property, declared) in props {
+                        target_props
+                            .entry(property.clone())
+                            .or_insert_with(|| declared.clone());
+                    }
+                }
+            }
+        }
+    }
+    vendored
+}
+
+/// Append the pending operation's parameters the existing one lacks.
+fn merge_parameters(existing: &mut Value, pending: &Value) {
+    let Some(additions) = pending.get("parameters").and_then(Value::as_array) else {
+        return;
+    };
+    let Some(existing) = existing.as_object_mut() else {
+        return;
+    };
+    let list = existing
+        .entry("parameters")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Some(list) = list.as_array_mut() else {
+        return;
+    };
+    for param in additions {
+        if !list.iter().any(|known| same_parameter(known, param)) {
+            list.push(param.clone());
+        }
+    }
+}
+
+/// Whether two parameter objects name the same parameter: OpenAPI identifies
+/// one by its name and location together.
+fn same_parameter(a: &Value, b: &Value) -> bool {
+    a.get("name") == b.get("name") && a.get("in") == b.get("in")
+}
+
+/// The object at `keys` under `value`, created along the way when absent.
+fn object_at<'v>(
+    value: &'v mut Value,
+    keys: &[&str],
+) -> Option<&'v mut serde_json::Map<String, Value>> {
+    let mut current = value;
+    for key in keys {
+        current = current
+            .as_object_mut()?
+            .entry((*key).to_owned())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    }
+    current.as_object_mut()
+}
+
+/// Every entry of [`TAPES_API_PENDING_YAML`] the vendored document now
+/// publishes itself, by path.
+///
+/// Empty while the pending file only says what the published contract does
+/// not. A re-pin that publishes a pending shape makes this non-empty, and the
+/// crate's own test fails naming each entry — so the change that re-pins is
+/// the change that prunes, and the pending guess cannot linger beside the
+/// published answer.
+pub fn pending_entries_already_published() -> Result<Vec<String>> {
+    let parse = |yaml: &str| -> Result<Value> {
+        serde_yaml::from_str(yaml)
+            .ok()
+            .context(error::VendoredContractSnafu {
+                surface: "tapes-api",
+            })
+    };
+    let vendored = parse(TAPES_API_YAML)?;
+    let pending = parse(TAPES_API_PENDING_YAML)?;
+    let mut published = Vec::new();
+
+    if let Some(paths) = pending.get("paths").and_then(Value::as_object) {
+        for (path, item) in paths {
+            for (verb, operation) in item.as_object().into_iter().flatten() {
+                let Some(existing) = vendored
+                    .get("paths")
+                    .and_then(|p| p.get(path))
+                    .and_then(|i| i.get(verb))
+                else {
+                    continue;
+                };
+                let carries_parameters_only = operation.get("responses").is_none();
+                if !carries_parameters_only {
+                    published.push(format!("paths.{path}.{verb}"));
+                    continue;
+                }
+                let known = existing
+                    .get("parameters")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                for param in operation
+                    .get("parameters")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if known.iter().any(|k| same_parameter(k, param)) {
+                        let name = param.get("name").and_then(Value::as_str).unwrap_or("?");
+                        published.push(format!("paths.{path}.{verb}.parameters.{name}"));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(schemas) = pending
+        .pointer("/components/schemas")
+        .and_then(Value::as_object)
+    {
+        for (name, schema) in schemas {
+            let Some(existing) = vendored.pointer(&format!("/components/schemas/{name}")) else {
+                continue;
+            };
+            // A pending schema that declares a `type` is a whole new schema;
+            // one without is a set of properties added to a published one.
+            if schema.get("type").is_some() {
+                published.push(format!("components.schemas.{name}"));
+                continue;
+            }
+            for property in schema
+                .get("properties")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flat_map(|props| props.keys())
+            {
+                if existing
+                    .pointer(&format!("/properties/{property}"))
+                    .is_some()
+                {
+                    published.push(format!("components.schemas.{name}.properties.{property}"));
+                }
+            }
+        }
+    }
+    Ok(published)
+}
 
 /// The core surface, or the build-defect error.
 pub fn core() -> Result<&'static CoreSurface> {
@@ -514,5 +740,82 @@ mod tests {
             .map(|p| p.flag.as_str())
             .collect();
         assert!(flags.contains(&"param-limit"), "got: {flags:?}");
+    }
+
+    #[test]
+    fn no_pending_entry_is_already_published() {
+        // The retirement gate. A re-pin that publishes a pending shape fails
+        // here, naming each entry to delete from `contracts/pending.yaml` —
+        // the published answer must not sit beside the hand-written guess.
+        assert_eq!(
+            pending_entries_already_published().unwrap(),
+            Vec::<String>::new(),
+            "delete these from contracts/pending.yaml: the vendored contract publishes them",
+        );
+    }
+
+    #[test]
+    fn pending_operations_resolve_through_the_one_operation_table() {
+        let surface = core().unwrap();
+        let transcript = surface.method(ops::GET_SESSION_TRANSCRIPT).unwrap();
+        assert_eq!(transcript.path, "/v1/sessions/{id}/transcript");
+        let subjects = surface.method(ops::LIST_SUBJECTS).unwrap();
+        assert_eq!(subjects.path, "/v1/subjects");
+        let listing = surface.method(ops::LIST_SESSIONS).unwrap();
+        assert!(
+            listing.params.iter().any(|p| p.wire == "subject"),
+            "the pending `subject` filter joins the published parameters",
+        );
+        assert!(
+            listing.params.iter().any(|p| p.wire == "auth_subject"),
+            "and the published parameters stay",
+        );
+    }
+
+    #[test]
+    fn the_vendored_document_wins_wherever_it_speaks() {
+        let vendored = serde_json::json!({
+            "paths": {"/a": {"get": {"operationId": "getA", "parameters": [
+                {"name": "x", "in": "query", "description": "published"}
+            ]}}},
+            "components": {"schemas": {"S": {"type": "object", "properties": {
+                "p": {"type": "string", "description": "published"}
+            }}}}
+        });
+        let pending = serde_json::json!({
+            "paths": {
+                "/a": {"get": {"parameters": [
+                    {"name": "x", "in": "query", "description": "guess"},
+                    {"name": "y", "in": "query"}
+                ]}},
+                "/b": {"get": {"operationId": "getB"}}
+            },
+            "components": {"schemas": {
+                "S": {"properties": {"p": {"type": "integer"}, "q": {"type": "string"}}},
+                "T": {"type": "object"}
+            }}
+        });
+        let merged = merge_pending(vendored, &pending);
+
+        let params = merged.pointer("/paths/~1a/get/parameters").unwrap();
+        assert_eq!(params.as_array().unwrap().len(), 2);
+        assert_eq!(params[0]["description"], "published");
+        assert_eq!(params[1]["name"], "y");
+        assert_eq!(
+            merged.pointer("/paths/~1b/get/operationId").unwrap(),
+            "getB"
+        );
+        assert_eq!(
+            merged
+                .pointer("/components/schemas/S/properties/p/type")
+                .unwrap(),
+            "string",
+        );
+        assert!(
+            merged
+                .pointer("/components/schemas/S/properties/q")
+                .is_some()
+        );
+        assert!(merged.pointer("/components/schemas/T").is_some());
     }
 }
