@@ -10,13 +10,11 @@ than advisory; see [The seal](#the-seal) below.
 
 * **Repo:** `tapes` (Paper Compute).
 * **Path within repo:** `fixtures/envelope/`.
-* **Current snapshot SHA:** `40c90342e5dd669b2d9d16ac6874498476c335ff`
-  ("✨ feat(sessions): resolve a fork parent in the parent's own harness") —
-  **an unreleased tapes commit**, vendored ahead of its release so the producer
-  half of `x-tapes-parent-harness-id` lands with the parser half. Re-pin this
-  line (and re-run the sync, which must be a no-op) to the tapes release that
-  carries it before a `tapes-capture` release depends on the new cases. TODO:
-  replace with a tagged fixture-cut id once tapes publishes versioned cuts
+* **Current snapshot SHA:** `8aa3294fa63068920eca070527e83a3754799673`
+  ("✨ feat(capture): keep OpenAI-compatible reasoning, link cross-harness
+  parents, and split idle header-less sessions (#393)") — tapes release
+  **v0.50.0**, the last commit to touch `fixtures/envelope`. TODO: replace
+  with a tagged fixture-cut id once tapes publishes versioned cuts
   (`fixtures/manifest.json` reserves the `cut` block for exactly that).
 
   It adds three cases on top of the previous snapshot (`7e3cdefb`, #284):
