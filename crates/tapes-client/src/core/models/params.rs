@@ -120,11 +120,6 @@ pub struct SessionListParams {
     pub harness_session_id: Option<String>,
     /// Only sessions captured for this authenticated subject (exact match).
     pub auth_subject: Option<String>,
-    /// Only sessions whose subject *matches* this value, case-insensitively:
-    /// the auth subject itself, its email, the email's local part, its name,
-    /// or the name's first word. `me` is never sent — the server does not
-    /// know who that is; resolve it to a concrete value first.
-    pub subject: Option<String>,
     /// Claimed filter params: repeatable `(name, value)` pairs appended to
     /// the query string, in order, after the declared parameters.
     ///
@@ -162,7 +157,6 @@ impl ContractParams for SessionListParams {
             self.harness_session_id.as_deref(),
         );
         push(&mut values, "auth_subject", self.auth_subject.as_deref());
-        push(&mut values, "subject", self.subject.as_deref());
         values
     }
 }
@@ -229,7 +223,7 @@ impl ContractParams for TranscriptQuery {
 /// `GET /v1/subjects` — the distinct subjects sessions were captured for.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SubjectListParams {
-    /// Case-insensitive substring filter over subject, name, and email.
+    /// Case-insensitive substring filter over the subject id.
     pub q: Option<String>,
     /// How many subjects to return.
     pub limit: Option<u32>,

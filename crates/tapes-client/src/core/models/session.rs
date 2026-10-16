@@ -23,16 +23,9 @@ use super::trace::TraceDetail;
 #[serde(default)]
 #[non_exhaustive]
 pub struct SessionItem {
-    /// The gateway-stamped JWT subject (WorkOS user id) captured at ingest;
-    /// empty for rows captured before the edge began stamping it.
+    /// The opaque authenticated subject id stamped at ingest; empty when the
+    /// capture path stamped none.
     pub auth_subject: String,
-
-    /// The latest known email for `auth_subject`, as the deployment's
-    /// identity hook recorded it; empty when unknown.
-    pub auth_subject_email: String,
-
-    /// The latest known display name for `auth_subject`; empty when unknown.
-    pub auth_subject_name: String,
 
     /// The contract's `cwd`.
     pub cwd: String,

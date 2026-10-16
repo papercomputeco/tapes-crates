@@ -38,18 +38,17 @@ fields.
   `TranscriptToolResult`. Operation id `getSessionTranscript`
   (`ops::GET_SESSION_TRANSCRIPT`).
 - `CoreClient::list_subjects(&SubjectListParams { q, limit })` with
-  `SubjectListResponse` and `SubjectItem`. Operation id `listSubjects`
-  (`ops::LIST_SUBJECTS`).
-- `SessionListParams.subject`: the case-insensitive subject match filter
-  (subject, email, email local part, name, first name). Resolve `me` before
-  sending it.
-- `SessionItem.auth_subject_name` and `SessionItem.auth_subject_email`.
+  `SubjectListResponse` and `SubjectItem { subject, session_count,
+  last_seen_at }`: the distinct opaque auth subject ids, most recent first.
+  tapes holds ids only; mapping one to a person is the client's concern.
+  Operation id `listSubjects` (`ops::LIST_SUBJECTS`).
 - `search_spans(&transport, &SearchQuery)`, `SearchQuery`,
   `SpanSearchResponse`, `SpanSearchHit`, and `SEARCH_SPANS_ROUTE`
   (`cassettes::search`): the search cassette's span route, typed with every
-  published hit field — owner name and email, cwd, harness, display title,
-  last seen, live — plus a flattened `extra` that keeps fields this build has
-  not heard of. `SearchQuery.extra` carries claimed params such as `label`.
+  published hit field — auth subject, cwd, harness, display title, last
+  seen, live — plus a flattened `extra` that keeps fields this build has
+  not heard of. `SearchQuery.auth_subject` is a list, sent as repeated
+  `auth_subject` params the cassette ORs. `SearchQuery.extra` carries claimed params such as `label`.
   `SpanSearchResponse::into_envelope` renders the shared search output shape.
 - `ListEnvelope<T>` (`envelope`): `{"items": [...], "next_cursor"?: "...",
   ...extra}`, the one list-style `--json` shape, with `write_json` /
@@ -63,8 +62,6 @@ fields.
 - **Breaking**: `Param` gains `values` and `Method` gains `body_fields`, so a
   struct literal of either no longer compiles. Both are built by the reducer
   in practice.
-- **Breaking**: `SessionListParams` gains `subject`; add `subject: None` to a
-  struct literal, or use `..Default::default()`.
 - The core operation table now carries `getSessionTranscript` and
   `listSubjects`, so a consumer's `core::coverage::check` reports them as
   unmapped until it exposes or allow-lists them.

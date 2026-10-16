@@ -409,7 +409,7 @@ impl<T: TapesTransport> CoreClient<T> {
     }
 
     /// `GET /v1/subjects` — the distinct subjects sessions were captured
-    /// for, with whatever name and email the deployment recorded.
+    /// for: opaque ids with their session counts, most recent first.
     ///
     /// Pending publication, like
     /// [`CoreClient::get_session_transcript`].
@@ -1455,11 +1455,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subjects_are_listed_with_their_names() {
+    async fn subjects_are_listed_with_their_counts() {
         let client = client(
             "http://127.0.0.1:8081",
             serde_json::json!({"items": [{
-                "subject": "user_01", "name": "Ada Lovelace", "email": "ada@example.com",
+                "subject": "user_01",
                 "session_count": 4, "last_seen_at": "2026-10-01T00:00:00Z"
             }]}),
         );
@@ -1474,31 +1474,7 @@ mod tests {
             client.transport().seen.borrow()[0],
             "http://127.0.0.1:8081/v1/subjects?q=ada&limit=10",
         );
-        assert_eq!(subjects.items[0].name, "Ada Lovelace");
+        assert_eq!(subjects.items[0].subject, "user_01");
         assert_eq!(subjects.items[0].session_count, 4);
-    }
-
-    #[tokio::test]
-    async fn the_session_listing_carries_the_subject_match_filter_and_names() {
-        let client = client(
-            "http://127.0.0.1:8081",
-            serde_json::json!({"items": [{
-                "id": "s-1", "auth_subject": "user_01",
-                "auth_subject_name": "Ada Lovelace", "auth_subject_email": "ada@example.com"
-            }]}),
-        );
-        let listing = client
-            .list_sessions(&SessionListParams {
-                subject: Some("ada".to_owned()),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(
-            client.transport().seen.borrow()[0],
-            "http://127.0.0.1:8081/v1/sessions?subject=ada",
-        );
-        assert_eq!(listing.items[0].auth_subject_name, "Ada Lovelace");
-        assert_eq!(listing.items[0].auth_subject_email, "ada@example.com");
     }
 }

@@ -1,29 +1,22 @@
 //! Subject shapes: who a session's `auth_subject` is.
 //!
-//! A subject is the opaque identity ingest stamps on a session. The listing
-//! joins whatever name and email the deployment's identity hook has recorded
-//! for it — and still lists a subject nothing is known about, because an
-//! unnamed subject is a fact about the data, not a gap in the response.
+//! A subject is the opaque identity ingest stamps on a session. tapes knows
+//! only the id: turning one into a person is the deployment's concern, joined
+//! at read time by whatever client knows its own directory.
 
 use serde::{Deserialize, Serialize};
 
 use super::ContractModel;
 
-/// One distinct auth subject and what is known about it.
+/// One distinct auth subject.
 ///
 /// Models the contract's `SubjectItem` schema.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 #[non_exhaustive]
 pub struct SubjectItem {
-    /// The latest known email; empty when unknown.
-    pub email: String,
-
     /// When a session for this subject was last seen, an RFC 3339 timestamp.
     pub last_seen_at: String,
-
-    /// The latest known display name; empty when unknown.
-    pub name: String,
 
     /// How many sessions carry this subject.
     pub session_count: i64,

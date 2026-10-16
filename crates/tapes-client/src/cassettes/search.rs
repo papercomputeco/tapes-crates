@@ -33,11 +33,10 @@ pub struct SearchQuery {
     pub query: String,
     /// How many hits to return.
     pub top_k: Option<u32>,
-    /// Only hits from sessions with exactly this auth subject.
-    pub auth_subject: Option<String>,
-    /// Only hits from sessions whose subject matches this value — the same
-    /// match rule as the sessions listing's `subject`. Resolve `me` first.
-    pub subject: Option<String>,
+    /// Only hits from sessions captured for one of these auth subject ids
+    /// (exact match; several are OR'd). Each is sent as its own repeated
+    /// `auth_subject` param. Resolving a person to ids is the caller's job.
+    pub auth_subject: Vec<String>,
     /// Only hits from sessions whose working directory starts with this.
     pub cwd: Option<String>,
     /// Only hits from sessions captured from this harness id.
@@ -74,8 +73,9 @@ impl SearchQuery {
             }
         };
         push("top_k", self.top_k.map(|n| n.to_string()));
-        push("auth_subject", self.auth_subject.clone());
-        push("subject", self.subject.clone());
+        for subject in &self.auth_subject {
+            push("auth_subject", Some(subject.clone()));
+        }
         push("cwd", self.cwd.clone());
         push("harness", self.harness.clone());
         push("since", self.since.clone());
@@ -163,10 +163,6 @@ pub struct SpanSearchHit {
     pub model: String,
     /// The session's auth subject.
     pub auth_subject: String,
-    /// The latest known name for the auth subject; empty when unknown.
-    pub auth_subject_name: String,
-    /// The latest known email for the auth subject; empty when unknown.
-    pub auth_subject_email: String,
     /// The session's working directory.
     pub cwd: String,
     /// The harness the session was captured from.
@@ -240,8 +236,7 @@ mod tests {
             "trace_id": "t-1", "span_id": "sp-1", "session_id": "s-1",
             "score": 0.75, "user_prompt": "fix auth", "snippet": "redirect",
             "started_at": "2026-10-01T00:00:00Z", "model": "claude",
-            "auth_subject": "user_01", "auth_subject_name": "Ada Lovelace",
-            "auth_subject_email": "ada@example.com", "cwd": "/src/app",
+            "auth_subject": "user_01", "cwd": "/src/app",
             "harness_id": "claude", "display_title": "Auth fix",
             "last_seen_at": "2026-10-01T00:05:00Z", "live": true,
             "a_field_from_the_future": {"k": 1}
@@ -257,8 +252,7 @@ mod tests {
         let query = SearchQuery {
             query: "auth".to_owned(),
             top_k: Some(5),
-            auth_subject: Some("user_01".to_owned()),
-            subject: Some("ada".to_owned()),
+            auth_subject: vec!["user_01".to_owned(), "local:ada".to_owned()],
             cwd: Some("/src".to_owned()),
             harness: Some("claude".to_owned()),
             since: Some("2026-10-01T00:00:00Z".to_owned()),
@@ -270,7 +264,7 @@ mod tests {
         assert_eq!(
             transport.seen.borrow()[0],
             "http://127.0.0.1:8081/v1/cassettes/search/spans?query=auth&top_k=5\
-             &auth_subject=user_01&subject=ada&cwd=%2Fsrc&harness=claude\
+             &auth_subject=user_01&auth_subject=local%3Aada&cwd=%2Fsrc&harness=claude\
              &since=2026-10-01T00%3A00%3A00Z&until=2026-10-02T00%3A00%3A00Z&live=true&label=bug",
         );
         assert_eq!(response.extra["count"], 0);
@@ -295,7 +289,7 @@ mod tests {
     #[test]
     fn a_hit_carries_every_published_field_and_keeps_unknown_ones() {
         let parsed: SpanSearchHit = serde_json::from_value(hit()).unwrap();
-        assert_eq!(parsed.auth_subject_name, "Ada Lovelace");
+        assert_eq!(parsed.auth_subject, "user_01");
         assert_eq!(parsed.display_title, "Auth fix");
         assert!(parsed.live);
         assert_eq!(serde_json::to_value(&parsed).unwrap(), hit());

@@ -761,15 +761,6 @@ mod tests {
         assert_eq!(transcript.path, "/v1/sessions/{id}/transcript");
         let subjects = surface.method(ops::LIST_SUBJECTS).unwrap();
         assert_eq!(subjects.path, "/v1/subjects");
-        let listing = surface.method(ops::LIST_SESSIONS).unwrap();
-        assert!(
-            listing.params.iter().any(|p| p.wire == "subject"),
-            "the pending `subject` filter joins the published parameters",
-        );
-        assert!(
-            listing.params.iter().any(|p| p.wire == "auth_subject"),
-            "and the published parameters stay",
-        );
     }
 
     #[test]

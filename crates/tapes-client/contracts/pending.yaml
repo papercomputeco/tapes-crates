@@ -20,18 +20,6 @@
 # any disagreement between this guess and the published shape surfaces in
 # the same change through the model gate.
 paths:
-  /v1/sessions:
-    get:
-      operationId: listSessions
-      parameters:
-      - description: 'Filter to sessions whose subject matches this value,
-          case-insensitively: the auth subject itself, the subject''s email, the
-          email''s local part, the subject''s name, or the name''s first word. The
-          value `me` is not resolved server-side; a client resolves it first.'
-        in: query
-        name: subject
-        schema:
-          type: string
   /v1/sessions/{id}/transcript:
     get:
       description: Returns a session's conversation as transcript rows, one per
@@ -102,12 +90,11 @@ paths:
       - sessions
   /v1/subjects:
     get:
-      description: Returns one row per distinct session auth subject, with the
-        latest known name and email, ordered by last_seen_at descending. Subjects
-        with no recorded name still appear.
+      description: Returns one row per distinct session auth subject, ordered by
+        last_seen_at descending.
       operationId: listSubjects
       parameters:
-      - description: Case-insensitive substring filter over subject, name, and email
+      - description: Case-insensitive substring filter over the subject id
         in: query
         name: q
         schema:
@@ -136,15 +123,6 @@ paths:
       - subjects
 components:
   schemas:
-    SessionItem:
-      properties:
-        auth_subject_email:
-          description: The latest known email for auth_subject; omitted when unknown.
-          type: string
-        auth_subject_name:
-          description: The latest known display name for auth_subject; omitted when
-            unknown.
-          type: string
     TranscriptResponse:
       description: One page of a session's transcript.
       properties:
@@ -204,14 +182,10 @@ components:
           type: string
       type: object
     SubjectItem:
-      description: One distinct auth subject and what is known about it.
+      description: One distinct auth subject.
       properties:
-        email:
-          type: string
         last_seen_at:
           format: date-time
-          type: string
-        name:
           type: string
         session_count:
           type: integer
