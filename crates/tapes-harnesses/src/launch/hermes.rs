@@ -66,12 +66,16 @@
 //! the main loop last used — per execution context, falling back to the
 //! process's most recent for a background thread — so in a process running
 //! several concurrent sessions an auxiliary call may attach to the most
-//! recent one. The config also sets `model.default_headers` to a static
-//! `x-tapes-harness-id: hermes`, so if the plugin's auxiliary hook cannot
-//! install on some hermes release those calls still name the harness. That
-//! floor alone is not a complete envelope (it has no session id); a capture
-//! client applying tapes-capture's completeness rule still files such a call
-//! as unattributed.
+//! recent one. Should the plugin's auxiliary hook not install on some hermes
+//! release, those calls arrive bare and a capture client files them as
+//! unattributed.
+//!
+//! The config sets no `model.default_headers`. hermes applies those to
+//! whichever provider the session is on, not only the `custom` one this plan
+//! declares, so a header there would ride an opted-out call (see
+//! [`crate::plugin::ALLOW_UNCAPTURED_ENV`]) to a third-party host. Every
+//! `x-tapes-*` header comes from the plugin, which puts it only on a request
+//! bound for the proxy.
 
 use std::path::{Path, PathBuf};
 
@@ -174,17 +178,6 @@ impl HermesRecipe {
         if let Some(api_mode) = &self.api_mode {
             model.insert("api_mode".to_owned(), json!(api_mode));
         }
-        // A static harness id on every request hermes makes to this provider,
-        // main and auxiliary alike — hermes merges `model.default_headers`
-        // into both clients. It is the floor under the plugin: should the
-        // plugin's auxiliary stamping not install on some hermes release, an
-        // auxiliary call still names its harness rather than arriving bare.
-        // The plugin's per-request `extra_headers` override it with the full
-        // envelope wherever it runs.
-        model.insert(
-            "default_headers".to_owned(),
-            json!({ tapes_capture::envelope::X_TAPES_HARNESS_ID: HARNESS_ID }),
-        );
         json!({
             "model": Value::Object(model),
             // Stated empty rather than left to defaults: any provider the
@@ -272,11 +265,9 @@ mod tests {
         assert_eq!(doc["model"]["default"], "mock-model");
         assert!(doc["model"].get("api_key").is_none(), "no key → no api_key");
         assert!(doc["model"].get("api_mode").is_none());
-        // The static floor for auxiliary calls the plugin cannot reach.
-        assert_eq!(
-            doc["model"]["default_headers"],
-            json!({ "x-tapes-harness-id": "hermes" })
-        );
+        // No client-level headers: hermes would send them to whichever
+        // provider the session switched to, captured or not.
+        assert!(doc["model"].get("default_headers").is_none());
         assert_eq!(
             plan.config_files[0].path,
             PathBuf::from(HOME).join("config.yaml")

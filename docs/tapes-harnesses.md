@@ -130,13 +130,14 @@ that config, the plugin, and the `plugins.enabled` entry hermes requires before
 it loads any user plugin. hermes's auxiliary calls (title generation,
 compression, vision, web_extract, session_search, skills_hub, mcp) bypass the
 middleware; the plugin stamps them through hermes's shared auxiliary kwargs
-builder with `x-tapes-harness-metadata` `{"aux_task": …}`, and the planned
-config's `model.default_headers` carries a static `x-tapes-harness-id: hermes`
-as a floor. The remaining gap: an auxiliary call in a process running several
+builder with `x-tapes-harness-metadata` `{"aux_task": …}`. The planned config
+sets no `model.default_headers`: hermes would apply them to any provider, so
+every `x-tapes-*` header comes from the plugin and only on a request bound for
+the proxy. The remaining gap: an auxiliary call in a process running several
 concurrent sessions may attach to the most recent one. While captured, the
 plugin refuses any main-loop or auxiliary call whose base URL is not on the
 proxy, with a one-line error naming the host; `TAPES_ALLOW_UNCAPTURED=1` lets
-such calls through untouched. The main-loop refusal rides `llm_execution`
+such calls through, carrying no `x-tapes-*` header and no nonce. The main-loop refusal rides `llm_execution`
 middleware, because hermes swallows exceptions from request middleware.
 
 pi is captured by its extension alone: it redirects pi's built-in
