@@ -64,16 +64,17 @@ jobs:
       # the registry index lookups a real `cargo publish` performs before it
       # sends anything. Nothing is uploaded — `--dry-run` stops at the wire.
       #
-      # The `tapes-harnesses` dry run resolves `tapes-capture` from the
-      # crates.io index, so it could only join this list once that crate had a
-      # published release — it does now, so all three run. Ordering matches
-      # the dependency order in docs/releasing.md.
-      - name: Dry-run publish (tapes-capture)
-        run: cargo publish --dry-run --locked -p tapes-capture
-      - name: Dry-run publish (tapes-harnesses)
-        run: cargo publish --dry-run --locked -p tapes-harnesses
-      - name: Dry-run publish (tapes-client)
-        run: cargo publish --dry-run --locked -p tapes-client
+      # `--workspace` for the same reason as the packaging step above: it
+      # publishes the crates in dependency order (tapes-capture, tapes-client,
+      # tapes-harnesses) and resolves each workspace sibling against the one it
+      # just prepared, so a coordinated bump — `tapes-harnesses` requiring a
+      # `tapes-capture` version not yet on crates.io — is checked rather than
+      # failing on a lookup no release could satisfy until the first crate
+      # ships. Per-crate `-p` dry runs cannot express that ordering. The
+      # `publish = false` mock crate is skipped. The release workflow still
+      # publishes one crate per tag, in the order docs/releasing.md gives.
+      - name: Dry-run publish (every crate, in dependency order)
+        run: cargo publish --workspace --dry-run --locked
 
       # A crate whose vendored data is missing from the package is still
       # publishable in the sense that the tarball builds — these files are
