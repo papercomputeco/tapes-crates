@@ -69,6 +69,11 @@ pub struct SessionItem {
     /// name was captured.
     pub name: String,
 
+    /// The parent session's harness, present exactly when
+    /// `parent_session_id` is; it differs from `harness_id` when the parent
+    /// ran under another harness.
+    pub parent_harness_id: String,
+
     /// The contract's `parent_session_id`.
     pub parent_session_id: String,
 

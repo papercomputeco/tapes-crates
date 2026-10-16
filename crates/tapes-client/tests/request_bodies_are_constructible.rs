@@ -44,6 +44,7 @@ fn every_request_body_can_be_built_and_sent_by_a_consumer() {
             harness_id: "claude".to_owned(),
             harness_session_id: "hs-1".to_owned(),
             paper_proxy_request_id: "req-1".to_owned(),
+            parent_harness_id: "codex".to_owned(),
             parent_harness_session_id: "hs-0".to_owned(),
             raw_turn_id: 1,
             reason: "misattributed at ingest".to_owned(),
