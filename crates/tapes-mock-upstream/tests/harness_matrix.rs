@@ -573,15 +573,17 @@ fn nothing_landed(pair: &MockPair, result: &RunResult, grace: Duration) -> Optio
     if pair.ingest.wait_for_turn(grace) {
         return None;
     }
-    let upstream_calls = pair.upstream.requests().len();
+    // Model calls only: startup probes (`GET /v1/models`) say nothing about
+    // whether a turn went through the client.
+    let model_calls = pair.upstream.turn_requests().len();
     let reported_nothing = result.stdout.contains("no turns were captured");
-    let diagnosis = if upstream_calls == 0 {
-        "the mock upstream saw no request either, so the harness never reached the client's proxy"
+    let diagnosis = if model_calls == 0 {
+        "the mock upstream saw no model call either, so no turn reached the client's proxy"
             .to_owned()
     } else {
         format!(
-            "the mock upstream served {upstream_calls} request(s), so the client proxied the turn \
-             and delivered it somewhere other than the mock ingest it was given"
+            "the mock upstream saw {model_calls} model call(s) but the mock ingest received \
+             nothing, so the turn was not delivered to the ingest the client was given"
         )
     };
     Some(format!(
@@ -973,9 +975,47 @@ fn a_client_that_captured_nothing_is_not_a_pass() {
     );
     assert!(failure.contains("reported capturing nothing"), "{failure}");
     assert!(
-        failure.contains("never reached the client's proxy"),
+        failure.contains("no turn reached the client's proxy"),
         "{failure}"
     );
+
+    // A startup probe is not a model call: the diagnosis must not claim a turn
+    // was proxied.
+    raw_request(&pair.upstream.base_url(), "GET /v1/models", "");
+    let failure = nothing_landed(&pair, &quiet, Duration::ZERO).expect("nothing landed");
+    assert!(failure.contains("saw no model call either"), "{failure}");
+
+    // An actual model call that never reached the ingest says exactly that.
+    raw_request(
+        &pair.upstream.base_url(),
+        "POST /v1/chat/completions",
+        r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#,
+    );
+    let failure = nothing_landed(&pair, &quiet, Duration::ZERO).expect("nothing landed");
+    assert!(
+        failure.contains("saw 1 model call(s) but the mock ingest received nothing"),
+        "{failure}"
+    );
+}
+
+/// Send one HTTP/1.1 request to `base` and drain the response.
+fn raw_request(base: &str, request_line: &str, body: &str) {
+    use std::io::{Read, Write};
+    let host = base
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .expect("host");
+    let mut stream = std::net::TcpStream::connect(host).expect("connect mock upstream");
+    write!(
+        stream,
+        "{request_line} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .expect("write request");
+    let mut response = Vec::new();
+    let _ = stream.read_to_end(&mut response);
 }
 
 /// A cell is not a pass just because the request arrived.

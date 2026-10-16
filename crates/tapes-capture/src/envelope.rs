@@ -740,16 +740,38 @@ pub fn has_complete_inbound_envelope(headers: &HeaderMap) -> bool {
 /// Percent-decode a header value written with [`UTF8_VALUE_ESCAPE`].
 ///
 /// The inverse of the producer's encoding, under the corpus's reader rules:
-/// `percent_decode` leaves a malformed escape (`%zz`) as its literal bytes, so
-/// the raw value survives; a result that is not UTF-8, or that carries a C0
-/// control or DEL, is refused rather than carried, because escaping exists to
-/// keep exactly those bytes off the wire.
+/// a value with any malformed escape (`%zz`, a trailing `%`) is kept exactly as
+/// it arrived — every escape is checked before any is decoded, so a valid
+/// escape beside a malformed one is not half-decoded; a result that is not
+/// UTF-8, or that carries a C0 control or DEL, is refused rather than carried,
+/// because escaping exists to keep exactly those bytes off the wire.
 fn decode_utf8_value(raw: &str) -> Option<String> {
+    if !escapes_are_well_formed(raw) {
+        return (!raw.chars().any(|c| c.is_ascii_control())).then(|| raw.to_owned());
+    }
     let decoded = percent_decode_str(raw).decode_utf8().ok()?;
     if decoded.chars().any(|c| c.is_ascii_control()) {
         return None;
     }
     Some(decoded.into_owned())
+}
+
+/// Whether every `%` in `raw` starts a two-hex-digit escape.
+fn escapes_are_well_formed(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let pair = bytes.get(i + 1..i + 3);
+            if !pair.is_some_and(|p| p.iter().all(u8::is_ascii_hexdigit)) {
+                return false;
+            }
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    true
 }
 
 fn envelope_field(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -1753,6 +1775,8 @@ mod tests {
     fn from_headers_handles_cwd_encodings_a_producer_never_emits() {
         let cases: &[(&str, Option<&str>)] = &[
             ("/Users/matt/%zz-bad", Some("/Users/matt/%zz-bad")),
+            ("/work%20dir/%zz", Some("/work%20dir/%zz")),
+            ("/a%2Fb/trailing%", Some("/a%2Fb/trailing%")),
             ("/trailing%", Some("/trailing%")),
             ("/Users/matt%0Awith-injection:%20yes", None),
             ("/del%7F", None),
