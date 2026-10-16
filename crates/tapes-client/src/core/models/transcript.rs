@@ -31,7 +31,7 @@ pub struct SessionTranscriptResponse {
 }
 
 impl ContractModel for SessionTranscriptResponse {
-    const SCHEMA: &'static str = "SessionTranscriptResponse";
+    const SCHEMA: &'static str = "TranscriptResponse";
 }
 
 impl SessionTranscriptResponse {
@@ -90,7 +90,7 @@ pub struct TranscriptRow {
 }
 
 impl ContractModel for TranscriptRow {
-    const SCHEMA: &'static str = "TranscriptRow";
+    const SCHEMA: &'static str = "Row";
 }
 
 /// One tool call an assistant row made.
@@ -111,7 +111,7 @@ pub struct TranscriptToolCall {
 }
 
 impl ContractModel for TranscriptToolCall {
-    const SCHEMA: &'static str = "TranscriptToolCall";
+    const SCHEMA: &'static str = "ToolCall";
 }
 
 /// One tool result a user row carried back.
@@ -132,5 +132,5 @@ pub struct TranscriptToolResult {
 }
 
 impl ContractModel for TranscriptToolResult {
-    const SCHEMA: &'static str = "TranscriptToolResult";
+    const SCHEMA: &'static str = "ToolResult";
 }

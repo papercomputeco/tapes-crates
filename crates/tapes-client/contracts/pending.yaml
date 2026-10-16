@@ -83,7 +83,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SessionTranscriptResponse'
+                $ref: '#/components/schemas/TranscriptResponse'
           description: One page of the session's transcript
         "400":
           content:
@@ -145,19 +145,19 @@ components:
           description: The latest known display name for auth_subject; omitted when
             unknown.
           type: string
-    SessionTranscriptResponse:
+    TranscriptResponse:
       description: One page of a session's transcript.
       properties:
         items:
           items:
-            $ref: '#/components/schemas/TranscriptRow'
+            $ref: '#/components/schemas/Row'
           type: array
         next_cursor:
           type: string
         session_id:
           type: string
       type: object
-    TranscriptRow:
+    Row:
       description: One side of one main-thread llm turn.
       properties:
         role:
@@ -177,16 +177,16 @@ components:
           type: string
         tool_calls:
           items:
-            $ref: '#/components/schemas/TranscriptToolCall'
+            $ref: '#/components/schemas/ToolCall'
           type: array
         tool_results:
           items:
-            $ref: '#/components/schemas/TranscriptToolResult'
+            $ref: '#/components/schemas/ToolResult'
           type: array
         trace_id:
           type: string
       type: object
-    TranscriptToolCall:
+    ToolCall:
       properties:
         id:
           type: string
@@ -194,7 +194,7 @@ components:
         name:
           type: string
       type: object
-    TranscriptToolResult:
+    ToolResult:
       properties:
         is_error:
           type: boolean
