@@ -1,0 +1,25 @@
+# Pending additions to the tapes read contract — NOT a vendored document.
+#
+# `tapes-api.yaml` beside this file is sealed: it is the published release
+# asset, byte-for-byte, and nothing here may edit it. This file is the
+# opposite kind of thing: a small, hand-written OpenAPI fragment describing
+# operations, parameters, and schema properties that tapes has agreed to ship
+# but has not yet published in a release this crate can pin.
+#
+# `src/core/contract.rs` merges it UNDER the vendored document: anything the
+# vendored document already carries wins, and only what it lacks is taken
+# from here. So the typed methods route through the one operation table and
+# the one reducer exactly as every published operation does, and the gates
+# (`core::coverage`, `core::models::coverage`) judge the models against the
+# merged document.
+#
+# Every entry here retires itself. `pending_entries_already_published` in
+# `src/core/contract.rs` lists each entry the vendored document now carries,
+# and a test fails while that list is non-empty — so the re-pin that
+# publishes these shapes is the change that deletes them from this file, and
+# any disagreement between this guess and the published shape surfaces in
+# the same change through the model gate.
+#
+# Empty: tapes v0.51.0 published every entry this file carried.
+paths: {}
+components: {}

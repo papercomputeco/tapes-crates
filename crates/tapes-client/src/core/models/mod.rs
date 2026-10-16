@@ -90,7 +90,9 @@ pub mod protocol;
 pub mod raw_turn;
 pub mod session;
 pub mod span;
+pub mod subject;
 pub mod trace;
+pub mod transcript;
 
 use serde::{Deserialize, Deserializer};
 
@@ -100,7 +102,7 @@ pub use admin::{
 };
 pub use params::{
     PayloadDetail, RawTurnListParams, SessionListParams, SessionTracesParams, SortDirection,
-    StatsParams, TraceListParams, TraceParams,
+    StatsParams, SubjectListParams, TraceListParams, TraceParams, TranscriptQuery, TranscriptRole,
 };
 pub use protocol::{ErrorResponse, McpError, McpRequest, McpResponse};
 pub use raw_turn::{
@@ -112,8 +114,12 @@ pub use session::{
     SessionTracesResponse, SessionUpdateRequest, SessionUsage, TreeTask,
 };
 pub use span::{SpanItem, SpanLinkItem};
+pub use subject::{SubjectItem, SubjectListResponse};
 pub use trace::{
     MainUsage, StandaloneTraceDetail, TraceDetail, TraceItem, TraceListResponse, TraceUsage,
+};
+pub use transcript::{
+    SessionTranscriptResponse, TranscriptRow, TranscriptToolCall, TranscriptToolResult,
 };
 
 /// A type that models one named schema of the vendored contract.

@@ -118,7 +118,7 @@ pub struct SessionListParams {
     /// refuses either combined with `cursor`, `sort`, `direction`, `since`,
     /// or `until` (400), and ignores `limit` while the filter is active.
     pub harness_session_id: Option<String>,
-    /// Only sessions captured for this authenticated subject.
+    /// Only sessions captured for this authenticated subject (exact match).
     pub auth_subject: Option<String>,
     /// Claimed filter params: repeatable `(name, value)` pairs appended to
     /// the query string, in order, after the declared parameters.
@@ -157,6 +157,85 @@ impl ContractParams for SessionListParams {
             self.harness_session_id.as_deref(),
         );
         push(&mut values, "auth_subject", self.auth_subject.as_deref());
+        values
+    }
+}
+
+/// Which rows of a transcript to return.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscriptRole {
+    /// Only rows carrying genuine user text.
+    User,
+    /// Only assistant rows.
+    Assistant,
+    /// Both (the server default).
+    All,
+}
+
+impl ContractEnum for TranscriptRole {
+    const DECLARED_BY: &'static [(&'static str, &'static str)] =
+        &[("getSessionTranscript", "role")];
+    const VALUES: &'static [&'static str] = &["user", "assistant", "all"];
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+            Self::All => "all",
+        }
+    }
+}
+
+/// `GET /v1/sessions/{id}/transcript` — one page of a session's
+/// conversation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TranscriptQuery {
+    /// Which rows to return (server default: all).
+    pub role: Option<TranscriptRole>,
+    /// Case-insensitive substring filter over each row's text.
+    pub q: Option<String>,
+    /// Include subagent threads (server default: root thread only).
+    pub subagents: Option<bool>,
+    /// How many rows in the page (server default 200, max 1000).
+    pub limit: Option<u32>,
+    /// The cursor from a previous page's `next_cursor`, minted for the same
+    /// session.
+    pub cursor: Option<String>,
+}
+
+impl ContractParams for TranscriptQuery {
+    const OPERATION: &'static str = "getSessionTranscript";
+
+    fn values(&self) -> Vec<(&'static str, String)> {
+        let mut values = Vec::new();
+        push_enum(&mut values, "role", self.role);
+        push(&mut values, "q", self.q.as_deref());
+        if let Some(subagents) = self.subagents {
+            values.push(("subagents", subagents.to_string()));
+        }
+        push_num(&mut values, "limit", self.limit);
+        push(&mut values, "cursor", self.cursor.as_deref());
+        values
+    }
+}
+
+/// `GET /v1/subjects` — the distinct subjects sessions were captured for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubjectListParams {
+    /// Case-insensitive substring filter over the subject id.
+    pub q: Option<String>,
+    /// How many subjects to return.
+    pub limit: Option<u32>,
+}
+
+impl ContractParams for SubjectListParams {
+    const OPERATION: &'static str = "listSubjects";
+
+    fn values(&self) -> Vec<(&'static str, String)> {
+        let mut values = Vec::new();
+        push(&mut values, "q", self.q.as_deref());
+        push_num(&mut values, "limit", self.limit);
         values
     }
 }

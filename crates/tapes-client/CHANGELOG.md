@@ -13,6 +13,62 @@ before the tag is cut.
 Pre-1.0, `0.x` versions carry the usual Cargo meaning: a breaking change bumps
 the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
+## [Unreleased]
+
+## [0.7.0] - 2026-10-16
+
+Typed reads for the transcript and subject endpoints tapes is adding, the
+search cassette's hit model shared by every consumer, one list-output JSON
+shape, and generated cassette help that shows closed value sets and body
+fields.
+
+### Added
+
+- `contracts/pending.yaml` and `core::contract::TAPES_API_PENDING_YAML`: a
+  hand-written fragment of operations, parameters, and schema properties
+  tapes has agreed to ship but has not yet published, merged *under* the
+  vendored contract by the new `core::contract::document()`. The vendored
+  document wins wherever it speaks. `pending_entries_already_published()`
+  names every entry a re-pinned contract now publishes, and a crate test fails
+  while that list is non-empty, so the re-pin is the change that prunes it.
+- `CoreClient::get_session_transcript(id, &TranscriptQuery)` and
+  `CoreClient::get_whole_session_transcript` (follows `next_cursor`), with
+  `TranscriptQuery { role, q, subagents, limit, cursor }`, `TranscriptRole`,
+  `SessionTranscriptResponse`, `TranscriptRow`, `TranscriptToolCall`, and
+  `TranscriptToolResult`. Operation id `getSessionTranscript`
+  (`ops::GET_SESSION_TRANSCRIPT`).
+- `CoreClient::list_subjects(&SubjectListParams { q, limit })` with
+  `SubjectListResponse` and `SubjectItem { subject, session_count,
+  last_seen_at }`: the distinct opaque auth subject ids, most recent first.
+  tapes holds ids only; mapping one to a person is the client's concern.
+  Operation id `listSubjects` (`ops::LIST_SUBJECTS`).
+- `search_spans(&transport, &SearchQuery)`, `SearchQuery`,
+  `SpanSearchResponse`, `SpanSearchHit`, and `SEARCH_SPANS_ROUTE`
+  (`cassettes::search`): the search cassette's span route, typed with every
+  published hit field — auth subject, cwd, harness, display title, last
+  seen, live — plus a flattened `extra` that keeps fields this build has
+  not heard of. `SearchQuery.auth_subject` is a list, sent as repeated
+  `auth_subject` params the cassette ORs. `SearchQuery.extra` carries claimed params such as `label`.
+  `SpanSearchResponse::into_envelope` renders the shared search output shape.
+- `ListEnvelope<T>` (`envelope`): `{"items": [...], "next_cursor"?: "...",
+  ...extra}`, the one list-style `--json` shape, with `write_json` /
+  `print_json` and `From<Page<T>>`.
+- `cassettes::spec::Param.values` and `cassettes::spec::BodyField` /
+  `Method.body_fields`: a parameter schema's `enum` and a JSON request body's
+  top-level fields, read through local `$ref`s.
+
+### Changed
+
+- **Breaking**: `Param` gains `values` and `Method` gains `body_fields`, so a
+  struct literal of either no longer compiles. Both are built by the reducer
+  in practice.
+- The core operation table now carries `getSessionTranscript` and
+  `listSubjects`, so a consumer's `core::coverage::check` reports them as
+  unmapped until it exposes or allow-lists them.
+- Generated cassette commands show a closed value set in the placeholder
+  (`<HORIZON: 24h|7d>`) and refuse a value outside it before anything is sent,
+  and list a request body's fields after the route.
+
 ## [0.6.0] - 2026-10-01
 
 Three reads the tapes API now pages in place — a session's traces, a

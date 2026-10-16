@@ -70,11 +70,13 @@ red oracle into a red oracle and a red seal.
 ```text
 crates/tapes-client/
 ├── contracts/tapes-api.yaml   # the sealed contract, pinned by PROVENANCE.md
+├── contracts/pending.yaml     # agreed-but-unpublished additions, merged under it
 └── src/
     ├── transport.rs           # THE seam — one trait both surfaces call through
     ├── error.rs               # one taxonomy: Contract/Transport/ApiStatus/Decode
     ├── decode.rs              # one decode policy (the generic-T seam)
     ├── page.rs                # one pagination convention (the cursor walk)
+    ├── envelope.rs            # one list-output JSON shape for consumers' --json
     ├── path.rs                # one join: PathMode::Direct | UnderBase
     ├── core/                  # the SEALED surface (table known at build time)
     │   ├── contract.rs        #   the vendored document, reduced to operations
@@ -84,6 +86,7 @@ crates/tapes-client/
     │   ├── discovery.rs       #   GET /v1/cassettes, cache + revalidation
     │   ├── cache.rs
     │   ├── spec.rs            #   a cassette's OpenAPI → method table
+    │   ├── search.rs          #   the search cassette's typed span search
     │   └── invoke.rs
     ├── cli/                   # feature "cli": the generated clap surfaces
     └── http.rs                # feature "direct-http": DirectHttp
@@ -111,6 +114,10 @@ and a path join where only one side had learned about gateway prefixes. So:
   resolution, auth, retry, and TLS live inside a `TapesTransport` impl, which
   is what keeps consumers with wildly different delivery stories on one
   implementation of the read surface.
+- An operation tapes has agreed to ship but not yet published goes in
+  `contracts/pending.yaml`, never in the sealed `tapes-api.yaml`. The merge
+  keeps the vendored document authoritative, and a test fails once a re-pin
+  publishes a pending entry, so delete it in that same change.
 - Coverage tables stay with consumers. They describe one client's surface, and
   sharing them would break the gate they exist to be.
 

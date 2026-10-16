@@ -30,7 +30,7 @@ use tapes_client::core::models::params::ContractParams;
 use tapes_client::core::models::{
     McpRequest, PayloadDetail, RawTurnAttributionRepairRequest, RawTurnListParams, SeedDemoRequest,
     SessionListParams, SessionTracesParams, SessionUpdateRequest, SortDirection, StatsParams,
-    TraceListParams, TraceParams,
+    SubjectListParams, TraceListParams, TraceParams, TranscriptQuery, TranscriptRole,
 };
 
 #[test]
@@ -44,6 +44,7 @@ fn every_request_body_can_be_built_and_sent_by_a_consumer() {
             harness_id: "claude".to_owned(),
             harness_session_id: "hs-1".to_owned(),
             paper_proxy_request_id: "req-1".to_owned(),
+            parent_harness_id: "codex".to_owned(),
             parent_harness_session_id: "hs-0".to_owned(),
             raw_turn_id: 1,
             reason: "misattributed at ingest".to_owned(),
@@ -113,6 +114,19 @@ fn every_parameter_set_can_be_built_by_a_consumer() {
             since: Some("2020-01-01T00:00:00Z".to_owned()),
             until: Some("2020-01-02T00:00:00Z".to_owned()),
             auth_subject: Some("user".to_owned()),
+        }
+        .values(),
+        TranscriptQuery {
+            role: Some(TranscriptRole::User),
+            q: Some("auth".to_owned()),
+            subagents: Some(false),
+            limit: Some(200),
+            cursor: Some("c".to_owned()),
+        }
+        .values(),
+        SubjectListParams {
+            q: Some("ada".to_owned()),
+            limit: Some(10),
         }
         .values(),
     ];

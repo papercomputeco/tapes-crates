@@ -38,9 +38,10 @@ use crate::core::models::params::ContractParams;
 use crate::core::models::{
     RawTurnHeaderItem, RawTurnListParams, RawTurnListResponse, SeedDemoRequest, SeedResult,
     SessionDetailResponse, SessionItem, SessionListParams, SessionListResponse,
-    SessionTracesParams, SessionTracesResponse, SessionUpdateRequest, SpanItem,
-    StandaloneTraceDetail, StatsParams, StatsResponse, TraceListParams, TraceListResponse,
-    TraceParams,
+    SessionTracesParams, SessionTracesResponse, SessionTranscriptResponse, SessionUpdateRequest,
+    SpanItem, StandaloneTraceDetail, StatsParams, StatsResponse, SubjectListParams,
+    SubjectListResponse, TraceListParams, TraceListResponse, TraceParams, TranscriptQuery,
+    TranscriptRow,
 };
 use crate::decode;
 use crate::error::{Result, error};
@@ -362,6 +363,62 @@ impl<T: TapesTransport> CoreClient<T> {
         let mut whole = envelope.into_inner().unwrap_or_default();
         whole.traces = traces;
         Ok(whole)
+    }
+
+    /// `GET /v1/sessions/{id}/transcript` — one page of a session's
+    /// conversation, as user and assistant rows.
+    ///
+    /// Pending publication: the operation is typed from
+    /// [`crate::core::contract::TAPES_API_PENDING_YAML`] until a tapes
+    /// release publishes it, and resolves through the same operation table
+    /// either way. For every row, see
+    /// [`CoreClient::get_whole_session_transcript`].
+    ///
+    /// # Errors
+    ///
+    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
+    pub async fn get_session_transcript(
+        &self,
+        id: &str,
+        query: &TranscriptQuery,
+    ) -> Result<SessionTranscriptResponse> {
+        self.with_params_at(query, vec![("id", id.to_owned())])
+            .await
+    }
+
+    /// Every transcript row the query matches, following `next_cursor` to
+    /// the end.
+    ///
+    /// The cursor convention is [`crate::page`]'s. `query.cursor` is the
+    /// walk's to set; a value passed in is replaced.
+    ///
+    /// # Errors
+    ///
+    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
+    pub async fn get_whole_session_transcript(
+        &self,
+        id: &str,
+        query: &TranscriptQuery,
+    ) -> Result<Vec<TranscriptRow>> {
+        page::walk(|cursor| {
+            let mut query = query.clone();
+            query.cursor = cursor;
+            async move { Ok(self.get_session_transcript(id, &query).await?.into_page()) }
+        })
+        .await
+    }
+
+    /// `GET /v1/subjects` — the distinct subjects sessions were captured
+    /// for: opaque ids with their session counts, most recent first.
+    ///
+    /// Pending publication, like
+    /// [`CoreClient::get_session_transcript`].
+    ///
+    /// # Errors
+    ///
+    /// Any contract, transport, status, or decode failure; see [`crate::Error`].
+    pub async fn list_subjects(&self, params: &SubjectListParams) -> Result<SubjectListResponse> {
+        self.with_params(params).await
     }
 
     /// `GET /v1/sessions/{id}/raw_turns` — one page of the wire log behind a
@@ -1335,5 +1392,89 @@ mod tests {
                 "ops::CLAIM_BEARING_OPS names {operation:?}, which the vendored contract lacks",
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_transcript_page_travels_under_the_contracts_names() {
+        let client = client(
+            "http://127.0.0.1:8081",
+            serde_json::json!({
+                "session_id": "s-1",
+                "items": [{
+                    "seq": 3,
+                    "trace_id": "t-1",
+                    "span_id": "sp-1",
+                    "started_at": "2026-10-01T00:00:00Z",
+                    "role": "assistant",
+                    "text": "done",
+                    "tool_calls": [{"id": "c-1", "name": "Read", "input": {"path": "a"}}],
+                    "a_field_from_the_future": 1
+                }]
+            }),
+        );
+        let page = client
+            .get_session_transcript(
+                "s-1",
+                &TranscriptQuery {
+                    role: Some(crate::core::models::TranscriptRole::User),
+                    q: Some("auth bug".to_owned()),
+                    subagents: Some(true),
+                    limit: Some(5),
+                    cursor: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            client.transport().seen.borrow()[0],
+            "http://127.0.0.1:8081/v1/sessions/s-1/transcript?role=user&q=auth+bug&subagents=true&limit=5",
+        );
+        assert_eq!(page.session_id, "s-1");
+        assert_eq!(page.items[0].seq, 3);
+        assert_eq!(page.items[0].tool_calls[0].input["path"], "a");
+        assert!(page.items[0].tool_results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_whole_transcript_follows_the_cursor() {
+        let client = CoreClient::new(Recorder::new(
+            "http://127.0.0.1:8081",
+            vec![
+                serde_json::json!({"items": [{"seq": 1}], "next_cursor": "p2"}),
+                serde_json::json!({"items": [{"seq": 2}], "next_cursor": ""}),
+            ],
+        ));
+        let rows = client
+            .get_whole_session_transcript("s-1", &TranscriptQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(rows.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![1, 2]);
+        let seen = client.transport().seen.borrow();
+        assert_eq!(seen.len(), 2);
+        assert!(seen[1].ends_with("/transcript?cursor=p2"), "got: {seen:?}");
+    }
+
+    #[tokio::test]
+    async fn subjects_are_listed_with_their_counts() {
+        let client = client(
+            "http://127.0.0.1:8081",
+            serde_json::json!({"items": [{
+                "subject": "user_01",
+                "session_count": 4, "last_seen_at": "2026-10-01T00:00:00Z"
+            }]}),
+        );
+        let subjects = client
+            .list_subjects(&SubjectListParams {
+                q: Some("ada".to_owned()),
+                limit: Some(10),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            client.transport().seen.borrow()[0],
+            "http://127.0.0.1:8081/v1/subjects?q=ada&limit=10",
+        );
+        assert_eq!(subjects.items[0].subject, "user_01");
+        assert_eq!(subjects.items[0].session_count, 4);
     }
 }

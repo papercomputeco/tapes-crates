@@ -44,7 +44,7 @@ use serde_json::{Map, Value, json};
 
 use super::ContractModel;
 use super::params::{ContractEnum, ContractParams};
-use crate::core::contract::{TAPES_API_YAML, core};
+use crate::core::contract::core;
 use crate::error::{Result, error};
 use snafu::OptionExt;
 
@@ -124,7 +124,7 @@ impl fmt::Debug for Entry {
 /// the type's own [`ContractModel::SCHEMA`] the way a repeated string could.
 #[must_use]
 pub fn registry() -> Vec<Entry> {
-    use super::{admin, protocol, raw_turn, session, span, trace};
+    use super::{admin, protocol, raw_turn, session, span, subject, trace, transcript};
     vec![
         Entry::of::<session::SessionItem>(),
         Entry::of::<session::SessionRollup>(),
@@ -143,6 +143,12 @@ pub fn registry() -> Vec<Entry> {
         Entry::of::<trace::TraceListResponse>(),
         Entry::of::<span::SpanItem>(),
         Entry::of::<span::SpanLinkItem>(),
+        Entry::of::<subject::SubjectItem>(),
+        Entry::of::<subject::SubjectListResponse>(),
+        Entry::of::<transcript::SessionTranscriptResponse>(),
+        Entry::of::<transcript::TranscriptRow>(),
+        Entry::of::<transcript::TranscriptToolCall>(),
+        Entry::of::<transcript::TranscriptToolResult>(),
         Entry::of::<raw_turn::RawTurnHeaderItem>(),
         Entry::of::<raw_turn::RawTurnListResponse>(),
         Entry::of::<raw_turn::RawTurnAttribution>(),
@@ -375,13 +381,11 @@ pub fn check_enums(claimed: &[ClaimedEnum]) -> std::result::Result<(), String> {
     Err(problems.join(" "))
 }
 
-/// The vendored document, parsed.
+/// The contract document, parsed: the vendored one with the pending
+/// additions merged under it, so models of a pending shape are held to the
+/// same gate as every published one.
 fn document() -> Result<Value> {
-    serde_yaml::from_str(TAPES_API_YAML)
-        .ok()
-        .context(error::VendoredContractSnafu {
-            surface: "tapes-api",
-        })
+    crate::core::contract::document().cloned()
 }
 
 /// The vendored document's `components.schemas`.
@@ -665,7 +669,8 @@ mod tests {
     use super::*;
     use crate::core::models::params::{
         PayloadDetail, RawTurnListParams, SessionListParams, SessionTracesParams, SortDirection,
-        StatsParams, TraceListParams, TraceParams,
+        StatsParams, SubjectListParams, TraceListParams, TraceParams, TranscriptQuery,
+        TranscriptRole,
     };
     use serde::{Deserialize, Serialize};
 
@@ -881,6 +886,19 @@ mod tests {
             session_id: "s-1".to_owned(),
         })
         .unwrap();
+        check_params(&TranscriptQuery {
+            role: Some(TranscriptRole::User),
+            q: Some("auth".to_owned()),
+            subagents: Some(true),
+            limit: Some(200),
+            cursor: Some("c".to_owned()),
+        })
+        .unwrap();
+        check_params(&SubjectListParams {
+            q: Some("ada".to_owned()),
+            limit: Some(10),
+        })
+        .unwrap();
         check_params(&StatsParams {
             since: Some("2020-01-01T00:00:00Z".to_owned()),
             until: Some("2020-01-02T00:00:00Z".to_owned()),
@@ -908,6 +926,7 @@ mod tests {
             check_enums(&[
                 ClaimedEnum::of::<PayloadDetail>(),
                 ClaimedEnum::of::<SortDirection>(),
+                ClaimedEnum::of::<TranscriptRole>(),
             ]),
             Ok(())
         );

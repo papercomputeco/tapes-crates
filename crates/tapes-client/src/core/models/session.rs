@@ -23,8 +23,8 @@ use super::trace::TraceDetail;
 #[serde(default)]
 #[non_exhaustive]
 pub struct SessionItem {
-    /// The gateway-stamped JWT subject (WorkOS user id) captured at ingest;
-    /// empty for rows captured before the edge began stamping it.
+    /// The opaque authenticated subject id stamped at ingest; empty when the
+    /// capture path stamped none.
     pub auth_subject: String,
 
     /// The contract's `cwd`.
@@ -68,6 +68,11 @@ pub struct SessionItem {
     /// plan slug), or the folded title (rollup.title) as a fallback when no
     /// name was captured.
     pub name: String,
+
+    /// The parent session's harness, present exactly when
+    /// `parent_session_id` is; it differs from `harness_id` when the parent
+    /// ran under another harness.
+    pub parent_harness_id: String,
 
     /// The contract's `parent_session_id`.
     pub parent_session_id: String,

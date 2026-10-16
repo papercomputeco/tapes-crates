@@ -233,6 +233,12 @@ components:
           type: string
         harness_session_id:
           type: string
+        parent_harness_id:
+          description: |-
+            ParentHarnessID names the parent's harness when it differs from
+            HarnessID. Absent means the parent resolves in HarnessID. Only
+            meaningful beside ParentHarnessSessionID.
+          type: string
         parent_harness_session_id:
           type: string
         raw_turn_id:
@@ -252,6 +258,12 @@ components:
         harness_session_id:
           type: string
         paper_proxy_request_id:
+          type: string
+        parent_harness_id:
+          description: |-
+            ParentHarnessID names the parent's harness when it differs from
+            HarnessID; it requires ParentHarnessSessionID. Omitted means the
+            parent resolves in HarnessID.
           type: string
         parent_harness_session_id:
           type: string
@@ -497,6 +509,54 @@ components:
         harness_session_id:
           type: string
       type: object
+    Row:
+      description: Row is one message of the transcript.
+      properties:
+        role:
+          description: Role is "user" or "assistant".
+          type: string
+        seq:
+          description: |-
+            Seq is the presentation ordinal, within its trace, of the span the
+            row was read from. A tool-results row takes the seq of its first
+            tool span.
+          format: int64
+          type: integer
+        span_id:
+          type: string
+        started_at:
+          format: date-time
+          type: string
+        text:
+          description: |-
+            Text is the message's prose. For a user row it is the genuine user
+            text with harness tags stripped; a row that only carries tool
+            results has empty text. For an assistant row it is the reply's text
+            blocks (thinking is not included).
+          type: string
+        thread_id:
+          description: |-
+            ThreadID names the subagent thread the message belongs to; absent
+            for the root conversation.
+          type: string
+        tool_calls:
+          description: ToolCalls are the tools the assistant asked for, on assistant
+            rows.
+          items:
+            $ref: '#/components/schemas/ToolCall'
+          type: array
+        tool_results:
+          description: |-
+            ToolResults are the results handed back to the model, on user rows.
+            An assistant row carries the inline results of server-side tools
+            (web_search_tool_result and the like), which arrive in the reply
+            itself rather than in a later request.
+          items:
+            $ref: '#/components/schemas/ToolResult'
+          type: array
+        trace_id:
+          type: string
+      type: object
     SeedResult:
       description: Result summarizes one seeding run.
       properties:
@@ -597,6 +657,13 @@ components:
             when no name was captured. This is capture/deriver provenance, NOT a
             user title: ingest re-sends it every turn. Clients should render
             DisplayTitle, not Name (PCC-970).
+          type: string
+        parent_harness_id:
+          description: |-
+            ParentHarnessID is the parent session's harness_id, present exactly
+            when ParentSessionID is. It differs from HarnessID when the parent
+            ran under another harness (a claude session that launched a codex
+            child).
           type: string
         parent_session_id:
           type: string
@@ -881,6 +948,50 @@ components:
           format: int32
           type: integer
       type: object
+    SubjectItem:
+      description: SubjectItem is one auth_subject that has captured sessions.
+      properties:
+        last_seen_at:
+          description: LastSeenAt is the most recent activity on any of those sessions.
+          format: date-time
+          type: string
+        session_count:
+          description: SessionCount is how many captured sessions carry this subject.
+          format: int64
+          type: integer
+        subject:
+          description: Subject is the auth_subject value on the sessions.
+          type: string
+      type: object
+    SubjectListResponse:
+      description: SubjectListResponse is the GET /v1/subjects body.
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/SubjectItem'
+          type: array
+      type: object
+    ToolCall:
+      description: ToolCall is one tool_use block of an assistant reply.
+      properties:
+        id:
+          type: string
+        input:
+          additionalProperties: {}
+          type: object
+        name:
+          type: string
+      type: object
+    ToolResult:
+      description: ToolResult is one tool_result handed back to the model.
+      properties:
+        is_error:
+          type: boolean
+        text:
+          type: string
+        tool_use_id:
+          type: string
+      type: object
     TraceDetail:
       description: |-
         TraceDetail is one trace with its spans. In the composite session
@@ -1027,6 +1138,23 @@ components:
           type: integer
         suppressed_by_wire:
           type: boolean
+      type: object
+    TranscriptResponse:
+      description: TranscriptResponse is one page of a session's transcript.
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/Row'
+          type: array
+        next_cursor:
+          description: |-
+            NextCursor continues the walk from the last row of this page (pass
+            it as `cursor`). Absent once no further row matches the filters. A
+            page may close short of `limit` on its byte budget, so its absence —
+            not the page's length — is what means "no more".
+          type: string
+        session_id:
+          type: string
       type: object
     TreeTask:
       description: |-
@@ -1286,7 +1414,7 @@ paths:
       description: |-
         Sends a JSON-RPC 2.0 request to the stateless Model Context Protocol endpoint mounted at /v1/mcp.
 
-        Typical calls include initialize, tools/list, and tools/call. The server exposes the tools advertised by installed cassettes.
+        Typical calls include initialize, tools/list, and tools/call. The server exposes core read tools (transcript) and the tools advertised by installed cassettes.
       operationId: invokeMcp
       requestBody:
         content:
@@ -1421,8 +1549,10 @@ paths:
   /v1/sessions/{id}:
     delete:
       description: 'Permanently deletes a session and its subtree: subagent child
-        sessions and their derived traces/spans cascade with it. The immutable raw_turns
-        capture log is left intact.'
+        sessions, their derived traces/spans, and the captured raw turns behind all
+        of them, in one transaction. Re-deriving cannot bring the session back. A
+        turn captured for the same harness session afterwards starts a new session
+        with a new id.'
       operationId: deleteSession
       parameters:
       - description: Session id (UUID)
@@ -1702,6 +1832,93 @@ paths:
       summary: Get a session's trace/span projection
       tags:
       - sessions
+  /v1/sessions/{id}/transcript:
+    get:
+      description: 'Returns the session as one readable conversation: user and assistant
+        rows in turn order, then span order within a turn. Only conversation llm calls
+        (call_kind main) contribute; harness side-calls and injected context are left
+        out. User rows carry the user''s text with harness tags such as <system-reminder>
+        stripped, and the tool results handed back to the model in tool_results; assistant
+        rows carry the reply text and the tool calls it made. The root thread only
+        unless subagents=true. The response is one page of at most `limit` rows, closed
+        early once the page passes its byte budget; `next_cursor` continues the walk
+        and its absence, not the page''s length, means no further row matches.'
+      operationId: getSessionTranscript
+      parameters:
+      - description: Session id (UUID)
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - description: Keep only user rows with user text, only assistant rows, or all
+          rows (default all)
+        in: query
+        name: role
+        schema:
+          enum:
+          - user
+          - assistant
+          - all
+          type: string
+      - description: Keep only rows whose text contains this substring (case-insensitive)
+        in: query
+        name: q
+        schema:
+          type: string
+      - description: 'Include subagent threads (default false: the root thread only)'
+        in: query
+        name: subagents
+        schema:
+          type: boolean
+      - description: Maximum number of rows in the page (default 200, max 1000); a
+          page may close short of it on its byte budget
+        in: query
+        name: limit
+        schema:
+          minimum: 1
+          type: integer
+      - description: Opaque pagination cursor returned as next_cursor by a previous
+          page of the same session
+        in: query
+        name: cursor
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptResponse'
+          description: One page of the session's transcript
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Missing or malformed id, role, subagents, limit, or cursor,
+            or a cursor minted for another session
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Session not found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Failed to load transcript
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Span traces not supported by this backend
+      summary: Get a session's transcript
+      tags:
+      - sessions
   /v1/stats:
     get:
       description: Returns counts plus cost / token / duration / tool-call / completed-count
@@ -1752,6 +1969,52 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Failed to compute stats
       summary: Get aggregate session stats
+      tags:
+      - sessions
+  /v1/subjects:
+    get:
+      description: Returns one row per distinct auth_subject on captured sessions,
+        most recently active first, with its session count. The values are what the
+        auth_subject filter on /v1/sessions and on search accept.
+      operationId: listSubjects
+      parameters:
+      - description: Keep subjects whose id contains this (case-insensitive)
+        in: query
+        name: q
+        schema:
+          type: string
+      - description: Maximum number of subjects to return (default 50, max 200)
+        in: query
+        name: limit
+        schema:
+          minimum: 1
+          type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubjectListResponse'
+          description: The subjects
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Invalid query parameters
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Failed to list subjects
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Subjects not supported by this backend
+      summary: List the subjects that have captured sessions
       tags:
       - sessions
   /v1/traces:

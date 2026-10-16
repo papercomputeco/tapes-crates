@@ -17,30 +17,29 @@ it, and nothing at runtime reads it; it stays with its one consumer.
 
 ## Pin
 
-- Release tag: **v0.49.0** (papercomputeco/tapes at `35ded6d`, "fix(storage):
-  backfill payload-less spans to empty previews" — the squash of tapes#359,
-  which pages the composite, per-trace and raw-turn reads in place).
-- Asset: `https://github.com/papercomputeco/tapes/releases/download/v0.49.0/tapes-api-v0.49.0.yaml`,
-  copied byte-for-byte. The bytes are identical to the pre-release emission
-  this crate was developed against, so the fingerprints below did not move
-  on re-pin.
+- Release tag: **v0.51.0** (papercomputeco/tapes at `fb2032f`, "feat(api): list
+  subjects and make the trusted subject header opt-in" — the squash of
+  tapes#397, which with tapes#394 and #395 adds the transcript and subjects
+  reads).
+- Asset: `https://github.com/papercomputeco/tapes/releases/download/v0.51.0/tapes-api-v0.51.0.yaml`,
+  copied byte-for-byte.
 
 ## Fingerprints
 
 Vendored file bytes (what `scripts/contracts-check.sh` verifies):
 
-- `tapes-api.yaml` sha256 `5f864cec12802a7d2fc331f9bd16fef89154002bd801bb389f9bbd593db6752f`
+- `tapes-api.yaml` sha256 `d549d95d1bfeaf35d6e0112fe2a9e5fb8b84cd1d9d046eace1b7ec9b9d975c25`
 
 Prose-included document fingerprint (`CompiledDoc.Fingerprint()` as printed by
 `tapes dev openapi`; the ETag a server would serve for the same document):
 
-- api `sha256:8a2692ee065581c63d699a2c95eb70876431ddd45261e6b01c15fc28b67f96d1`
+- api `sha256:1d61f217844443c54e6eca99ee0684e657ef89a439bee2b7c0b94130925e8974`
 
 Prose-stripped contract seal (the value in tapes `api/CONTRACT` at the pinned
 commit; this changes only when the contract *shape* changes, so it is the
 identity a doc-comment edit does not move):
 
-- api `sha256:10950f1124a77e16460a8a8a4e799d1776180c9e779ebc3c97a05ab9778c8fb9`
+- api `sha256:ce9c831bddb07cf6c282efdb877dae95443fea1c471202b69018fba546bf889e`
 
 ## Updating
 
@@ -64,7 +63,10 @@ identity a doc-comment edit does not move):
    by `tapes dev openapi`, or served as the ETag), and the seal (tapes
    `api/CONTRACT` at the tag).
 4. Run `make contracts-check` (strict again now that the pin matches) and
-   `cargo test`. Then re-pin each consumer: their coverage gates will list any
+   `cargo test`. If the new contract publishes anything `pending.yaml` (the
+   hand-written, unsealed fragment beside this file) still carries,
+   `no_pending_entry_is_already_published` names it: delete those entries in
+   this change, and fix any model the published shape disagrees with. Then re-pin each consumer: their coverage gates will list any
    operation the new contract added so it can be mapped or deliberately
    allow-listed. A bump that adds an operation is expected to fail every
    consumer's build until each has decided about it — that is the gate working.

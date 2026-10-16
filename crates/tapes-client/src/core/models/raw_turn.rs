@@ -115,6 +115,10 @@ pub struct RawTurnAttribution {
     /// The contract's `harness_session_id`.
     pub harness_session_id: String,
 
+    /// The parent's harness when it differs from `harness_id`; empty means
+    /// the parent resolves in `harness_id`.
+    pub parent_harness_id: String,
+
     /// The contract's `parent_harness_session_id`.
     pub parent_harness_session_id: String,
 
@@ -145,6 +149,11 @@ pub struct RawTurnAttributionRepairRequest {
 
     /// The contract's `paper_proxy_request_id`.
     pub paper_proxy_request_id: String,
+
+    /// The parent's harness when it differs from `harness_id`; requires
+    /// `parent_harness_session_id`. Left off the wire when empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub parent_harness_id: String,
 
     /// The contract's `parent_harness_session_id`.
     pub parent_harness_session_id: String,

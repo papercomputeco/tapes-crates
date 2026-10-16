@@ -75,9 +75,10 @@ use std::path::PathBuf;
 
 use snafu::Snafu;
 
-pub use claude::{ANTHROPIC_BASE_URL_ENV, ClaudeRecipe};
+pub use claude::{ANTHROPIC_BASE_URL_ENV, APPEND_SYSTEM_PROMPT_FLAG, ClaudeRecipe};
 pub use codex::{
-    CODEX_API_KEY_ENV, CodexAuth, CodexRecipe, codex_auth_file, env_has_value, resolve_codex_auth,
+    CODEX_API_KEY_ENV, CodexAuth, CodexRecipe, codex_auth_file, codex_session_start_output,
+    env_has_value, resolve_codex_auth,
 };
 pub use hermes::{HERMES_HOME_ENV, HermesRecipe};
 pub use opencode::{
@@ -147,6 +148,47 @@ pub struct ConfigFile {
     pub path: PathBuf,
     /// The document's full contents.
     pub contents: String,
+}
+
+/// A one-line piece of context a consumer asks the launched agent to start
+/// with — "your past sessions are searchable with `<cli> search`", say.
+///
+/// Opt-in and consumer-worded: no recipe adds one unless handed one, and the
+/// text is entirely the consumer's, so a vendor-neutral client and a branded
+/// one each say it in their own terms. What a recipe owns is only *where* a
+/// harness accepts such context — Claude's `--append-system-prompt`, Codex's
+/// `SessionStart` hook output — which is harness knowledge.
+///
+/// It is normalised to one line on construction: every run of whitespace,
+/// newlines included, becomes a single space. A hint is a pointer, not a
+/// prompt; a multi-line block in a system prompt is a different feature, and a
+/// newline is also the one character every channel here would have to escape
+/// differently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartHint(String);
+
+impl StartHint {
+    /// Normalise `text` into a hint, or `None` when nothing but whitespace
+    /// remains — an empty hint is no hint, rather than an empty flag.
+    pub fn new(text: &str) -> Option<Self> {
+        let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.is_empty() {
+            None
+        } else {
+            Some(Self(line))
+        }
+    }
+
+    /// The normalised one-line text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for StartHint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// A capture-proxy endpoint a harness should send its LLM traffic to.
@@ -287,6 +329,18 @@ mod tests {
             ProxyEndpoint::new("127.0.0.1:51539/v1/anthropic/x/").as_str(),
             "http://127.0.0.1:51539/v1/anthropic/x",
         );
+    }
+
+    #[test]
+    fn a_start_hint_is_one_line_and_never_empty() {
+        assert_eq!(
+            StartHint::new("  search past\n\tsessions  with  `tapesctl search`\n")
+                .unwrap()
+                .as_str(),
+            "search past sessions with `tapesctl search`",
+        );
+        assert_eq!(StartHint::new(" \n\t "), None);
+        assert_eq!(StartHint::new(""), None);
     }
 
     #[test]

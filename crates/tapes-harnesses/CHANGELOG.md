@@ -15,6 +15,18 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-16
+
+### Added
+
+- `launch::StartHint`, `ClaudeRecipe::with_start_hint`,
+  `launch::APPEND_SYSTEM_PROMPT_FLAG`, and `launch::codex_session_start_output`:
+  an opt-in, consumer-worded, one-line context string for the launched agent.
+  Claude Code receives it through `--append-system-prompt`; Codex through the
+  `SessionStart` hook output `hookSpecificOutput.additionalContext`, which the
+  consumer's hook command prints. Off unless supplied; a plan without one is
+  unchanged.
+
 ## [0.2.0] - 2026-10-15
 
 ### Added
