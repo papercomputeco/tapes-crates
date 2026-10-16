@@ -31,7 +31,7 @@ use crate::session::HarnessSession;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use http::{HeaderMap, HeaderName, HeaderValue};
-use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use snafu::{ResultExt, Snafu};
 use tracing::warn;
 
@@ -537,15 +537,19 @@ impl TapesAttribution {
     /// spellings of it drift into a request whose headers say `pi` and whose
     /// ingest row says `unknown`, so both callers come through here.
     ///
-    /// Only the plain-text fields are read. `cwd`, session name, and metadata
-    /// are percent-encoded or base64url on the wire, and this module is the
-    /// envelope's *producer* half — the parsers live on the tapes side and
-    /// table-test against the same corpus. Decoding here would stand up a
-    /// second, drifting implementation of an encoder that is twenty lines
-    /// above, so those fields come back empty rather than guessed. Nothing is
-    /// lost today: the self-attributing harnesses stamp exactly the fields
-    /// this reads. A harness that starts sending the encoded ones wants the
-    /// decode half added here, once, not at each call site.
+    /// The plain-text fields are read verbatim, and `cwd` is percent-decoded:
+    /// the self-attributing harness extensions send `X-Tapes-Cwd`, encoded with
+    /// the same escape set [`inject_tapes_attribution`] uses, so decoding it
+    /// here is the exact inverse of that encoder. The decode follows the
+    /// corpus's reader rules: RFC 3986 path-segment unescaping (a literal `+`
+    /// stays a `+`), a malformed escape is kept as the raw value, and a value
+    /// that decodes to non-UTF-8 bytes or to a control byte is dropped — the
+    /// field comes back `None`, the same disposition as any other optional
+    /// field this producer cannot carry.
+    ///
+    /// Session name and metadata are not read back: no self-attributing
+    /// harness sends them, and each would want its own decode (the name's
+    /// cap, the metadata's base64url JSON) added here, once, when one does.
     #[must_use]
     pub fn from_headers(headers: &HeaderMap) -> Option<Self> {
         let harness_id =
@@ -555,7 +559,7 @@ impl TapesAttribution {
             harness_id,
             session_id: Some(session_id),
             version: envelope_field(headers, X_TAPES_HARNESS_VERSION),
-            cwd: None,
+            cwd: envelope_field(headers, X_TAPES_CWD).and_then(|raw| decode_utf8_value(&raw)),
             name: None,
             parent_sid: envelope_field(headers, X_TAPES_PARENT_HARNESS_SESSION_ID),
             parent_harness_id: envelope_field(headers, X_TAPES_PARENT_HARNESS_ID),
@@ -733,6 +737,21 @@ pub fn has_complete_inbound_envelope(headers: &HeaderMap) -> bool {
 /// Distinct from [`header_str`], which deliberately does not trim: that one
 /// feeds [`HarnessThreadRule::DivergentPair`], where the comparison is against
 /// another raw header value and must see the bytes that arrived.
+/// Percent-decode a header value written with [`UTF8_VALUE_ESCAPE`].
+///
+/// The inverse of the producer's encoding, under the corpus's reader rules:
+/// `percent_decode` leaves a malformed escape (`%zz`) as its literal bytes, so
+/// the raw value survives; a result that is not UTF-8, or that carries a C0
+/// control or DEL, is refused rather than carried, because escaping exists to
+/// keep exactly those bytes off the wire.
+fn decode_utf8_value(raw: &str) -> Option<String> {
+    let decoded = percent_decode_str(raw).decode_utf8().ok()?;
+    if decoded.chars().any(|c| c.is_ascii_control()) {
+        return None;
+    }
+    Some(decoded.into_owned())
+}
+
 fn envelope_field(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
@@ -1678,8 +1697,8 @@ mod tests {
         assert_eq!(thread_id(&headers), Some(CLAUDE_AGENT));
     }
 
-    /// A complete inbound envelope reads back with its plain-text fields, and
-    /// the encoded ones stay empty rather than half-parsed.
+    /// A complete inbound envelope reads back with its plain-text fields and a
+    /// decoded cwd; the fields no self-attributing harness sends stay empty.
     #[test]
     fn from_headers_reads_a_complete_inbound_envelope() {
         let headers = headers_from(&[
@@ -1687,9 +1706,8 @@ mod tests {
             (X_TAPES_HARNESS_SESSION_ID, "sess-1"),
             (X_TAPES_HARNESS_VERSION, "1.2.3"),
             (X_TAPES_PARENT_HARNESS_SESSION_ID, "sess-0"),
-            // Wire-encoded fields the producer half deliberately does not
-            // decode back; see `from_headers`.
-            (X_TAPES_CWD, "%2Ftmp%2Fwork"),
+            (X_TAPES_CWD, "/tmp/my%20work"),
+            // Not read back; see `from_headers`.
             (X_TAPES_HARNESS_METADATA, "e30"),
         ]);
 
@@ -1698,9 +1716,59 @@ mod tests {
         assert_eq!(attribution.session_id.as_deref(), Some("sess-1"));
         assert_eq!(attribution.version.as_deref(), Some("1.2.3"));
         assert_eq!(attribution.parent_sid.as_deref(), Some("sess-0"));
-        assert_eq!(attribution.cwd, None);
+        assert_eq!(attribution.cwd.as_deref(), Some("/tmp/my work"));
         assert_eq!(attribution.name, None);
         assert!(attribution.metadata.is_empty());
+    }
+
+    /// Whatever the producer encodes as `X-Tapes-Cwd`, `from_headers` reads
+    /// back as the same path: the two halves are inverses, including on the
+    /// bytes the escape set exists for.
+    #[test]
+    fn from_headers_round_trips_the_producers_cwd_encoding() {
+        for cwd in [
+            "/tmp/work",
+            "/Users/matt/go+rust",
+            "/Users/松本/code",
+            "/srv/a dir/with \"quotes\" and \\ and 100%",
+            "/home/é/%41-not-an-escape",
+        ] {
+            let mut attribution = TapesAttribution::unknown();
+            attribution.harness_id = HARNESS_ID_PI.to_owned();
+            attribution.session_id = Some("sess-1".to_owned());
+            attribution.cwd = Some(cwd.to_owned());
+            let mut headers = HeaderMap::new();
+            inject_tapes_attribution(&mut headers, attribution).unwrap();
+
+            let read = TapesAttribution::from_headers(&headers).expect("complete envelope");
+            assert_eq!(read.cwd.as_deref(), Some(cwd), "{cwd:?}");
+        }
+    }
+
+    /// The reader rules for an encoding no conformant producer emits: a
+    /// malformed escape keeps the raw value, and a value that decodes to a
+    /// control byte or to non-UTF-8 bytes is dropped while the rest of the
+    /// envelope still reads back.
+    #[test]
+    fn from_headers_handles_cwd_encodings_a_producer_never_emits() {
+        let cases: &[(&str, Option<&str>)] = &[
+            ("/Users/matt/%zz-bad", Some("/Users/matt/%zz-bad")),
+            ("/trailing%", Some("/trailing%")),
+            ("/Users/matt%0Awith-injection:%20yes", None),
+            ("/del%7F", None),
+            ("/latin1-%E9", None),
+            ("%20", Some(" ")),
+        ];
+        for (wire, want) in cases {
+            let headers = headers_from(&[
+                (X_TAPES_HARNESS_ID, HARNESS_ID_PI),
+                (X_TAPES_HARNESS_SESSION_ID, "sess-1"),
+                (X_TAPES_CWD, wire),
+            ]);
+            let read = TapesAttribution::from_headers(&headers).expect("complete envelope");
+            assert_eq!(read.cwd.as_deref(), *want, "{wire:?}");
+            assert_eq!(read.session_id.as_deref(), Some("sess-1"), "{wire:?}");
+        }
     }
 
     /// Every shape the completeness rule rejects, in one place. Each is a

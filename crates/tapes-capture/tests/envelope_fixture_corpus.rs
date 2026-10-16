@@ -102,6 +102,7 @@ fn a_consumer_can_table_test_envelope_composition_against_the_corpus() {
 #[test]
 fn complete_corpus_envelopes_read_back_through_from_headers() {
     let mut checked = 0_usize;
+    let mut cwd_checked = 0_usize;
 
     for case in load_cases() {
         let mut headers = http::HeaderMap::new();
@@ -136,6 +137,13 @@ fn complete_corpus_envelopes_read_back_through_from_headers() {
                     "{}",
                     case.name
                 );
+                // cwd is the one encoded field the readback decodes. The
+                // corpus's envelope is the reader's verdict, so a decode that
+                // drifted from the tapes parser fails here by case name.
+                assert_eq!(read.cwd, case.envelope.cwd, "{}: cwd", case.name);
+                if case.envelope.cwd.is_some() {
+                    cwd_checked += 1;
+                }
                 checked += 1;
             }
             Some(_) => panic!(
@@ -153,5 +161,9 @@ fn complete_corpus_envelopes_read_back_through_from_headers() {
     assert!(
         checked > 0,
         "no corpus case exercised the complete-envelope readback path",
+    );
+    assert!(
+        cwd_checked > 0,
+        "no corpus case exercised the cwd decode on the readback path",
     );
 }
