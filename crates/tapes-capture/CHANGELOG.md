@@ -15,16 +15,7 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
-### Fixed
-
-- `TapesAttribution::from_headers` now reads `x-tapes-cwd` back, percent-decoded
-  as the inverse of the producer's encoding, instead of always returning
-  `cwd: None`. The pi and hermes extensions stamp the header, so a capture
-  client filing their turns lost the working directory. Decoding follows the
-  corpus reader rules: a malformed escape keeps the raw value, and a value
-  that decodes to non-UTF-8 bytes or a control byte reads back as `None`.
-
-## [0.2.0] - 2026-10-13
+## [0.2.0] - 2026-10-15
 
 Cross-harness lineage: an envelope can now say which harness its parent
 session belongs to, and launchers share one environment contract for telling
@@ -56,6 +47,15 @@ a nested launch which launch it runs inside.
   `LaunchContext::child_env` writes this launch's values for the child.
   `ParentLaunch`, `LaunchContext::from_lookup`, and `new_launch_id` round it
   out. Mapping a parent launch to a parent session stays with the launcher.
+
+### Fixed
+
+- `TapesAttribution::from_headers` now reads `x-tapes-cwd` back, percent-decoded
+  as the inverse of the producer's encoding, instead of always returning
+  `cwd: None`. The pi and hermes extensions stamp the header, so a capture
+  client filing their turns lost the working directory. Decoding follows the
+  corpus reader rules: a malformed escape keeps the raw value, and a value
+  that decodes to non-UTF-8 bytes or a control byte reads back as `None`.
 
 ## [0.1.0] - 2026-08-13
 

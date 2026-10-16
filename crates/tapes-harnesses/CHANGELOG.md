@@ -15,8 +15,29 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-15
+
 ### Added
 
+- The `hermes` harness (hermes-agent, alias `hermes-agent`): `Recipe`-launched,
+  `SelfAttributing`, no transcript tree, and a bundled plugin. It now appears in
+  `supported_agents()`, after `pi`.
+- `launch::HermesRecipe` and `launch::HERMES_HOME_ENV`: plans a relocated
+  `HERMES_HOME` whose `config.yaml` declares a `custom` provider at the proxy
+  endpoint, enables the capture plugin, and carries the plugin's files. It
+  copies nothing from the user's own hermes home — no `.env`, no `auth.json`.
+- `plugin::HERMES_GATEWAY_PLUGIN`, `plugin::HERMES_GATEWAY_MANIFEST`, and
+  `plugin::HERMES_GATEWAY_PLUGIN_NAME`: a hermes directory plugin whose LLM
+  request middleware stamps the `X-Tapes-*` envelope (including a delegated
+  subagent's parent session and `x-tapes-parent-harness-id`) and the
+  capture-nonce echo on requests bound for `TAPES_GATEWAY_URL`.
+- hermes auxiliary calls (title generation, compression, vision, web_extract,
+  session_search, skills_hub, mcp) carry the same envelope as main turns, plus
+  `x-tapes-harness-metadata` `{"aux_task": …}`. The plugin stamps them through
+  hermes's shared auxiliary kwargs builder, guarded by version. In a process
+  running several concurrent
+  sessions, an auxiliary call may attach to the most recent one.
+- `LaunchError::SerializeHermesConfig`.
 - `launch::PiRecipe`, `launch::PI_AGENT_DIR_ENV`, `launch::PI_CARRIED_FILES`,
   `launch::PLACEHOLDER_API_KEY`, `launch::pi_gateway_model`, and
   `launch::pi_user_agent_dir`: declare gateway-served models for one pi session.
@@ -33,21 +54,12 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
   escape set) and `x-tapes-harness-version` (pi's own version), within the
   8 KiB envelope budget; cwd is dropped first when over it.
 
-### Fixed
-
-- An uncaptured call let through by `TAPES_ALLOW_UNCAPTURED=1` no longer
-  carries any `x-tapes-*` header or the capture nonce to the host it goes to.
-  The hermes `config.yaml` that `HermesRecipe` plans no longer sets
-  `model.default_headers` (hermes applied that static
-  `x-tapes-harness-id: hermes` to whichever provider the session switched to),
-  and the hermes plugin strips envelope headers from an opted-out main-loop or
-  auxiliary call's kwargs. The pi extension strips them from an opted-out
-  request through pi's `before_provider_headers` hook, since pi applies a
-  redirected provider's headers to every model under it, including one with
-  its own `baseUrl`.
-
 ### Changed
 
+- **Breaking**: requires `tapes-capture` 0.2, whose `TapesAttribution` this
+  crate's attribution API returns.
+- `REGISTRY` and `supported_agents()` include `hermes`; a consumer test that
+  pins either list literally needs the new entry.
 - While routed through a gateway, the pi extension refuses a request on a
   model whose endpoint is not on the gateway — a provider it does not
   redirect, a `models.json` provider with its own `baseUrl`, any provider
@@ -69,37 +81,18 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
   logs once and keeps the envelope. Without `TAPES_GATEWAY_URL` the plugin
   stays inert.
 
-## [0.2.0] - 2026-10-13
+### Fixed
 
-### Added
-
-- The `hermes` harness (hermes-agent, alias `hermes-agent`): `Recipe`-launched,
-  `SelfAttributing`, no transcript tree, and a bundled plugin. It now appears in
-  `supported_agents()`, after `pi`.
-- `launch::HermesRecipe` and `launch::HERMES_HOME_ENV`: plans a relocated
-  `HERMES_HOME` whose `config.yaml` declares a `custom` provider at the proxy
-  endpoint, enables the capture plugin, and carries the plugin's files. It
-  copies nothing from the user's own hermes home — no `.env`, no `auth.json`.
-- `plugin::HERMES_GATEWAY_PLUGIN`, `plugin::HERMES_GATEWAY_MANIFEST`, and
-  `plugin::HERMES_GATEWAY_PLUGIN_NAME`: a hermes directory plugin whose LLM
-  request middleware stamps the `X-Tapes-*` envelope (including a delegated
-  subagent's parent session and `x-tapes-parent-harness-id`) and the
-  capture-nonce echo on requests bound for `TAPES_GATEWAY_URL`.
-- hermes auxiliary calls (title generation, compression, vision, web_extract,
-  session_search, skills_hub, mcp) carry the same envelope as main turns, plus
-  `x-tapes-harness-metadata` `{"aux_task": …}`. The plugin stamps them through
-  hermes's shared auxiliary kwargs builder, guarded by version; the planned
-  `config.yaml` also sets `model.default_headers` to a static
-  `x-tapes-harness-id: hermes`. In a process running several concurrent
-  sessions, an auxiliary call may attach to the most recent one.
-- `LaunchError::SerializeHermesConfig`.
-
-### Changed
-
-- **Breaking**: requires `tapes-capture` 0.2, whose `TapesAttribution` this
-  crate's attribution API returns.
-- `REGISTRY` and `supported_agents()` include `hermes`; a consumer test that
-  pins either list literally needs the new entry.
+- An uncaptured call let through by `TAPES_ALLOW_UNCAPTURED=1` no longer
+  carries any `x-tapes-*` header or the capture nonce to the host it goes to.
+  The hermes `config.yaml` that `HermesRecipe` plans no longer sets
+  `model.default_headers` (hermes applied that static
+  `x-tapes-harness-id: hermes` to whichever provider the session switched to),
+  and the hermes plugin strips envelope headers from an opted-out main-loop or
+  auxiliary call's kwargs. The pi extension strips them from an opted-out
+  request through pi's `before_provider_headers` hook, since pi applies a
+  redirected provider's headers to every model under it, including one with
+  its own `baseUrl`.
 
 ## [0.1.2] - 2026-09-29
 
