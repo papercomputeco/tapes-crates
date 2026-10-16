@@ -46,7 +46,9 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use super::{LaunchError, LaunchPlan, LaunchRecipe, ProxyEndpoint, launch_error};
+use serde_json::{Value, json};
+
+use super::{LaunchError, LaunchPlan, LaunchRecipe, ProxyEndpoint, StartHint, launch_error};
 
 /// The `X-Tapes-Harness-Id` value for Codex traffic, taken from the registry
 /// so the recipe and the declaration cannot disagree.
@@ -249,6 +251,36 @@ impl LaunchRecipe for CodexRecipe {
             config_files: Vec::new(),
         })
     }
+}
+
+/// The hook output that hands Codex a [`StartHint`] at session start.
+///
+/// Codex has no append-to-instructions launch flag: its `-c
+/// developer_instructions=...` override *replaces* whatever the user set in
+/// their own config, which is not this recipe's to discard. The channel that
+/// adds context without replacing anything is a `SessionStart` hook's output,
+/// `hookSpecificOutput.additionalContext` — and the Codex plugin template
+/// ([`crate::plugin::codex_app::HOOKS_MANIFEST_TEMPLATE`]) already subscribes
+/// the consumer's hook command to `SessionStart`. So the consumer's hook
+/// command prints this document (merged with any `systemMessage` it also
+/// emits) when it handles a `SessionStart`, and only when it was configured
+/// with a hint: off by default, exactly like
+/// [`ClaudeRecipe::with_start_hint`](super::ClaudeRecipe::with_start_hint).
+///
+/// ```
+/// use tapes_harnesses::launch::{StartHint, codex_session_start_output};
+///
+/// let hint = StartHint::new("Search past sessions with `tapesctl search`.").unwrap();
+/// let output = codex_session_start_output(&hint);
+/// assert_eq!(output["hookSpecificOutput"]["hookEventName"], "SessionStart");
+/// ```
+pub fn codex_session_start_output(hint: &StartHint) -> Value {
+    json!({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": hint.as_str(),
+        }
+    })
 }
 
 /// Pick the Codex auth mode from a launch environment.
@@ -608,6 +640,31 @@ mod tests {
         if let Some(path) = codex_auth_file() {
             assert!(path.ends_with(".codex/auth.json"), "{path:?}");
         }
+    }
+
+    /// The start-hint hook output is Codex's `SessionStart` context shape,
+    /// carrying the normalised one-line hint and nothing else.
+    #[test]
+    fn a_start_hint_is_session_start_additional_context() {
+        let hint = StartHint::new("Search past\nsessions with `tapesctl search`.").unwrap();
+        assert_eq!(
+            codex_session_start_output(&hint),
+            serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": "Search past sessions with `tapesctl search`.",
+                }
+            }),
+        );
+    }
+
+    /// The hook the output answers is one the plugin template subscribes.
+    #[test]
+    fn the_plugin_template_subscribes_session_start() {
+        assert!(
+            crate::plugin::codex_app::HOOKS_MANIFEST_TEMPLATE.contains("\"SessionStart\""),
+            "the start hint rides SessionStart, so the template must subscribe it",
+        );
     }
 
     #[test]
