@@ -11,10 +11,12 @@
 //! `-Users-alice-src-acme-server`.
 //!
 //! The scan is bounded to ~25 ms wall-clock. On timeout, missing
-//! transcript, or no `parentUuid`, we return `None` and the request
-//! handler proceeds without attaching `X-Tapes-Parent-Harness-Session-Id`.
-//! That header is enrichment, not a routing input, so dropping it is
-//! acceptable degradation.
+//! transcript, or no `parentUuid`, the request handler proceeds without
+//! attaching `X-Tapes-Parent-Harness-Session-Id`. That header is
+//! enrichment, not a routing input, so dropping it for one request is
+//! acceptable degradation. A timeout is reported apart from a definitive
+//! miss ([`ForkParentDiscovery::TimedOut`]) so a caller that memoizes the
+//! answer can keep retrying it instead of recording "not a fork".
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -57,6 +59,31 @@ fn discovery_semaphore() -> &'static Arc<Semaphore> {
 /// margin while keeping the read bounded.
 const HEAD_BYTES: usize = 2 * 1024;
 
+/// The outcome of one fork-parent discovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForkParentDiscovery {
+    /// The session forks from the session with this id.
+    Parent(String),
+    /// The scan answered: no transcript, no `parentUuid`, or no sibling
+    /// transcript owns it.
+    NoParent,
+    /// The scan ran out of budget before it could answer. Says nothing about
+    /// lineage — a large or cold project directory times out on a forked
+    /// session as readily as on a root one.
+    TimedOut,
+}
+
+impl ForkParentDiscovery {
+    /// The parent session id, if one was found.
+    #[must_use]
+    pub fn parent(&self) -> Option<&str> {
+        match self {
+            Self::Parent(parent) => Some(parent),
+            Self::NoParent | Self::TimedOut => None,
+        }
+    }
+}
+
 /// Discover the fork-parent `harness_session_id` for a session given
 /// the harness's working directory and session id.
 ///
@@ -65,12 +92,14 @@ const HEAD_BYTES: usize = 2 * 1024;
 /// 3. Scan sibling `.jsonl` files for a record whose `uuid` matches.
 /// 4. Return the owning session id (the filename sans `.jsonl`).
 ///
-/// Returns `None` on:
+/// Returns [`ForkParentDiscovery::NoParent`] on:
 /// * `parentUuid` is null or missing → not a forked session.
 /// * Transcript missing or unreadable → the parent's machine, sandbox,
 ///   or trimmed transcript.
-/// * Scan exceeded the 25 ms budget → degrade gracefully; the next
-///   request for the same sid will hit the cache (caller memoizes).
+///
+/// Returns [`ForkParentDiscovery::TimedOut`] when the scan exceeded the
+/// 25 ms budget. The request degrades to no parent; whether to look again
+/// is the caller's decision.
 ///
 /// Async because the scan does sync filesystem IO and we wrap it in
 /// `tokio::task::spawn_blocking` so the runtime can preempt other
@@ -84,10 +113,10 @@ const HEAD_BYTES: usize = 2 * 1024;
 /// A `Semaphore` caps total in-flight scans so a burst of cold cache
 /// requests cannot saturate the blocking pool and starve the calling
 /// client's other `spawn_blocking` users.
-pub async fn discover_parent(cwd: &str, sid: &str) -> Option<String> {
+pub async fn discover_parent(cwd: &str, sid: &str) -> ForkParentDiscovery {
     let Some(projects_dir) = projects_dir_for(cwd) else {
         debug!("fork-parent: no home dir; skipping");
-        return None;
+        return ForkParentDiscovery::NoParent;
     };
     let sid_owned = sid.to_owned();
     let sem = discovery_semaphore().clone();
@@ -97,32 +126,34 @@ pub async fn discover_parent(cwd: &str, sid: &str) -> Option<String> {
     // as overload and skip — no-parent fallback is always acceptable.
     let Ok(permit) = sem.acquire_owned().await else {
         debug!("fork-parent: discovery semaphore closed; skipping");
-        return None;
+        return ForkParentDiscovery::NoParent;
     };
     let deadline = Deadline::starting_now(FORK_PARENT_BUDGET);
-    let scan_deadline = deadline.clone();
     let scan = async move {
         let join = tokio::task::spawn_blocking(move || {
             let result =
-                discover_parent_blocking_with_deadline(&projects_dir, &sid_owned, &scan_deadline);
+                discover_parent_blocking_with_deadline(&projects_dir, &sid_owned, &deadline);
             // Hold the permit until the blocking task is done so the
             // semaphore reflects true outstanding work (not just queued
             // futures awaiting the runtime).
             drop(permit);
             result
         });
-        join.await.ok().flatten()
+        // A panicked scan is a bug, not a slow disk: retrying would only
+        // panic again, so it settles as a miss.
+        join.await.unwrap_or(ForkParentDiscovery::NoParent)
     };
-    match tokio::time::timeout(FORK_PARENT_BUDGET, scan).await {
-        Ok(parent) => parent,
-        Err(_) => {
-            warn!(
-                budget_ms = FORK_PARENT_BUDGET.as_millis() as u64,
-                "fork-parent: scan exceeded budget; degrading to no parent",
-            );
-            None
-        }
+    let discovery = tokio::time::timeout(FORK_PARENT_BUDGET, scan)
+        .await
+        .unwrap_or(ForkParentDiscovery::TimedOut);
+    if discovery == ForkParentDiscovery::TimedOut {
+        warn!(
+            sid,
+            budget_ms = FORK_PARENT_BUDGET.as_millis() as u64,
+            "fork-parent: scan exceeded budget; parent unknown for this request",
+        );
     }
+    discovery
 }
 
 /// Synchronous core of [`discover_parent`]. Split out so the test
@@ -133,28 +164,34 @@ pub async fn discover_parent(cwd: &str, sid: &str) -> Option<String> {
 /// deadline so the test surface stays unchanged. Production callers
 /// go through `discover_parent_blocking_with_deadline`.
 #[cfg(test)]
-pub(crate) fn discover_parent_blocking(projects_dir: &Path, sid: &str) -> Option<String> {
+pub(crate) fn discover_parent_blocking(projects_dir: &Path, sid: &str) -> ForkParentDiscovery {
     discover_parent_blocking_with_deadline(projects_dir, sid, &Deadline::infinite())
 }
 
 /// Production-path entry: same logic as [`discover_parent_blocking`]
 /// but threads a wall-clock `Deadline` through every disk read so a
 /// stalled syscall bails out of the blocking thread instead of
-/// holding it past the outer `tokio::time::timeout`.
+/// holding it past the outer `tokio::time::timeout`. Bailing on the
+/// deadline reports [`ForkParentDiscovery::TimedOut`], never a miss: the
+/// files it did not reach may hold the parent.
 pub(crate) fn discover_parent_blocking_with_deadline(
     projects_dir: &Path,
     sid: &str,
     deadline: &Deadline,
-) -> Option<String> {
+) -> ForkParentDiscovery {
     if deadline.exceeded() {
-        return None;
+        return ForkParentDiscovery::TimedOut;
     }
     let transcript = projects_dir.join(format!("{sid}.jsonl"));
-    let head = read_head(&transcript, HEAD_BYTES)?;
+    let Some(head) = read_head(&transcript, HEAD_BYTES) else {
+        return ForkParentDiscovery::NoParent;
+    };
     if deadline.exceeded() {
-        return None;
+        return ForkParentDiscovery::TimedOut;
     }
-    let parent_uuid = extract_first_user_parent_uuid(&head)?;
+    let Some(parent_uuid) = extract_first_user_parent_uuid(&head) else {
+        return ForkParentDiscovery::NoParent;
+    };
     find_owning_sid_with_deadline(projects_dir, sid, &parent_uuid, deadline)
 }
 
@@ -262,7 +299,7 @@ pub(crate) fn extract_first_user_parent_uuid(bytes: &[u8]) -> Option<String> {
 }
 
 /// Scan sibling `.jsonl` files under `projects_dir` for a record whose
-/// `uuid` matches `parent_uuid`. Returns the owning session's id (the
+/// `uuid` matches `parent_uuid`. Finds the owning session's id (the
 /// filename sans `.jsonl`). The transcript that triggered the scan
 /// (`exclude_sid`'s `.jsonl`) is skipped — a session never forks
 /// itself.
@@ -278,7 +315,7 @@ pub(crate) fn find_owning_sid(
     projects_dir: &Path,
     exclude_sid: &str,
     parent_uuid: &str,
-) -> Option<String> {
+) -> ForkParentDiscovery {
     find_owning_sid_with_deadline(
         projects_dir,
         exclude_sid,
@@ -297,16 +334,18 @@ pub(crate) fn find_owning_sid_with_deadline(
     exclude_sid: &str,
     parent_uuid: &str,
     deadline: &Deadline,
-) -> Option<String> {
+) -> ForkParentDiscovery {
     let needle = format!(r#""uuid":"{parent_uuid}""#);
-    let entries = std::fs::read_dir(projects_dir).ok()?;
+    let Ok(entries) = std::fs::read_dir(projects_dir) else {
+        return ForkParentDiscovery::NoParent;
+    };
     for entry in entries.flatten() {
         // Fail-fast: a pathological directory of thousands of large
         // transcripts returns quickly instead of using the full
         // budget on a doomed scan. Checked once per file so we don't
         // overshoot between the outer await and the blocking thread.
         if deadline.exceeded() {
-            return None;
+            return ForkParentDiscovery::TimedOut;
         }
         let path = entry.path();
         let Some(stem) = path
@@ -327,10 +366,10 @@ pub(crate) fn find_owning_sid_with_deadline(
             continue;
         };
         if find_subslice(&bytes, needle.as_bytes()) {
-            return Some(stem.to_owned());
+            return ForkParentDiscovery::Parent(stem.to_owned());
         }
     }
-    None
+    ForkParentDiscovery::NoParent
 }
 
 /// Cheap substring search on raw bytes. `bytes.windows(needle.len()).any(...)`
@@ -440,7 +479,7 @@ mod tests {
         )
         .unwrap();
         let got = find_owning_sid(dir.path(), "child-sid", "PARENT-UUID");
-        assert_eq!(got.as_deref(), Some("parent-sid"));
+        assert_eq!(got, ForkParentDiscovery::Parent("parent-sid".to_owned()));
     }
 
     #[test]
@@ -451,7 +490,10 @@ mod tests {
             r#"{"type":"user","uuid":"different"}"#,
         )
         .unwrap();
-        assert!(find_owning_sid(dir.path(), "child", "PARENT-UUID").is_none());
+        assert_eq!(
+            find_owning_sid(dir.path(), "child", "PARENT-UUID"),
+            ForkParentDiscovery::NoParent
+        );
     }
 
     #[test]
@@ -465,7 +507,10 @@ mod tests {
             r#"{"type":"user","uuid":"child-1","parentUuid":"PARENT-UUID"}"#,
         )
         .unwrap();
-        assert!(find_owning_sid(dir.path(), "child", "PARENT-UUID").is_none());
+        assert_eq!(
+            find_owning_sid(dir.path(), "child", "PARENT-UUID"),
+            ForkParentDiscovery::NoParent
+        );
     }
 
     #[test]
@@ -490,7 +535,7 @@ mod tests {
         )
         .unwrap();
         let got = discover_parent_blocking(projects, "child-sid");
-        assert_eq!(got.as_deref(), Some("parent-sid"));
+        assert_eq!(got, ForkParentDiscovery::Parent("parent-sid".to_owned()));
     }
 
     #[test]
@@ -501,18 +546,24 @@ mod tests {
             r#"{"type":"user","uuid":"root-1","parentUuid":null}"#,
         )
         .unwrap();
-        assert!(discover_parent_blocking(dir.path(), "root-sid").is_none());
+        assert_eq!(
+            discover_parent_blocking(dir.path(), "root-sid"),
+            ForkParentDiscovery::NoParent
+        );
     }
 
     #[test]
     fn discover_parent_blocking_missing_transcript_returns_none() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(discover_parent_blocking(dir.path(), "ghost").is_none());
+        assert_eq!(
+            discover_parent_blocking(dir.path(), "ghost"),
+            ForkParentDiscovery::NoParent
+        );
     }
 
     #[test]
     fn already_exceeded_deadline_short_circuits_scan() {
-        // Even a transcript that *would* match must return None when
+        // Even a transcript that *would* match must report no parent when
         // the deadline is already exceeded at entry. Guards the
         // wall-clock fail-fast plumbed through every blocking step.
         let dir = tempfile::tempdir().unwrap();
@@ -534,8 +585,10 @@ mod tests {
             start: Instant::now() - Duration::from_secs(1),
             budget: Duration::from_millis(0),
         };
+        // A scan cut short is a timeout, not a miss: the parent may sit in a
+        // file it never reached.
         let got = discover_parent_blocking_with_deadline(projects, "child", &expired);
-        assert!(got.is_none());
+        assert_eq!(got, ForkParentDiscovery::TimedOut);
     }
 
     #[test]
@@ -551,7 +604,7 @@ mod tests {
             budget: Duration::from_millis(0),
         };
         let got = find_owning_sid_with_deadline(dir.path(), "child-sid", "PARENT-UUID", &expired);
-        assert!(got.is_none());
+        assert_eq!(got, ForkParentDiscovery::TimedOut);
     }
 
     #[tokio::test]

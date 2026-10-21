@@ -15,6 +15,22 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
 
 ## [Unreleased]
 
+### Changed
+
+- `attribution::claude::fork_parent::discover_parent` returns a
+  `ForkParentDiscovery` (`Parent`, `NoParent`, `TimedOut`) instead of
+  `Option<String>`, so a scan that ran out of its 25 ms budget is no longer
+  indistinguishable from a session that has no fork parent. Breaking for a
+  direct caller; `ForkParentDiscovery::parent` recovers the old value.
+
+### Fixed
+
+- A Claude session whose project directory is too large or too cold to scan
+  in budget no longer loses its fork-parent lineage for the life of the
+  process. Timed-out scans are retried on the existing one-second interval
+  and never harden into "not a fork"; only a scan that answers does. The
+  timeout warning now names the session id.
+
 ## [0.3.0] - 2026-10-16
 
 ### Added

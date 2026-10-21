@@ -83,7 +83,8 @@ use std::sync::{Mutex, PoisonError};
 use tokio::time::{Duration, Instant};
 
 use super::Attribution;
-use super::claude::{ClaudeSessionFile, WatcherSnapshotHandle, fork_parent};
+use super::claude::fork_parent::{self, ForkParentDiscovery};
+use super::claude::{ClaudeSessionFile, WatcherSnapshotHandle};
 use super::codex::request::{self as codex_request, CodexRequestIdentity};
 use super::codex::select::{CodexHookEvidence, CodexSelectionEvidence};
 use super::codex::{CodexSessionFile, CodexWatcherSnapshotHandle, select as codex_select};
@@ -235,9 +236,9 @@ impl AttributionConfig {
 ///
 /// Fork-parent discovery scans the harness transcript tree under a 25 ms
 /// budget. The parent relationship is immutable once a session exists, so a
-/// discovered answer — **including `None`** — is final and is never
-/// re-discovered for the same session id. Without this, every request in a
-/// session would re-scan.
+/// found parent is final and is never re-discovered for the same session id,
+/// and a miss becomes final once its give-up window closes. Without this,
+/// every request in a session would re-scan.
 #[derive(Debug, Default)]
 pub struct ForkParentCache {
     entries: Mutex<HashMap<String, ForkParentEntry>>,
@@ -247,7 +248,10 @@ pub struct ForkParentCache {
 /// append-only; lineage does not change). A miss is NOT: the first requests
 /// of a session race the transcript's appearance on disk, so a negative is
 /// retried on a short interval until a give-up window closes, and only then
-/// becomes permanent.
+/// becomes permanent. A timed-out scan is retried on the same interval but
+/// never hardens: it established nothing, and in a project directory too
+/// large to scan in budget, letting it harden would drop a forked session's
+/// lineage for the life of the process.
 #[derive(Debug, Clone)]
 enum ForkParentEntry {
     Parent(String),
@@ -298,13 +302,13 @@ impl ForkParentCache {
         }
     }
 
-    fn insert(&self, sid: String, parent: Option<String>) {
+    fn insert(&self, sid: String, discovery: ForkParentDiscovery) {
         let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-        match parent {
-            Some(parent) => {
+        match discovery {
+            ForkParentDiscovery::Parent(parent) => {
                 entries.insert(sid, ForkParentEntry::Parent(parent));
             }
-            None => {
+            miss @ (ForkParentDiscovery::NoParent | ForkParentDiscovery::TimedOut) => {
                 let first = match entries.get(&sid) {
                     // A found parent is immutable lineage: a slower
                     // concurrent probe that missed must never erase it.
@@ -312,7 +316,7 @@ impl ForkParentCache {
                     Some(ForkParentEntry::Negative { first, .. }) => *first,
                     _ => Instant::now(),
                 };
-                if first.elapsed() >= NEGATIVE_GIVE_UP {
+                if miss == ForkParentDiscovery::NoParent && first.elapsed() >= NEGATIVE_GIVE_UP {
                     // This probe ran past the give-up window and still
                     // missed — the guaranteed final look. Harden.
                     entries.insert(sid, ForkParentEntry::PermanentlyNone);
@@ -746,13 +750,16 @@ async fn discover_parent_cached(
     // discover; the transcript is deterministic so they agree, and the
     // redundant scan is the only cost.
     let Some(cwd) = session.cwd.as_deref() else {
-        // No cwd means no transcript to locate. Cache the `None` so every
+        // No cwd means no transcript to locate. Cache the miss so every
         // subsequent request in this session does not retry.
-        state.fork_parents.insert(sid, None);
+        state
+            .fork_parents
+            .insert(sid, ForkParentDiscovery::NoParent);
         return None;
     };
-    let parent = fork_parent::discover_parent(cwd, &sid).await;
-    state.fork_parents.insert(sid, parent.clone());
+    let discovery = fork_parent::discover_parent(cwd, &sid).await;
+    let parent = discovery.parent().map(str::to_owned);
+    state.fork_parents.insert(sid, discovery);
     parent
 }
 
@@ -1291,14 +1298,14 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn negative_fork_parent_cache_retries_then_hardens() {
         let cache = ForkParentCache::new();
-        cache.insert("sid".into(), None);
+        cache.insert("sid".into(), ForkParentDiscovery::NoParent);
         // Immediately after the miss: answered negative, no re-probe storm.
         assert_eq!(cache.get("sid"), Some(None));
         // Retry interval elapsed: the cache steps aside for a re-probe.
         tokio::time::advance(NEGATIVE_RETRY_INTERVAL + Duration::from_millis(10)).await;
         assert_eq!(cache.get("sid"), None);
         // The re-probe finds the parent late: permanent from here.
-        cache.insert("sid".into(), Some("parent".into()));
+        cache.insert("sid".into(), ForkParentDiscovery::Parent("parent".into()));
         assert_eq!(cache.get("sid"), Some(Some("parent".into())));
     }
 
@@ -1308,30 +1315,30 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn negative_insert_never_erases_a_found_parent() {
         let cache = ForkParentCache::new();
-        cache.insert("sid".into(), Some("parent".into()));
-        cache.insert("sid".into(), None);
+        cache.insert("sid".into(), ForkParentDiscovery::Parent("parent".into()));
+        cache.insert("sid".into(), ForkParentDiscovery::NoParent);
         assert_eq!(cache.get("sid"), Some(Some("parent".into())));
     }
 
     #[tokio::test(start_paused = true)]
     async fn negative_fork_parent_cache_gives_up_only_after_a_final_probe() {
         let cache = ForkParentCache::new();
-        cache.insert("sid".into(), None);
+        cache.insert("sid".into(), ForkParentDiscovery::NoParent);
         tokio::time::advance(NEGATIVE_GIVE_UP + Duration::from_secs(1)).await;
         // The window lapsed between probes: the cache must grant ONE final
         // probe rather than hardening on expiry alone — a transcript that
         // appeared during the last interval is still discoverable here.
         assert_eq!(cache.get("sid"), None);
         // The final probe found it late: lineage recovered, permanent.
-        cache.insert("sid".into(), Some("parent".into()));
+        cache.insert("sid".into(), ForkParentDiscovery::Parent("parent".into()));
         assert_eq!(cache.get("sid"), Some(Some("parent".into())));
 
         // And when the final probe also misses, THEN it hardens.
         let done = ForkParentCache::new();
-        done.insert("done".into(), None);
+        done.insert("done".into(), ForkParentDiscovery::NoParent);
         tokio::time::advance(NEGATIVE_GIVE_UP + Duration::from_secs(1)).await;
         assert_eq!(done.get("done"), None);
-        done.insert("done".into(), None);
+        done.insert("done".into(), ForkParentDiscovery::NoParent);
         assert_eq!(done.get("done"), Some(None));
         tokio::time::advance(NEGATIVE_RETRY_INTERVAL * 5).await;
         assert_eq!(
@@ -1339,6 +1346,34 @@ mod tests {
             Some(None),
             "hardened after the final probe missed"
         );
+    }
+
+    // A scan that ran out of budget established nothing about lineage, so
+    // it must never harden into "not a fork" — however long it keeps timing
+    // out — while still honouring the retry interval between probes.
+    #[tokio::test(start_paused = true)]
+    async fn a_timed_out_probe_is_retried_and_never_hardens() {
+        let cache = ForkParentCache::new();
+        cache.insert("sid".into(), ForkParentDiscovery::TimedOut);
+        assert_eq!(cache.get("sid"), Some(None), "no re-probe storm");
+
+        tokio::time::advance(NEGATIVE_GIVE_UP + Duration::from_secs(1)).await;
+        assert_eq!(cache.get("sid"), None);
+        cache.insert("sid".into(), ForkParentDiscovery::TimedOut);
+        tokio::time::advance(NEGATIVE_RETRY_INTERVAL + Duration::from_millis(10)).await;
+        assert_eq!(cache.get("sid"), None, "still open past the give-up window");
+
+        // A warmer page cache lets a later probe finish: lineage recovered.
+        cache.insert("sid".into(), ForkParentDiscovery::Parent("parent".into()));
+        assert_eq!(cache.get("sid"), Some(Some("parent".into())));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_timed_out_probe_never_erases_a_found_parent() {
+        let cache = ForkParentCache::new();
+        cache.insert("sid".into(), ForkParentDiscovery::Parent("parent".into()));
+        cache.insert("sid".into(), ForkParentDiscovery::TimedOut);
+        assert_eq!(cache.get("sid"), Some(Some("parent".into())));
     }
 
     // --- envelopes -------------------------------------------------------
@@ -1490,9 +1525,10 @@ mod tests {
     #[tokio::test]
     async fn a_cached_parent_short_circuits_discovery() {
         let state = empty_state();
-        state
-            .fork_parents
-            .insert("sid-x".to_owned(), Some("sid-parent".to_owned()));
+        state.fork_parents.insert(
+            "sid-x".to_owned(),
+            ForkParentDiscovery::Parent("sid-parent".to_owned()),
+        );
         let session = claude_session("sid-x");
         assert_eq!(
             discover_parent_cached(&state, &session).await,
