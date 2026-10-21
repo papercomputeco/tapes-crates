@@ -90,6 +90,7 @@ use super::codex::select::{CodexHookEvidence, CodexSelectionEvidence};
 use super::codex::{CodexSessionFile, CodexWatcherSnapshotHandle, select as codex_select};
 use tapes_capture::envelope::{HARNESS_ID_CLAUDE, HARNESS_ID_CODEX_APP, TapesAttribution};
 use tapes_capture::peer_pid;
+use tracing::warn;
 
 /// Default bound on the Claude-lane wait for a freshly-created session file.
 ///
@@ -712,28 +713,62 @@ async fn attribute_claude(
 
     let deadline = Instant::now() + config.claude_timeout;
     loop {
-        if let Some(session) = attribute_claude_once(state, peer) {
-            return Some(session);
-        }
+        let miss = match attribute_claude_once(state, peer) {
+            Ok(session) => return Some(session),
+            Err(miss) => miss,
+        };
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
+            // A request that names Claude but resolves to no session goes
+            // out unattributed and never reaches the consumer's transcript
+            // lane: from the stored data it is simply missing. This line is
+            // the only trace of why, so it names the last lookup's failure.
+            warn!(
+                %peer,
+                waited_ms = config.claude_timeout.as_millis() as u64,
+                ?miss,
+                "claude attribution: no live session owns this request; sending it unattributed",
+            );
             return None;
         }
         tokio::time::sleep(config.claude_poll.min(remaining)).await;
     }
 }
 
-fn attribute_claude_once(state: &AttributionState, peer: SocketAddr) -> Option<ClaudeSessionFile> {
+/// Why one Claude-lane lookup came up empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaudeMiss {
+    /// The watcher indexes no live Claude session: `~/.claude/sessions/` is
+    /// missing, empty, or not the directory the harness writes to.
+    NoSessions,
+    /// Live sessions exist, but none of their PIDs owns the peer socket.
+    PeerNotOwned { sessions: usize },
+    /// A session PID owns the peer socket, but its `<pid>.json` did not parse.
+    NoMetadata { pid: i32 },
+}
+
+fn attribute_claude_once(
+    state: &AttributionState,
+    peer: SocketAddr,
+) -> Result<ClaudeSessionFile, ClaudeMiss> {
     // A single `load` reads the candidate set and the metadata map atomically
     // across a watcher swap — see `WatcherSnapshot` for why bundling matters.
     let snapshot = state.claude_watcher.load_full();
     if snapshot.candidate_pids.is_empty() {
-        return None;
+        return Err(ClaudeMiss::NoSessions);
     }
     let mut candidates: Vec<i32> = snapshot.candidate_pids.iter().copied().collect();
     candidates.sort_unstable();
-    let pid = peer_pid::lookup(&candidates, peer).pid?;
-    snapshot.pid_metadata.get(&pid).cloned()
+    let pid = peer_pid::lookup(&candidates, peer)
+        .pid
+        .ok_or(ClaudeMiss::PeerNotOwned {
+            sessions: candidates.len(),
+        })?;
+    snapshot
+        .pid_metadata
+        .get(&pid)
+        .cloned()
+        .ok_or(ClaudeMiss::NoMetadata { pid })
 }
 
 /// Look up or discover the fork parent, memoizing the result.
@@ -946,6 +981,45 @@ mod tests {
 
         tokio::time::advance(std::time::Duration::from_secs(2)).await;
         assert_eq!(task.await, Attributed::UnknownHarness);
+    }
+
+    // The miss reason is what the unattributed-request warning reports, so
+    // each cause must come out as itself.
+    #[test]
+    fn a_claude_miss_names_why_no_session_owns_the_peer() {
+        let state = empty_state();
+        assert_eq!(
+            attribute_claude_once(&state, peer()),
+            Err(ClaudeMiss::NoSessions)
+        );
+
+        // A live session that is not the peer's owner.
+        let (peer, _client, _server) = live_peer();
+        let stranger = i32::MAX;
+        state
+            .claude_watcher
+            .store(std::sync::Arc::new(snapshot_with_session(stranger, "sid")));
+        assert_eq!(
+            attribute_claude_once(&state, peer),
+            Err(ClaudeMiss::PeerNotOwned { sessions: 1 })
+        );
+
+        // The peer's owner is a candidate whose session file did not parse.
+        let pid = std::process::id() as i32;
+        let mut unparsed = WatcherSnapshot::default();
+        unparsed.candidate_pids.insert(pid);
+        state.claude_watcher.store(std::sync::Arc::new(unparsed));
+        // The real peer-PID scan can miss a just-created socket, so give the
+        // owner a few looks before calling it.
+        let mut miss = attribute_claude_once(&state, peer);
+        for _ in 0..50 {
+            if miss != Err(ClaudeMiss::PeerNotOwned { sessions: 1 }) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            miss = attribute_claude_once(&state, peer);
+        }
+        assert_eq!(miss, Err(ClaudeMiss::NoMetadata { pid }));
     }
 
     #[tokio::test(start_paused = true)]
