@@ -30,6 +30,11 @@ the minor (`0.2.0`), and anything compatible bumps the patch (`0.1.1`).
   process. Timed-out scans are retried on the existing one-second interval
   and never harden into "not a fork"; only a scan that answers does. The
   timeout warning now names the session id.
+- A request whose User-Agent names Claude but that no live Claude session owns
+  now logs a warning when the attribution wait runs out, instead of going out
+  unattributed in silence. The warning carries the peer address, the wait, and
+  why the last lookup missed: no live sessions at all, sessions that do not
+  own the peer socket, or an owning session whose `<pid>.json` did not parse.
 
 ## [0.3.0] - 2026-10-16
 
