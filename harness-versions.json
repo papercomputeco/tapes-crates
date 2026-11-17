@@ -13,8 +13,8 @@
     },
     {
       "name": "codex",
-      "version": "codex-cli 0.145.0",
-      "upstream_version": "0.145.0",
+      "version": "codex-cli 0.169.0",
+      "upstream_version": "0.169.0",
       "discovery": {
         "kind": "npm",
         "source": "@openai/codex",
